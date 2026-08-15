@@ -423,6 +423,33 @@ class Console:
             classifier = Keywords()
         return Doorway(log, classifier)
 
+    def tool_add(self, passphrase: str, name: str, endpoint: str, *,
+                 kind: str = "http", businesses: tuple = ("*",),
+                 secret: str = "", caution: str = "") -> str:
+        from .tools import Tools
+        log = self.open(passphrase)
+        Tools(log).register(name, endpoint, kind=kind, businesses=businesses,
+                            auth_secret=secret, caution=caution)
+        who = "any business" if "*" in businesses else ", ".join(businesses)
+        msg = (f"registered {name} ({kind}) for {who}\n"
+               f"grant it with:  rosco give <person> <business> tool:{name.lower()}")
+        if secret:
+            msg += f"\nstore its key:  rosco secret set system {secret}"
+        if caution:
+            msg += f"\n  !! {caution}"
+        return msg
+
+    def tool_list(self) -> str:
+        from .tools import Tools
+        rows = Tools(self.open()).all()
+        if not rows:
+            return "no external tools registered"
+        out = []
+        for t in rows:
+            out.append(f"  {t.name:14} {t.kind:5} {', '.join(t.businesses):18} "
+                       f"tool:{t.name}" + (f"  !! {t.caution}" if t.caution else ""))
+        return "\n".join(out)
+
     def vault_read(self, business: str) -> str:
         return Vault(self.open()).to_markdown(business)
 
@@ -542,6 +569,14 @@ def main(argv: list[str] | None = None) -> int:
     bs.add_argument("scope", help="a provider name, or * for all")
     bs.add_argument("usd", help="monthly dollars")
 
+    to = sub.add_parser("tool", help="external tools agents can reach")
+    tsub = to.add_subparsers(dest="tcmd")
+    ta = tsub.add_parser("add"); ta.add_argument("name"); ta.add_argument("endpoint")
+    ta.add_argument("--kind", choices=("http", "mcp"), default="http")
+    ta.add_argument("--biz", nargs="*", default=["*"])
+    ta.add_argument("--secret", default=""); ta.add_argument("--caution", default="")
+    tsub.add_parser("list")
+
     va = sub.add_parser("vault", help="what the agents have learned")
     va.add_argument("business")
 
@@ -608,6 +643,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(c.budget_set(_ask_pass(), args.scope, args.usd))
             else:
                 print(c.budget_show())
+        elif args.cmd == "tool":
+            if args.tcmd == "add":
+                print(c.tool_add(_ask_pass(), args.name, args.endpoint, kind=args.kind,
+                                 businesses=tuple(args.biz), secret=args.secret,
+                                 caution=args.caution))
+            else:
+                print(c.tool_list())
         elif args.cmd == "vault":
             print(c.vault_read(args.business))
         elif args.cmd == "web":

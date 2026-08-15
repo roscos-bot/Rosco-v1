@@ -31,6 +31,7 @@ from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, Models,  # noq
                           secret_name)
 from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
 from rosco.store import Log, Unauthorised  # noqa: E402
+from rosco.tools import Tools  # noqa: E402
 from rosco.vault import INFERRED, OBSERVED, TOLD, Vault, derive_key  # noqa: E402
 
 # Ross's console key. In production this lives on one machine and nowhere else.
@@ -880,6 +881,45 @@ def main() -> int:
     fails += not check("keywords alone will not self-serve",
                        kw.handle(Arrival("telegram", "8481123",
                                          "something about the field")).outcome, ASK)
+
+    print("\nEXTERNAL TOOLS")
+    tl = fresh("console")
+    tt = Tools(tl)
+    fails += not refuses("only Ross registers a tool",
+                         lambda: tt.register("higgsfield", "https://x", by="rosco"),
+                         PermissionError)
+    fails += not refuses("a node without Ross's key cannot register one",
+                         lambda: Tools(Log(Path(tempfile.mkdtemp()) / "b.db", "cloud",
+                                           trust=Trust(ross=ROSS_KEY.public))
+                                       ).register("x", "https://x"),
+                         Unauthorised)
+    tt.register("higgsfield", "https://cloud.higgsfield.ai/api", businesses=("rum",),
+                auth_secret="higgsfield_api_key",
+                caution="AI media - never for SteelHaven brand output")
+    fails += not check("a registered tool exposes tool:<name>",
+                       tt.find("higgsfield").capability, "tool:higgsfield")
+    fails += not check("it is offered only to the named business",
+                       (tt.find("higgsfield").reachable_by("rum"),
+                        tt.find("higgsfield").reachable_by("steelhaven")), (True, False))
+    # Using a tool is a grant, gated exactly like anything else.
+    tg2 = Grants(tl)
+    fails += not check("a tool is untaught until granted",
+                       tg2.decide(Request("lucas", "rum", "tool:higgsfield", verb=DO,
+                                          channel=TG)).outcome, ASK)
+    tg2.give("lucas", "rum", "tool:higgsfield", verb=DO, reason="he makes the reels")
+    fails += not check("and self-serves once granted",
+                       tg2.decide(Request("lucas", "rum", "tool:higgsfield", verb=DO,
+                                          channel=TG)).outcome, SELF)
+    # The credential is required and comes from the vault, never the tool.
+    tv = Vault(tl, key=derive_key("pw", b"s"))
+    fails += not refuses("invoking without the stored key refuses",
+                         lambda: tt.invoke("higgsfield", {}, vault=tv, business="rum"),
+                         RuntimeError)
+    fails += not refuses("a business it is not offered to cannot invoke",
+                         lambda: tt.invoke("higgsfield", {}, vault=tv, business="steelhaven"),
+                         PermissionError)
+    tt.retire("higgsfield")
+    fails += not check("a retired tool is gone", tt.find("higgsfield"), None)
 
     print("\nSUBJECT SCOPE")
     # Ross's rule for his brother and sister: personal information, if it is

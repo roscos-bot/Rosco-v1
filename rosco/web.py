@@ -41,6 +41,7 @@ from .meter import ALL, Meter
 from .models import Models
 from .nodes import Nodes
 from .roster import BUSINESSES, roster
+from .tools import Tools
 from .vault import Vault
 
 APP = (Path(__file__).parent / "web_app.html")
@@ -128,6 +129,13 @@ class ConsoleServer(ThreadingHTTPServer):
         for n in Nodes(log).all():
             node("s:" + n.name, n.name, "site", business=n.site)
             edges.append({"a": "s:" + n.name, "b": "Rosco", "kind": "host"})
+        # external tools, linked to the businesses that may reach them
+        for t in Tools(log).all():
+            node("t:" + t.name, t.name, "tool", business=", ".join(t.businesses),
+                 caution=t.caution)
+            for c in BUSINESSES:
+                if t.reachable_by(c.slug) or "*" in t.businesses:
+                    edges.append({"a": "t:" + t.name, "b": c.captain, "kind": "tool"})
         return {"nodes": nodes, "edges": edges}
 
     def grants_view(self, s):

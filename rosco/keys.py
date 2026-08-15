@@ -107,6 +107,11 @@ KINDS: dict[str, str] = {
     "pair.challenge": AUTHORED,
     "pair.consumed": AUTHORED,         # a challenge was spent, signed on success
     "pair.attempt": NODE,             # a wrong code was tried - for the lockout
+
+    # External tools - Higgsfield, an MCP server, a vendor API. Registering one
+    # widens what the system can do, so it is authority, like a grant.
+    "tool.registered": AUTHORED,
+    "tool.retired": AUTHORED,
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -166,6 +171,9 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "pair.challenge": ("hash", "expires"),
     "pair.consumed": ("challenge",),
     "pair.attempt": ("challenge",),
+
+    "tool.registered": ("name", "kind", "endpoint"),
+    "tool.retired": ("name",),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a
