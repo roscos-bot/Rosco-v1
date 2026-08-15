@@ -260,7 +260,7 @@ class ConsoleServer(ThreadingHTTPServer):
                 r"^(yes|yep|yeah|yup|do it|go ahead|confirm|create it|add it|post "
                 r"it|sure|ok(ay)?|please do|send it|correct|that'?s right|perfect)\b",
                 msg.lower().strip()):
-            done = self._do_google_action(log, s.passphrase, pending)
+            done = self._do_action(log, s.passphrase, pending)
             self._remember(msg, done)
             return done
 
@@ -273,6 +273,12 @@ class ConsoleServer(ThreadingHTTPServer):
                 ctx += "\n\n" + g_ctx
         except Exception:
             pass                           # a connector hiccup never breaks chat
+        try:
+            gh_ctx = self._github_context(log, s.passphrase, msg)
+            if gh_ctx:
+                ctx += "\n\n" + gh_ctx
+        except Exception:
+            pass
         hist = "\n".join(("Ross: " if t["role"] == "you" else "Rosco: ") + t["text"][:400]
                          for t in self._chat[-8:])
         try:
@@ -309,16 +315,20 @@ class ConsoleServer(ThreadingHTTPServer):
         for a in _parse_actions(raw)[:2]:
             t = a.get("type")
             if t == "gmail_draft":
-                shown += "\n\n" + self._do_google_action(log, s.passphrase, a)
-            elif t in ("calendar_create", "chat_post"):
+                shown += "\n\n" + self._do_action(log, s.passphrase, a)
+            elif t in ("calendar_create", "chat_post", "github_pr"):
                 self._pending = a
                 if t == "calendar_create":
                     shown += ("\n\n\U0001f4c5 Ready to add \"" + str(a.get("summary", ""))
                               + "\" (" + str(a.get("start", ""))[:16]
                               + "). Reply 'yes' to put it on your calendar.")
-                else:
+                elif t == "chat_post":
                     shown += ("\n\n\U0001f4ac Ready to post to " + str(a.get("space", ""))
                               + ". Reply 'yes' to send it.")
+                else:
+                    shown += ("\n\n\U0001f500 Ready to open a pull request on "
+                              + str(a.get("repo", "")) + " (" + str(a.get("path", ""))
+                              + "). Reply 'yes' to open it — you review and merge on GitHub.")
                 break                      # one pending write at a time
 
         self._remember(msg, shown)
@@ -533,6 +543,86 @@ class ConsoleServer(ThreadingHTTPServer):
         except Exception as e:
             return f"(couldn't complete that — {str(e)[:150]})"
         return "(I didn't recognise that action.)"
+
+    def _do_action(self, log, passphrase, a):
+        """Route a proposed write to the right connector. GitHub opens a PR
+        (never merges); everything else is Google."""
+        if a.get("type") == "github_pr":
+            return self._do_github_action(log, passphrase, a)
+        return self._do_google_action(log, passphrase, a)
+
+    def _do_github_action(self, log, passphrase, a):
+        """Open a pull request for a proposed file change - branch, commit, PR,
+        back to default for Ross to merge. There is no merge here, by design."""
+        from . import github as gh
+        if f"system:{gh.TOKEN_SECRET}" not in set(Vault(log).secret_names()):
+            return "(no GitHub token stored, so I couldn't open a PR.)"
+        token = gh.gh_token(Vault(log, key=self.console._vault_key(passphrase)))
+        if not token:
+            return "(no GitHub token, so I couldn't open a PR.)"
+        path = str(a.get("path", "")).strip()
+        content = a.get("content", "")
+        if not (path and content):
+            return "(I need a file path and the new contents to open a PR.)"
+        try:
+            repo = _match_repo(gh.gh_repos(token, 100), str(a.get("repo", "")).lower()) \
+                or gh.gh_find_repo(token, str(a.get("repo", "")))
+            if not repo:
+                return f"(couldn't find a repo matching {a.get('repo','')!r}.)"
+            res = gh.gh_open_pr(token, repo["owner"], repo["name"], path, content,
+                                str(a.get("message") or f"Update {path} via Rosco"),
+                                pr_title=str(a.get("title", "")),
+                                pr_body=str(a.get("body", "")))
+            log.append("github.proposed",
+                       {"business": "*", "agent": "Rosco", "branch": res.get("branch", ""),
+                        "path": path, "pr": res.get("pr", ""),
+                        "message": str(a.get("message", ""))[:200]},
+                       subject="*", actor="Rosco")
+            return ("\U0001f500 Opened a pull request (not merged — review the diff and "
+                    "merge on GitHub): " + res.get("pr", ""))
+        except Exception as e:
+            return f"(couldn't open the PR — {str(e)[:150]})"
+
+    def _github_context(self, log, passphrase, msg):
+        """When the message is about a repo, read it live: list the repos the
+        token can reach, browse a repo's files, or pull one file's contents for
+        the agent to answer from. Returns '' when no token is stored or nothing
+        is relevant. Reads only - a change is proposed as a PR, never merged."""
+        from . import github as gh
+        low = msg.lower()
+        if not any(w in low for w in ("repo", "repositor", "github", "pull request",
+                   " pr ", "codebase", "commit", "branch", "the code", "source code")):
+            return ""
+        if f"system:{gh.TOKEN_SECRET}" not in set(Vault(log).secret_names()):
+            return ""
+        vault = Vault(log, key=self.console._vault_key(passphrase))
+        try:
+            token = gh.gh_token(vault)
+            if not token:
+                return ""
+            repos = gh.gh_repos(token, 100)
+            if not repos:
+                return "GITHUB: the stored token reaches no repositories."
+            repo = _match_repo(repos, low)
+            if repo is None:                # no repo named -> list them
+                return "GITHUB repos you can reach:\n" + "\n".join(
+                    f"- {r['full']}{' (private)' if r['private'] else ''}"
+                    + (f" — {r['desc'][:60]}" if r['desc'] else "") for r in repos[:25])
+            owner, name = repo["owner"], repo["name"]
+            tree = gh.gh_tree(token, owner, name)
+            if _wants_file_content(low):
+                term = _repo_path(low)
+                hit = _best_path(tree, term) if term else None
+                if hit:
+                    content, _ = gh.gh_read(token, owner, name, hit)
+                    return (f"GITHUB FILE {repo['full']}:{hit} — contents (may be "
+                            f"truncated):\n{content}")
+                return (f"GITHUB: no file like '{term}' in {repo['full']}. Its files:\n"
+                        + "\n".join(f"- {p}" for p in tree[:120]))
+            return (f"GITHUB {repo['full']} ({repo['default']} branch) — files:\n"
+                    + "\n".join(f"- {p}" for p in tree[:120]))
+        except Exception as e:
+            return f"GITHUB: couldn't read ({str(e)[:140]})."
 
     # ---- settings: the CLI's config commands, as forms ----
     #
@@ -1187,6 +1277,49 @@ def _parse_actions(raw):
         if isinstance(d, dict) and d.get("type"):
             out.append(d)
     return out
+
+
+def _match_repo(repos, low):
+    """Which repo the message means, resolved against the reachable list."""
+    for r in repos:
+        if r["full"].lower() in low:                     # owner/name
+            return r
+    for r in repos:
+        n = r["name"].lower()
+        if ("/" + n) in low or re.search(r"\b" + re.escape(n) + r"\b", low):
+            return r
+    for r in repos:                                      # "rosco" -> "Rosco-v1"
+        core = re.sub(r"[-_.]?v?\d+$", "", r["name"].lower())
+        if core and len(core) >= 3 and re.search(r"\b" + re.escape(core) + r"\b", low):
+            return r
+    return None
+
+
+def _repo_path(low):
+    """The file path a repo question is asking to read, or ''."""
+    m = re.search(r"([\w\-./]+\.\w{1,6})", low)          # a path with an extension
+    if m:
+        return m.group(1)
+    m = re.search(r"(?:read|open|show(?:\s+me)?|what'?s\s+in|contents?\s+of|file)\s+"
+                  r"(?:the\s+)?([\w\-./]{2,60})", low)
+    return m.group(1).strip("?.,!'\" ") if m else ""
+
+
+def _best_path(tree, term):
+    """Best match for a loose file term against a repo's file list."""
+    if not term:
+        return ""
+    t = term.lower().strip("/")
+    checks = (lambda p: p.lower() == t,
+              lambda p: p.lower().split("/")[-1] == t,
+              lambda p: p.lower().endswith("/" + t) or p.lower().endswith(t),
+              lambda p: t in p.lower().split("/")[-1],
+              lambda p: t in p.lower())
+    for ok in checks:
+        for p in tree:
+            if ok(p):
+                return p
+    return ""
 
 
 LOCAL_HOSTS = None  # set per-server from its port

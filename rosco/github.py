@@ -30,6 +30,7 @@ by remembering not to call one. Ross merges on GitHub, where he can read the dif
 from __future__ import annotations
 
 import base64
+import urllib.parse
 from dataclasses import dataclass
 
 from . import safehttp
@@ -190,3 +191,120 @@ class GitHub:
                          "path": path, "pr": url, "message": message[:200]},
                         subject=business, actor=agent)
         return {"pr": url, "branch": branch}
+
+
+# ---- direct-by-repo connector (what the console chat uses) -----------------
+#
+# The GitHub class above is keyed by BUSINESS (a linked repo, gated by grants).
+# The chat, though, browses whatever the stored token can reach - the way the
+# Google connector reads the account it is signed into. These take (token, owner,
+# repo) directly, read over safehttp, and the one write still only OPENS a PR;
+# there is no merge here either. The token is 'github_token' in the system vault.
+
+TOKEN_SECRET = "github_token"
+
+
+def gh_token(vault) -> str:
+    return (vault.get_secret(SYSTEM, TOKEN_SECRET) or "") if vault else ""
+
+
+def gh_repos(token: str, n: int = 30) -> list[dict]:
+    d = safehttp.call(
+        f"{API}/user/repos?" + urllib.parse.urlencode({
+            "per_page": min(n, 100), "sort": "pushed",
+            "affiliation": "owner,collaborator,organization_member"}),
+        method="GET", bearer=token, headers=GH_HEADERS)
+    return [{"full": r.get("full_name", ""), "name": r.get("name", ""),
+             "owner": (r.get("owner") or {}).get("login", ""),
+             "private": bool(r.get("private")), "desc": r.get("description") or "",
+             "default": r.get("default_branch", "main"),
+             "pushed": (r.get("pushed_at") or "")[:10]}
+            for r in (d if isinstance(d, list) else [])]
+
+
+def gh_find_repo(token: str, name: str) -> dict | None:
+    want = (name or "").strip().lower().lstrip("/")
+    repos = gh_repos(token, 100)
+    for r in repos:                       # exact name/full-name first
+        if r["name"].lower() == want or r["full"].lower() == want:
+            return r
+    for r in repos:                       # then a suffix / contains match
+        if want and (r["full"].lower().endswith("/" + want) or want in r["name"].lower()):
+            return r
+    return None
+
+
+def gh_default_branch(token: str, owner: str, repo: str) -> str:
+    d = safehttp.call(f"{API}/repos/{owner}/{repo}", method="GET",
+                      bearer=token, headers=GH_HEADERS)
+    return d.get("default_branch", "main")
+
+
+def gh_read(token: str, owner: str, repo: str, path: str, ref: str = "",
+            max_chars: int = 12000):
+    """A file's text, or a directory listing. Returns (content|None, listing|None)."""
+    url = f"{API}/repos/{owner}/{repo}/contents/{urllib.parse.quote(path)}"
+    if ref:
+        url += "?ref=" + urllib.parse.quote(ref, safe="")
+    got = safehttp.call(url, method="GET", bearer=token, headers=GH_HEADERS)
+    if isinstance(got, list):
+        return None, [{"name": x.get("name", ""), "type": x.get("type", ""),
+                       "path": x.get("path", "")} for x in got]
+    text = base64.b64decode(got.get("content", "") or "").decode("utf-8", "replace")
+    return text[:max_chars], None
+
+
+def gh_tree(token: str, owner: str, repo: str, ref: str = "", limit: int = 300) -> list[str]:
+    ref = ref or gh_default_branch(token, owner, repo)
+    d = safehttp.call(
+        f"{API}/repos/{owner}/{repo}/git/trees/{urllib.parse.quote(ref, safe='')}?recursive=1",
+        method="GET", bearer=token, headers=GH_HEADERS)
+    return [t.get("path", "") for t in (d.get("tree") or [])
+            if t.get("type") == "blob"][:limit]
+
+
+def gh_search_code(token: str, owner: str, repo: str, q: str, n: int = 10) -> list[dict]:
+    d = safehttp.call(
+        f"{API}/search/code?" + urllib.parse.urlencode({
+            "q": f"{q} repo:{owner}/{repo}", "per_page": n}),
+        method="GET", bearer=token, headers=GH_HEADERS)
+    return [{"path": i.get("path", ""), "name": i.get("name", "")}
+            for i in (d.get("items") or [])]
+
+
+def gh_open_pr(token: str, owner: str, repo: str, path: str, content: str,
+               message: str, *, branch: str = "", pr_title: str = "",
+               pr_body: str = "") -> dict:
+    """Branch off default, commit ONE file, open a PR back to default. No merge.
+
+    If the file already exists on the default branch its sha is supplied so the
+    commit updates rather than 400s. A human reads the diff and merges on GitHub.
+    """
+    h = dict(GH_HEADERS)
+    default = gh_default_branch(token, owner, repo)
+    branch = branch or ("rosco/" + urllib.parse.quote(message[:24].strip().replace(" ", "-"), safe=""))
+    base = safehttp.call(f"{API}/repos/{owner}/{repo}/git/ref/heads/{default}",
+                         method="GET", bearer=token, headers=h)
+    base_sha = (base.get("object") or {}).get("sha")
+    if not base_sha:
+        raise RuntimeError(f"could not read {default} head of {owner}/{repo}")
+    safehttp.call(f"{API}/repos/{owner}/{repo}/git/refs", method="POST",
+                  bearer=token, headers=h,
+                  payload={"ref": f"refs/heads/{branch}", "sha": base_sha})
+    put = {"message": message, "branch": branch,
+           "content": base64.b64encode(content.encode()).decode()}
+    try:                                   # existing file needs its blob sha to update
+        cur = safehttp.call(
+            f"{API}/repos/{owner}/{repo}/contents/{urllib.parse.quote(path)}?ref={default}",
+            method="GET", bearer=token, headers=h)
+        if isinstance(cur, dict) and cur.get("sha"):
+            put["sha"] = cur["sha"]
+    except Exception:
+        pass
+    safehttp.call(f"{API}/repos/{owner}/{repo}/contents/{urllib.parse.quote(path)}",
+                  method="PUT", bearer=token, headers=h, payload=put)
+    pr = safehttp.call(f"{API}/repos/{owner}/{repo}/pulls", method="POST",
+                       bearer=token, headers=h,
+                       payload={"title": pr_title or message, "head": branch,
+                                "base": default, "body": pr_body or "Proposed via Rosco."})
+    return {"pr": pr.get("html_url", ""), "branch": branch}
