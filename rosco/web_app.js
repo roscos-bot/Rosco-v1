@@ -378,6 +378,13 @@ TOOLS.forEach(function(t,i){var el=document.createElement("div");el.className="t
 function bubble(cls,by,text){var m=document.createElement("div");m.className="msg "+cls;
   var b=document.createElement("div");b.className="by";b.textContent=by;
   var d=document.createElement("div");d.className="bub";d.textContent=text;
+  // render a generated image inline: a 🖼️ reply carries its URL (any CDN); else
+  // any image-extension URL in the text.
+  var url=null;
+  if((text||"").indexOf("🖼")>=0){var u=(text||"").match(/https?:\/\/\S+/);if(u)url=u[0];}
+  if(!url){var g=(text||"").match(/https?:\/\/\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?/i);if(g)url=g[0];}
+  if(url){var img=document.createElement("img");img.className="genimg";img.src=url;img.alt="generated image";
+    img.addEventListener("error",function(){img.remove();});d.appendChild(img);}
   m.appendChild(b);m.appendChild(d);var s=document.getElementById("stream");
   s.appendChild(m);s.scrollTop=s.scrollHeight;return m;}
 // A snapshot of what Ross is looking at, so "the queue" / "this node" / "this

@@ -273,6 +273,7 @@ class Agent:
                 "ACTION: {\"type\":\"github_pr\",\"repo\":\"<repo name>\",\"path\":\"<file path>\",\"content\":\"<the FULL new file contents>\",\"message\":\"<commit message>\",\"title\":\"<PR title>\"}\n"
                 "ACTION: {\"type\":\"ingest\",\"drive\":\"<a Drive file name>\"}  (or \"repo\"+\"path\" for a GitHub file, or \"text\" for a short note)\n"
                 "ACTION: {\"type\":\"browser\",\"do\":\"navigate\",\"url\":\"...\"}  (or do:\"click\",\"target\":\"<the visible button/link text>\"; or do:\"type\",\"target\":\"<the field's label or placeholder>\",\"text\":\"...\"; or do:\"read\")\n"
+                "ACTION: {\"type\":\"image\",\"prompt\":\"<what to depict>\"}  — GENERATE an image via Higgsfield. Use this when they ask you to make/generate/draw/create a picture or image. The system asks them to confirm (it spends), then makes it and shows it in chat. NEVER generate media for SteelHaven (the no-AI-media rule); it's for everything else. (The 'vision' model only READS images you're given; it cannot make one — use this action to create.)\n"
                 "Use 'browser' when they ask you to open/go to a site or click/type on a "
                 "page. EVERY browser step is gated — the system shows it and waits for "
                 "their yes, even navigating. One step per reply: propose the next step "

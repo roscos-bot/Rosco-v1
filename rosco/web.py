@@ -373,9 +373,14 @@ class ConsoleServer(ThreadingHTTPServer):
             t = a.get("type")
             if t in ("gmail_draft", "ingest"):   # a draft / a queue-for-review — safe now
                 shown += "\n\n" + self._do_action(log, s.passphrase, a)
-            elif t in ("calendar_create", "chat_post", "github_pr", "browser"):
+            elif t in ("calendar_create", "chat_post", "github_pr", "browser", "image"):
                 self._pending = a
-                if t == "calendar_create":
+                if t == "image":
+                    shown += ("\n\n\U0001f5bc️ Ready to generate \""
+                              + str(a.get("prompt", ""))[:80]
+                              + "\" via Higgsfield (spends a credit; ~15-30s). Reply "
+                              + "'yes' to make it.")
+                elif t == "calendar_create":
                     shown += ("\n\n\U0001f4c5 Ready to add \"" + str(a.get("summary", ""))
                               + "\" (" + str(a.get("start", ""))[:16]
                               + "). Reply 'yes' to put it on your calendar.")
@@ -612,14 +617,40 @@ class ConsoleServer(ThreadingHTTPServer):
     def _do_action(self, log, passphrase, a):
         """Route a proposed write to the right connector. GitHub opens a PR
         (never merges); ingest queues items for review; browser drives Chromium;
-        everything else is Google."""
+        image generates via Higgsfield; everything else is Google."""
         if a.get("type") == "github_pr":
             return self._do_github_action(log, passphrase, a)
         if a.get("type") == "ingest":
             return self._do_ingest_action(log, passphrase, a)
         if a.get("type") == "browser":
             return self._do_browser_action(a)
+        if a.get("type") == "image":
+            return self._do_image_action(log, passphrase, a)
         return self._do_google_action(log, passphrase, a)
+
+    def _do_image_action(self, log, passphrase, a):
+        """Generate an image via Higgsfield and hand back its URL. The chat gates
+        this (it spends). GUARDRAIL: never for SteelHaven content — the 'no
+        AI-generated media' rule holds; this is for everything else."""
+        from .adapters import higgsfield as hf
+        prompt = str(a.get("prompt", "")).strip()
+        if not prompt:
+            return "(no prompt for the image.)"
+        try:
+            key = Vault(log, key=self.console._vault_key(passphrase)).get_secret(
+                "system", "higgsfield_api_key")
+        except Exception:
+            key = None
+        if not key:
+            return ("(no Higgsfield key stored — add higgsfield_api_key in "
+                    "Settings → API keys first.)")
+        try:
+            urls = hf.generate(key.strip(), prompt)
+        except Exception as e:
+            return "(couldn't generate it — " + str(e)[:160] + ")"
+        if not urls:
+            return "(Higgsfield returned no image.)"
+        return "\U0001f5bc️ Generated \"" + prompt[:80] + "\":\n" + urls[0]
 
     def _do_browser_action(self, a):
         """One approved browser step: navigate/read (looking) or click/type (acting).
