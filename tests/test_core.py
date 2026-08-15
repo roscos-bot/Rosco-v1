@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rosco.arrive import Arrival, Doorway, Keywords, Proposal  # noqa: E402
 from rosco.asks import (ALLOW_ALWAYS, ALLOW_ONCE, DENY_ALWAYS, Asks)  # noqa: E402
 from rosco.classify import ModelClassifier, _parse  # noqa: E402
+from rosco.console import Console  # noqa: E402
 from rosco.grants import (ANSWER, ANY, ASK, DECLINE, DO, GET,  # noqa: E402
                           SCOPE_SUBJECT, SELF,
                           Grants,
@@ -877,6 +878,107 @@ def main() -> int:
     fails += not check("keywords alone will not self-serve",
                        kw.handle(Arrival("telegram", "8481123",
                                          "something about the field")).outcome, ASK)
+
+    print("\nSUBJECT SCOPE")
+    # Ross's rule for his brother and sister: personal information, if it is
+    # information ABOUT them. Not a capability distinction - which rows within one.
+    sl = fresh("console")
+    sg = Grants(sl)
+    sg.give("augie", "personal", "calendar", verb=GET, scope=SCOPE_SUBJECT,
+            reason="family, but only what concerns him")
+    sg.give("grace", "personal", "house", verb=DO, reason="she runs the house")
+    da = sg.decide(Request("augie", "personal", "calendar", channel=TG))
+    fails += not check("a subject-scoped grant still allows", da.outcome, SELF)
+    fails += not check("and names whose data it is limited to",
+                       da.filtered_by("augie"), "augie")
+    dgr = sg.decide(Request("grace", "personal", "house", verb=DO, channel=TG))
+    fails += not check("an unscoped grant has no limit", dgr.filtered_by("grace"), None)
+    fails += not refuses("an unknown scope cannot be written",
+                         lambda: sg.give("x", "personal", "calendar", scope="sort-of"))
+    fails += not refuses("nor smuggled in as a raw event",
+                         lambda: sl.append("grant.given",
+                                           {"person": "augie", "business": "personal",
+                                            "capability": "calendar", "verb": GET,
+                                            "allow": True, "outcome": SELF,
+                                            "scope": "everything"}, actor="ross"),
+                         Unauthorised)
+
+    print("\nTHE CLASSIFIER")
+    # Everything a real model actually does wrong, and what each costs.
+    for raw, want, tag in (
+            ('{"business":"rum","capability":"stock","verb":"get","confidence":0.9}',
+             ("rum", "stock"), "clean json"),
+            ('```json\n{"business":"rum","capability":"stock","confidence":0.9}\n```',
+             ("rum", "stock"), "fenced in markdown"),
+            ('Sure!\n{"business":"rum","capability":"stock","confidence":0.8}',
+             ("rum", "stock"), "prose around the json"),
+            ('{"unclear": true}', None, "an honest refusal"),
+            ('{"business":"rum","capability":"everything","confidence":1.0}', None,
+             "an invented capability"),
+            ('{"business":"atlantis","capability":"stock","confidence":1.0}', None,
+             "an invented business"),
+            ('{"business":"rum","capability":"stock","verb":"destroy"}', None,
+             "an invented verb"),
+            ('I refuse to answer.', None, "no json at all"),
+            ('', None, "nothing"),
+    ):
+        got = _parse(raw)
+        pair = (got.business, got.capability) if got else None
+        fails += not check(f"{tag} -> {'routes' if want else 'asks Ross'}", pair, want)
+    fails += not check("a non-numeric confidence is zero, not trusted",
+                       _parse('{"business":"rum","capability":"stock",'
+                              '"confidence":"very"}').confidence, 0.0)
+
+    clf = fresh("console")
+    cmm = Models(clf, Vault(clf, key=derive_key("pw", b"s")))
+    People(clf).enrol("lucas", "telegram", "551")
+    fails += not check("no key means no answer, not a worse one",
+                       ModelClassifier(cmm).classify("where is my order?"), None)
+    fails += not check("and the doorway turns that into an ask",
+                       Doorway(clf, ModelClassifier(cmm)).handle(
+                           Arrival("telegram", "551", "x")).outcome, ASK)
+
+    print("\nTHE CONSOLE")
+    home = Path(tempfile.mkdtemp()) / "rosco-home"
+    con2 = Console(home)
+    PW = "a long enough passphrase"
+    con2.init(PW)
+    fails += not refuses("init refuses to run twice", lambda: con2.init(PW), SystemExit)
+    fails += not refuses("a wrong passphrase signs nothing",
+                         lambda: con2.give("wrong!", "b", "sugar-creek", "spray-log"))
+    fails += not refuses("a short passphrase is refused at init",
+                         lambda: Console(Path(tempfile.mkdtemp())).init("short"),
+                         SystemExit)
+    con2.enrol(PW, "brent", "telegram", "8481123")
+    con2.enrol(PW, "ross", "telegram", "111")
+    out2 = con2.enrol(PW, "ross", "telegram", "222")
+    fails += not check("re-pairing Ross replaces, never adds",
+                       "replaced 1 earlier pairing" in out2, True)
+    fails += not check("and only the new handle resolves",
+                       People(con2.open()).resolve("telegram", "111").person, "")
+    code = con2.pair_start().split()[2]
+    con2.pair_claim(PW, code, "31337")
+    fails += not refuses("a pairing code is single use",
+                         lambda: con2.pair_claim(PW, code, "31337"), SystemExit)
+
+    class Always:
+        def classify(self, text):
+            return Proposal("sugar-creek", "spray-log", GET, 0.95, "clear")
+
+    # The whole loop: arrival -> ask -> console answer -> self-serve.
+    clog = con2.open()
+    fails += not check("first ask queues",
+                       Doorway(clog, Always()).handle(
+                           Arrival("telegram", "8481123", "spray log?")).outcome, ASK)
+    con2.answer(PW, Asks(clog).pending()[0].id[:8], ALLOW_ALWAYS, note="he flies them")
+    fails += not check("the console's answer teaches the system",
+                       Doorway(con2.open(), Always()).handle(
+                           Arrival("telegram", "8481123", "again?")).outcome, SELF)
+    con2.secret_set(PW, "system", "openrouter_api_key", "sk-or-test")
+    fails += not check("a secret stored at the console is held",
+                       "system:openrouter_api_key" in con2.secret_list(), True)
+    fails += not check("and the console's chains verify clean",
+                       "sound" in con2.verify(), True)
 
     print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}\n")
     return 1 if fails else 0

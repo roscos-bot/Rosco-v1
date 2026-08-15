@@ -155,14 +155,19 @@ def _parse(raw: str) -> Proposal | None:
     if not caps.declared(business, capability):
         return None
 
-    verb = str(d.get("verb", "")).strip().lower()
-    if verb not in (GET, DO):
-        # Same treatment as an invented capability, and for the same reason. A
-        # model that answers "destroy" has not understood the schema, so its
-        # confidence in the rest of the answer is not worth honouring - and
-        # quietly defaulting to GET would keep a high confidence attached to a
-        # reading nobody checked. Ask Ross.
-        return None
+    # Absent and invented are different failures and get different treatment.
+    # A model that OMITS the verb has answered the question it was asked and
+    # skipped an optional-looking field - GET is the safe reading, since GET is
+    # the weaker power. A model that answers "destroy" has not understood the
+    # schema at all, so its confidence in the rest is not worth honouring, and
+    # quietly defaulting would keep a high confidence attached to a reading
+    # nobody checked. Ask Ross.
+    if "verb" not in d or d.get("verb") in (None, ""):
+        verb = GET
+    else:
+        verb = str(d["verb"]).strip().lower()
+        if verb not in (GET, DO):
+            return None
     try:
         confidence = max(0.0, min(1.0, float(d.get("confidence", 0))))
     except (TypeError, ValueError):
