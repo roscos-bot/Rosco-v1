@@ -142,24 +142,56 @@ def seed(vault: Vault, business: str) -> int:
     return len(fs)
 
 
+def _is_heading(block: str) -> bool:
+    """A block that titles what follows, rather than being content itself.
+
+    Reliable on an exported Doc (a markdown '#'/'##' line); for pasted plain text
+    a conservative fallback - a single short line, few words, no sentence-ending
+    punctuation. Kept tight so a real one-line fact isn't mistaken for a title.
+    """
+    if "\n" in block:                              # a multi-line block is content
+        return False
+    if re.match(r"^#{1,6}\s+\S", block):
+        return True
+    return (len(block) <= 60 and len(block.split()) <= 8
+            and not re.search(r"[.!?:,;]$", block))
+
+
 def _chunks(text: str, *, cap: int = 1000) -> list[str]:
-    """Split a doc into lessons: paragraphs and bullets, headings stripped."""
+    """Split a doc into lessons, each carrying the heading it sits under.
+
+    Docs export with headings on their own line ('# Heading' from a Google Doc,
+    a short title-like line from pasted notes). Splitting purely on blank lines
+    turned every heading into its own contentless item - '# Governing Principle'
+    with nothing under it read as 'a vague heading, no content'. So a heading is
+    NEVER emitted alone: it is held and prefixed onto the next real content block,
+    so the lesson keeps the section it belongs to.
+    """
     out: list[str] = []
-    for para in re.split(r"\n\s*\n", text or ""):
-        para = para.strip()
-        if not para:
+    pending = ""                                   # the heading waiting for its body
+    for block in re.split(r"\n\s*\n", text or ""):
+        block = block.strip()
+        if not block:
             continue
-        lines = para.splitlines()
+        if _is_heading(block):
+            h = re.sub(r"^#+\s*", "", block).strip()
+            pending = (pending + " › " + h) if pending else h   # chain sub-headings
+            continue
+        prefix = (pending + " — ") if pending else ""
+        pending = ""                               # consumed by this block
+        lines = block.splitlines()
         if any(re.match(r"^\s*[-*+]\s", ln) for ln in lines):
             for ln in lines:
                 ln = re.sub(r"^\s*[-*+]\s+", "", ln)
                 ln = re.sub(r"^#+\s*", "", ln).strip()
                 if ln:
-                    out.append(ln[:500])
+                    out.append((prefix + ln)[:500])
         else:
-            out.append(re.sub(r"^#+\s*", "", para)[:500])
+            out.append((prefix + re.sub(r"^#+\s*", "", block))[:500])
         if len(out) >= cap:
             break
+    if pending and not out:                        # a paste of only a heading isn't lost
+        out.append(pending[:500])
     return out[:cap]
 
 

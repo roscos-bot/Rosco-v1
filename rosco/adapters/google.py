@@ -148,7 +148,7 @@ def drive_search(token: str, text: str, n: int = 12) -> list[dict]:
 # or image has no text extraction here - the connector reads what it can and says
 # so for the rest, rather than handing back binary noise.
 _EXPORT = {
-    "application/vnd.google-apps.document": "text/plain",
+    "application/vnd.google-apps.document": "text/markdown",
     "application/vnd.google-apps.spreadsheet": "text/csv",
     "application/vnd.google-apps.presentation": "text/plain",
 }
@@ -160,18 +160,38 @@ def _readable_media(mime: str) -> bool:
             or "markdown" in m or "javascript" in m or "csv" in m)
 
 
+def _export(token: str, file_id: str, export_mime: str) -> str:
+    url = (f"https://www.googleapis.com/drive/v3/files/{file_id}/export?"
+           + _q({"mimeType": export_mime}))
+    return safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True) or ""
+
+
 def drive_read(token: str, file_id: str, mime: str, max_chars: int = 8000) -> str:
-    """The actual text of a Drive file, or '' if its type isn't readable text."""
+    """The actual text of a Drive file, or '' if its type isn't readable text.
+
+    A Doc is exported as MARKDOWN, not flat text, so its headings survive as
+    '# Heading' lines. The ingest chunker uses those to keep each lesson under the
+    section it belongs to instead of orphaning a bare heading (a plain-text export
+    dropped '# Governing Principle' in as its own contentless item). Markdown
+    export is newer, so a Doc that refuses it falls back to plain text.
+    """
     if not file_id:
         return ""
     if mime in _EXPORT:
-        url = (f"https://www.googleapis.com/drive/v3/files/{file_id}/export?"
-               + _q({"mimeType": _EXPORT[mime]}))
+        want = _EXPORT[mime]
+        text = ""
+        if want == "text/markdown":
+            try:
+                text = _export(token, file_id, want)
+            except Exception:
+                text = ""                        # this Doc won't export markdown
+        if not text:
+            text = _export(token, file_id, "text/plain" if want == "text/markdown" else want)
     elif _readable_media(mime):
         url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        text = safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True)
     else:
         return ""
-    text = safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True)
     return (text or "")[:max_chars]
 
 
