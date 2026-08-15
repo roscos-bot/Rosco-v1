@@ -63,6 +63,11 @@ BUSINESSES = (
     Business("spring-valley", "Spring Valley", "Argus", "rossfusz@gmail.com", False),
     Business("finance", "Finance", "Ledger", "rossfusz@gmail.com", False),
     Business("personal", "Personal & Home", "Rosco", "rossfusz@gmail.com", False),
+    # The system's own code and architecture - its own silo so ingesting Rosco-v1
+    # to make Rosco a code expert never muddies a real business's brain. Captained
+    # by Rosco (no duplicate agent, see roster()), and Rosco-the-chief reads it via
+    # business '*', so what lands here is exactly what grounds Rosco on its code.
+    Business("system", "Rosco System & Code", "Rosco", "rossfusz@gmail.com", False),
 )
 
 # name -> (rank, business, role, reports_to)
@@ -75,6 +80,7 @@ _BENCH = {
     "spring-valley": ("Wells", "Signal", "Nate Watts", "Ward"),
     "finance":       ("Sterling", None, "Nate Cash", None),
     "personal":      ("Abbott", None, "Nate Penny", "Porter"),
+    "system":        (None, None, None, None),   # no bench - Rosco is the only one here
 }
 
 _ROLES = (("law", LIEUTENANT), ("marketing", LIEUTENANT),
