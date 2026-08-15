@@ -80,8 +80,21 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
 
     req = urllib.request.Request(url, data=data, headers=h, method=method)
     opener = urllib.request.build_opener(_NoRedirect)
-    with opener.open(req, timeout=timeout) as r:
-        body = r.read(max_bytes + 1)
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            body = r.read(max_bytes + 1)
+    except HTTPError as e:
+        # Surface WHY, and as a ValueError callers already handle. A provider's
+        # 4xx body says what was wrong ("model not found", "invalid api key"),
+        # and an opaque HTTPError buried that. A refused redirect (raised by
+        # _NoRedirect) carries its reason here too.
+        detail = ""
+        try:
+            detail = e.read(2000).decode("utf-8", "replace").strip()
+        except Exception:
+            pass
+        raise ValueError(f"HTTP {e.code} from {parsed.hostname}: "
+                         f"{detail[:400] or e.reason}") from None
     if len(body) > max_bytes:
         raise ValueError(f"reply larger than {max_bytes} bytes; refused")
     if not body.strip():

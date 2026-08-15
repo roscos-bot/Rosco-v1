@@ -236,6 +236,10 @@ class ConsoleServer(ThreadingHTTPServer):
                 msg, for_person="ross")
         except NoModel as e:
             return f"(no chat model set - {e})"
+        except Exception as e:
+            # A provider error, a bad model id, a timeout - it comes back as a
+            # message in the chat, never as a crashed request.
+            return f"(couldn't reach the chat model: {e})"
 
 
 LOCAL_HOSTS = None  # set per-server from its port
@@ -365,6 +369,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True})
         except (ValueError, KeyError, SystemExit) as e:
             return self._send(400, {"error": str(e)})
+        except Exception as e:
+            # No handler may crash the request thread and print a traceback to
+            # the console. Anything unexpected comes back as a 500 with a note.
+            return self._send(500, {"error": f"server error: {e}"})
         return self._send(404, {"error": "no such action"})
 
 
