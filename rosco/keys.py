@@ -155,6 +155,7 @@ ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("vault.learned", "basis"): ("told", "observed", "inferred"),
     ("vault.corrected", "basis"): ("told", "observed", "inferred"),
     ("node.registered", "role"): ("site", "rendezvous"),
+    ("grant.given", "scope"): ("all", "subject"),
 }
 
 

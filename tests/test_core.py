@@ -18,7 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rosco.arrive import Arrival, Doorway, Keywords, Proposal  # noqa: E402
 from rosco.asks import (ALLOW_ALWAYS, ALLOW_ONCE, DENY_ALWAYS, Asks)  # noqa: E402
 from rosco.classify import ModelClassifier, _parse  # noqa: E402
-from rosco.grants import (ANSWER, ANY, ASK, DECLINE, DO, GET, SELF,  # noqa: E402
+from rosco.grants import (ANSWER, ANY, ASK, DECLINE, DO, GET,  # noqa: E402
+                          SCOPE_SUBJECT, SELF,
                           Grants,
                           Request)
 from rosco.identity import CERTAIN, CLAIMED, UNKNOWN, People  # noqa: E402

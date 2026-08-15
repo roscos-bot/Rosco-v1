@@ -62,6 +62,27 @@ DO = "do"
 # concession and should be exactly as narrow as it was written.
 ANY = "*"
 
+# How much of a capability a grant reaches.
+#
+#   ALL      everything the capability covers. The default.
+#   SUBJECT  only the parts that are ABOUT the person asking.
+#
+# SUBJECT exists because of a rule Ross gave for his brother and sister: they may
+# have personal information if it is information about THEM. Augie asking when
+# the family thing is should get an answer; Augie asking what Ross is doing on
+# Tuesday should not, and the difference is not the capability - it is which
+# rows within it.
+#
+# THIS LAYER CANNOT ENFORCE IT, AND SAYS SO. decide() carries the scope out in
+# the Decision; whatever fetches the data has to honour it. A fetcher that does
+# not understand scope MUST refuse to serve a SUBJECT grant rather than return
+# everything - see Decision.filtered_by. Silently ignoring a constraint declared
+# upstream is the exact failure four audits kept finding, and it is worse here
+# because it would look like a working permission.
+SCOPE_ALL = "all"
+SCOPE_SUBJECT = "subject"
+SCOPES = (SCOPE_ALL, SCOPE_SUBJECT)
+
 # Channel trust. Ross's rule: the spoofable ones carry a higher approval rate.
 #
 # A Telegram id was paired by him and cannot be forged. Google Chat is
@@ -104,10 +125,22 @@ class Decision:
     outcome: Literal["self", "answer", "ask", "decline"]
     why: str
     grant_id: str = ""
+    scope: str = SCOPE_ALL
 
     @property
     def needs_ross(self) -> bool:
         return self.outcome == ASK
+
+    def filtered_by(self, person: str) -> str | None:
+        """Whose data this is limited to, or None for no limit.
+
+        Every fetcher must call this before serving anything. If it returns a
+        name, only rows about that person may be returned - and a fetcher that
+        cannot filter that way must REFUSE rather than serve the lot. Returning
+        everything because the filter was inconvenient turns a real constraint
+        into a comment.
+        """
+        return person if self.scope == SCOPE_SUBJECT else None
 
 
 @dataclass
@@ -121,6 +154,7 @@ class Grant:
     outcome: str           # for allows: SELF or ANSWER
     reason: str
     given: str
+    scope: str = SCOPE_ALL
     order: int = 0          # position in the log's total order - see _match()
     revoked: bool = False
 
@@ -135,7 +169,7 @@ class Grants:
 
     def give(self, person: str, business: str, capability: str, *,
              verb: str = GET, outcome: str = SELF, reason: str = "",
-             by: str = ROSS) -> dict:
+             scope: str = SCOPE_ALL, by: str = ROSS) -> dict:
         """Grant. Only Ross may call this, and the check is not a formality.
 
         `outcome` says what an allowed request becomes: SELF means they act
@@ -152,6 +186,8 @@ class Grants:
             raise ValueError(f"verb must be {GET!r} or {DO!r}; an allow cannot cover both")
         if outcome not in (SELF, ANSWER):
             raise ValueError(f"an allow resolves to {SELF!r} or {ANSWER!r}")
+        if scope not in SCOPES:
+            raise ValueError(f"scope must be one of {', '.join(SCOPES)}")
         if not _norm(person) or not _norm(business) or not _norm(capability):
             raise ValueError("a grant needs a person, a business and a capability")
         if _norm(person) == ANY or _norm(business) == ANY:
@@ -165,7 +201,7 @@ class Grants:
             "grant.given",
             {"person": _norm(person), "business": _norm(business),
              "capability": _norm(capability), "verb": verb, "allow": True,
-             "outcome": outcome, "reason": reason},
+             "outcome": outcome, "reason": reason, "scope": scope},
             subject=self._key(person, business, capability, verb), actor=ROSS,
         )
 
@@ -281,9 +317,10 @@ class Grants:
         # their own to Rosco answering, so the reply is composed rather than
         # handing over a tool.
         if req.channel in WEAK and g.outcome == SELF:
-            return Decision(ANSWER, f"allowed; {req.channel} is read-only in effect", g.id)
+            return Decision(ANSWER, f"allowed; {req.channel} is read-only in effect",
+                            g.id, g.scope)
 
-        return Decision(g.outcome, g.reason or "granted", g.id)
+        return Decision(g.outcome, g.reason or "granted", g.id, g.scope)
 
     # ---- reading ---------------------------------------------------------
 
@@ -315,6 +352,7 @@ class Grants:
                 capability=_norm(b["capability"]), verb=b.get("verb", GET),
                 allow=b.get("allow", False), outcome=b.get("outcome", SELF),
                 reason=b.get("reason", ""), given=ev["ts"], order=n,
+                scope=b.get("scope") or SCOPE_ALL,
             )
         rows = [g for gid, g in out.items() if gid not in revoked]
         if person is not None:

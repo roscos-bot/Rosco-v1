@@ -338,13 +338,37 @@ registration (unregistered application-to-person SMS gets filtered or blocked,
 links especially, and it takes days), and the SID and auth token stored in the
 vault under `system` at the console.
 
+## Family, and subject scope
+
+Ross's rule for Augie and Courtney, given 15 Aug 2026: **they may have personal
+information if it is information about them.** Augie asking when the family
+thing is should get an answer; Augie asking what Ross is doing on Tuesday should
+not — and the difference is not the capability, it is which rows within it.
+
+The permission model could not express that, so grants gained a `scope`:
+
+| scope | reach |
+|---|---|
+| `all` | everything the capability covers. The default. |
+| `subject` | only the parts that are **about** the person asking. |
+
+```python
+grants.give("augie", "personal", "calendar", verb=GET, scope=SCOPE_SUBJECT)
+```
+
+**This layer carries the constraint and cannot enforce it, and says so.**
+`decide()` returns the scope in the `Decision`; whatever fetches the data has to
+honour it. `Decision.filtered_by(person)` returns the name to filter on, or
+`None` for no limit — and **a fetcher that cannot filter that way must refuse
+rather than return everything.** Silently ignoring a constraint declared
+upstream is the exact failure four audits kept finding, and it would be worse
+here because it would look like a working permission.
+
 ## Still open
 
 Recorded here so they are not silently decided by whoever writes the code next:
 
 - **Budget ceiling** for LLM spend — not set.
-- **"Relevant" for Augie and Courtney** — Ross said family gets personal access
-  "if they are relevant." Undefined, so it currently means `ASK`.
 - **Ranks for sub-sub-agents**, if the bench ever grows one.
 - **Enrolment data** — no real handles are in the book yet. This needs a console
   command Ross runs locally, not data pasted into a chat.
