@@ -1326,7 +1326,7 @@ class ConsoleServer(ThreadingHTTPServer):
         props = _route_ingest(models, Meter(log), [text[:4000]])
         p = props[0] if props else {}
         return {"summary": p.get("summary", ""), "business": p.get("business", ""),
-                "why": p.get("why", "")}
+                "why": p.get("why", ""), "confidence": p.get("confidence", 0)}
 
     def cfg(self, s, action, body):
         """Apply one setting. Returns the console's own confirmation string."""

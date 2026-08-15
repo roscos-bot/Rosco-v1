@@ -828,27 +828,37 @@ function ingestCard(item){
   var card=document.createElement("div");card.className="ing-card";
   var txt=document.createElement("div");txt.className="ing-text";txt.textContent=item.text;card.appendChild(txt);
   var shorthand=item.summary||"";   // the distilled form that actually gets learned (not the raw text)
+  var touched=false;                // did Ross pick a business himself? then don't auto-move it
   var rd=document.createElement("div");rd.className="ing-reads";
   rd.innerHTML="<span class='rl'>Rosco's shorthand (this is what gets learned)</span> <span class='rv'>"+(item.summary?esc(item.summary):"distilling…")+"</span>";
   card.appendChild(rd);
-  if(!item.summary){post("/api/ingest/read",{text:item.text}).then(function(r){
-    var v=rd.querySelector(".rv");if(!v)return;
-    if(r.ok&&r.j&&r.j.summary){shorthand=r.j.summary;v.textContent=r.j.summary;}
-    else{v.textContent="(couldn't read — "+esc((r.j&&(r.j.why||r.j.error))||"no reason given")+")";}
-  }).catch(function(){var v=rd.querySelector(".rv");if(v)v.textContent="(couldn't read — server unreachable)";});}
   var prop=document.createElement("div");prop.className="ing-prop";
-  if(item.business){var s1=document.createElement("span");s1.textContent="Rosco →";
-    var b=document.createElement("b");b.textContent=bizTitle(item.business);
-    var s2=document.createElement("span");s2.textContent=Math.round((item.confidence||0)*100)+"% · "+(item.why||"");
-    prop.appendChild(s1);prop.appendChild(b);prop.appendChild(s2);
-  } else {var s0=document.createElement("span");s0.textContent="Rosco isn't sure — you place this one";prop.appendChild(s0);}
+  function showProp(biz,conf,why){prop.innerHTML="";
+    if(biz){var s1=document.createElement("span");s1.textContent="Rosco →";
+      var b=document.createElement("b");b.textContent=bizTitle(biz);
+      var s2=document.createElement("span");s2.textContent=Math.round((conf||0)*100)+"% · "+(why||"");
+      prop.appendChild(s1);prop.appendChild(b);prop.appendChild(s2);}
+    else{var s0=document.createElement("span");s0.textContent=(item.summary?"Rosco isn't sure — you place this one":"reading…");prop.appendChild(s0);}}
+  showProp(item.business,item.confidence,item.why);
   card.appendChild(prop);
   var row=document.createElement("div");row.className="ing-row";
   var lab=document.createElement("label");lab.textContent="File into";row.appendChild(lab);
   var sel=document.createElement("select");
-  var ingDef=lastIngestBiz||item.business;   // last pick wins, so a run of code chunks stays on Rosco's Vault
+  var ingDef=item.business||lastIngestBiz;   // Rosco's stored pick first, else the last one used
   ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bizTitle(bz);if(bz===ingDef)o.selected=true;sel.appendChild(o);});
+  sel.addEventListener("change",function(){touched=true;});
   row.appendChild(sel);
+  // On-demand read: distill the shorthand AND swing "File into" to Rosco's fresh
+  // read of THIS item (unless Ross already picked one himself).
+  if(!item.summary){post("/api/ingest/read",{text:item.text}).then(function(r){
+    var v=rd.querySelector(".rv");
+    if(r.ok&&r.j&&r.j.summary){shorthand=r.j.summary;if(v)v.textContent=r.j.summary;
+      if(r.j.business&&!touched){
+        if(Array.prototype.some.call(sel.options,function(o){return o.value===r.j.business;}))sel.value=r.j.business;
+        showProp(r.j.business,r.j.confidence,r.j.why);
+      }
+    } else if(v){v.textContent="(couldn't read — "+esc((r.j&&(r.j.why||r.j.error))||"no reason given")+")";}
+  }).catch(function(){var v=rd.querySelector(".rv");if(v)v.textContent="(couldn't read — server unreachable)";});}
   var go=document.createElement("button");go.className="ing-go";go.textContent="Ingest here";
   go.addEventListener("click",function(){lastIngestBiz=sel.value;decideIngest(item.cand,sel.value,"ingest",card,shorthand);});
   var skip=document.createElement("button");skip.className="ing-skip";skip.textContent="Skip";
