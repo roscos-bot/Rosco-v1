@@ -138,18 +138,32 @@ class Agent:
     def _system(self, lessons) -> str:
         told = [l for l in lessons if l.basis == TOLD]
         rest = [l for l in lessons if l.basis != TOLD]
+
+        def fmt(l):
+            # Every lesson is a GIST. If it names where it came from, cite that so
+            # this agent - or another it's helping - can pull the full source for
+            # detail instead of trusting the shorthand alone. This is the hook that
+            # makes compact knowledge sharable between agents without bloat.
+            src = (l.source or "").strip()
+            cite = (f"   [from {src} — fetch it for the full detail]"
+                    if src.split(":")[0] in ("drive", "gh", "github", "url") else "")
+            return f"  - {l.text}{cite}"
+
         lines = [
             f"You are {self.name}, the agent for {self.business}. Rank: {self.rank}.",
             "You do this business's work and nothing else. You draft and propose;",
             "you never publish, send, or ship - a person does that.",
             "",
+            "What you know is kept as GISTS. A lesson that cites a source (drive:/gh:)",
+            "is shorthand — go re-read that source when you need more than the gist.",
+            "",
             "What you have been TOLD (treat as firm):",
         ]
-        lines += [f"  - {l.text}" for l in told] or ["  - (nothing yet)"]
+        lines += [fmt(l) for l in told] or ["  - (nothing yet)"]
         if rest:
             lines.append("")
             lines.append("What you have observed or worked out:")
-            lines += [f"  - {l.text}" for l in rest]
+            lines += [fmt(l) for l in rest]
         return "\n".join(lines)
 
     # ---- guardrails ------------------------------------------------------

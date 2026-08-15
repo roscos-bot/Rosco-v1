@@ -60,10 +60,10 @@ class Ingest:
                 conf = 0.0
             self.log.append(
                 "ingest.proposed",
-                {"cand": cand, "text": text[:20000], "source": source,
+                {"cand": cand, "text": text[:8000], "source": source,
                  "business": biz, "confidence": conf,
                  "why": (it.get("why") or "")[:200],
-                 "summary": (it.get("summary") or "")[:240]},
+                 "summary": (it.get("summary") or "")[:1200]},   # the shorthand — what gets learned
                 subject=source or "paste", actor=by)
             n += 1
         return n
@@ -105,14 +105,23 @@ class Ingest:
                         "summary": b.get("summary", "")})
         return out
 
+    def text_of(self, cand: str) -> str:
+        """The raw text queued for a candidate - so a shorthand can be distilled
+        from it at decide time when the card didn't carry one."""
+        return (self._proposals().get(cand) or {}).get("text", "")
+
     # ---- deciding --------------------------------------------------------
 
     def decide(self, cand: str, business: str, action: str, *,
-               by: str = "ross") -> dict:
-        """Ross's call on one item. 'ingest' learns the text into `business` (a
-        SIGNED vault.learned via the captain); 'skip' just clears it. Either way
-        a NODE ingest.decided records whether the proposal was accepted unchanged
-        - the signal readiness() reads."""
+               by: str = "ross", learn_text: str | None = None) -> dict:
+        """Ross's call on one item. 'ingest' LEARNS a distilled shorthand into
+        `business` (a SIGNED vault.learned via the captain), NOT the raw doc -
+        ingesting means understanding it and keeping a compact form, not dumping
+        the source into the vault. The shorthand is `learn_text` (what the card
+        showed as 'reads as'), falling back to the stored summary, and only to the
+        raw text if there is no shorthand at all. 'skip' just clears it. Either
+        way a NODE ingest.decided records whether the proposal was accepted
+        unchanged - the signal readiness() reads."""
         if action not in ("ingest", "skip"):
             raise ValueError("action must be ingest or skip")
         prop = self._proposals().get(cand)
@@ -129,7 +138,10 @@ class Ingest:
                 raise ValueError(f"unknown business {business!r}")
             if self.vault is None:
                 raise RuntimeError("no vault - cannot learn (open with the key)")
-            self.vault.learn(captain, business, prop.get("text", ""),
+            lesson = ((learn_text or "").strip()
+                      or prop.get("summary", "").strip()
+                      or prop.get("text", "")[:400])   # last resort: a snippet, never the whole raw source
+            self.vault.learn(captain, business, lesson,
                              basis=TOLD, source=prop.get("source", "ingest"))
         self.log.append(
             "ingest.decided",

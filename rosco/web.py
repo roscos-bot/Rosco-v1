@@ -1082,14 +1082,18 @@ class ConsoleServer(ThreadingHTTPServer):
         return {"ok": True, "added": n, "file": hit.get("name", "")}
 
     def ingest_github(self, s, body):
-        """Pull one file from a GitHub repo into the review queue - a doc or a
-        source file worth learning as durable lessons. (For 'how am I coded right
-        now', live-reading in chat is better - it never goes stale.)"""
+        """Pull a file — OR a whole repo/folder — from GitHub into the review queue.
+        Blank path pulls every code/text file in the repo; a folder pulls what's
+        under it; a named file pulls just that one. Each file becomes its own item;
+        on review its shorthand is distilled and THAT is learned (never the raw
+        source), with the gh: source kept so any agent can re-read the file for
+        detail. (For 'how am I coded right now', live chat-read is better still.)"""
         from . import github as gh
+        from .ingest import Ingest
         repo_name = (body.get("repo") or "").strip()
         path = (body.get("path") or "").strip()
-        if not (repo_name and path):
-            raise ValueError("give a repo and a file path to pull")
+        if not repo_name:
+            raise ValueError("give a repo (path optional — blank pulls the whole repo)")
         log = self.console.open(s.passphrase)
         if f"system:{gh.TOKEN_SECRET}" not in set(Vault(log).secret_names()):
             raise ValueError("no github_token stored yet (⚙ → API keys)")
@@ -1100,25 +1104,58 @@ class ConsoleServer(ThreadingHTTPServer):
             or gh.gh_find_repo(token, repo_name)
         if not repo:
             raise ValueError(f"no repo matching {repo_name!r}")
-        hit = _best_path(gh.gh_tree(token, repo["owner"], repo["name"]), path) or path
-        content, _ = gh.gh_read(token, repo["owner"], repo["name"], hit)
-        if content is None:
-            raise ValueError(f"'{hit}' isn't a readable file in {repo['full']}")
-        n = self._queue_text(s, content, source=f"gh:{repo['name']}/{hit}"[:60])
-        return {"ok": True, "added": n, "file": f"{repo['full']}:{hit}"}
+        owner, name = repo["owner"], repo["name"]
+        tree = gh.gh_tree(token, owner, name)
+        if not path:
+            files = [p for p in tree if _ingestable(p)]                 # whole repo
+        else:
+            pl = path.strip("/").lower()
+            under = [p for p in tree if p.lower().startswith(pl + "/") and _ingestable(p)]
+            files = under or ([_best_path(tree, path)] if _best_path(tree, path) else [])
+        files = [f for f in files if f][:50]                            # bound the batch
+        if not files:
+            raise ValueError(f"nothing to pull for '{path or 'whole repo'}' in {repo['full']}")
+        if len(files) == 1:                                             # one file -> routed pull
+            content, _ = gh.gh_read(token, owner, name, files[0])
+            if not content:
+                raise ValueError(f"'{files[0]}' isn't a readable file in {repo['full']}")
+            n = self._queue_text(s, content, source=f"gh:{name}/{files[0]}")
+            return {"ok": True, "added": n, "file": f"{repo['full']}:{files[0]}"}
+        added = 0                                                       # many -> bulk into Rosco's Vault
+        for p in files:
+            content, _ = gh.gh_read(token, owner, name, p)
+            if not content:
+                continue
+            added += Ingest(log).add(
+                [{"text": content, "business": "system", "confidence": 0.6,
+                  "why": "repo source file", "summary": ""}],
+                source=f"gh:{name}/{p}")
+        if not added:
+            raise ValueError(f"no readable files pulled from {repo['full']}")
+        return {"ok": True, "added": added, "file": f"{repo['full']} — {added} files"}
 
     def ingest_queue(self, s):
         from .ingest import Ingest
         return {"items": Ingest(self.console.open(s.passphrase)).pending()}
 
     def ingest_decide(self, s, body):
-        """Ross's call on one item: learn it into a business, or skip it."""
+        """Ross's call on one item: learn a distilled SHORTHAND into a business, or
+        skip it. The shorthand is what the card showed; if it ingested before the
+        card distilled one, distill it now so the raw source is never learned."""
         from .ingest import Ingest
         log = self.console.open(s.passphrase)
         vault = Vault(log, key=self.console._vault_key(s.passphrase))
-        return Ingest(log, vault).decide(body.get("cand", ""),
-                                         body.get("business", ""),
-                                         body.get("action", "ingest"))
+        ing = Ingest(log, vault)
+        cand = body.get("cand", "")
+        business = body.get("business", "")
+        action = body.get("action", "ingest")
+        shorthand = (body.get("shorthand") or "").strip()
+        if action == "ingest" and business and not shorthand:
+            raw = ing.text_of(cand)
+            if raw:
+                props = _route_ingest(Models(log, vault), Meter(log), [raw[:4000]])
+                shorthand = (props[0].get("summary", "") if props else "").strip()
+        return ing.decide(cand, business, action, learn_text=shorthand or None)
 
     def ingest_clear(self, s):
         """Skip every pending item at once - clear the queue to re-ingest."""
@@ -1138,7 +1175,7 @@ class ConsoleServer(ThreadingHTTPServer):
             return {"summary": ""}
         log = self.console.open(s.passphrase)
         models = Models(log, Vault(log, key=self.console._vault_key(s.passphrase)))
-        props = _route_ingest(models, Meter(log), [text[:400]])
+        props = _route_ingest(models, Meter(log), [text[:4000]])
         p = props[0] if props else {}
         return {"summary": p.get("summary", ""), "business": p.get("business", ""),
                 "why": p.get("why", "")}
@@ -1336,6 +1373,20 @@ def _ingest_catalogue():
                      for b in BUSINESSES)
 
 
+_CODE_EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".md", ".json",
+             ".yml", ".yaml", ".toml", ".sh", ".sql", ".go", ".rs", ".java", ".rb",
+             ".txt", ".cfg", ".ini")
+
+
+def _ingestable(path):
+    """A repo file worth learning: a code/text file, not a binary or vendored noise."""
+    p = (path or "").lower()
+    if any(seg in ("node_modules", ".git", "dist", "build", "__pycache__", "vendor")
+           for seg in p.split("/")):
+        return False
+    return p.endswith(_CODE_EXT)
+
+
 def _extract_json_array(raw):
     """Pull a JSON array out of a model reply that may be fenced or prose-wrapped.
 
@@ -1389,10 +1440,13 @@ def _route_ingest(models, meter, chunks):
               "ALWAYS pick one, never leave it empty; if you are unsure, still give "
               "your best guess with a low confidence and the person will correct it. "
               "Also give: how sure you are (0.0-1.0); a 3-word reason; and a "
-              "'summary' — ONE plain sentence saying what it actually IS or says, so "
-              "a person can check you read it right. Reply with a JSON array ONLY, "
-              "one object per document, in order: [{\"i\":1,\"business\":\"slug\","
-              "\"confidence\":0.0,\"why\":\"...\",\"summary\":\"one sentence\"}]")
+              "'summary' — a COMPACT SHORTHAND (2-3 sentences) distilling what it "
+              "is, its key pieces/functions, and why it matters. This shorthand is "
+              "the DURABLE KNOWLEDGE that gets learned — not the raw text — so make "
+              "it self-contained and information-dense, the way you'd note a file so "
+              "you understand it later without re-reading it. Reply with a JSON "
+              "array ONLY, one object per document, in order: [{\"i\":1,\"business\""
+              ":\"slug\",\"confidence\":0.0,\"why\":\"...\",\"summary\":\"2-3 sentence shorthand\"}]")
     numbered = "\n".join(f"{i + 1}. {c[:3000]}" for i, c in enumerate(chunks))
     try:
         raw, pt, ct = _provider_call(choice.provider, choice.model, key,

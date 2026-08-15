@@ -772,12 +772,12 @@ function loadIngest(){
   var gl=document.createElement("label");gl.textContent="or GitHub";grow.appendChild(gl);
   var grepo=document.createElement("input");grepo.type="text";grepo.placeholder="repo, e.g. Rosco-v1";grepo.autocomplete="off";
   grepo.style.cssText="flex:1;min-width:110px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
-  var gpath=document.createElement("input");gpath.type="text";gpath.placeholder="path, e.g. DESIGN.md";gpath.autocomplete="off";
+  var gpath=document.createElement("input");gpath.type="text";gpath.placeholder="path, or blank = whole repo";gpath.autocomplete="off";
   gpath.style.cssText=grepo.style.cssText;
   var gbtn=document.createElement("button");gbtn.className="ing-go";gbtn.textContent="Pull from GitHub";
   var gmsg=document.createElement("span");gmsg.className="ksst";
-  gbtn.addEventListener("click",function(){var rp=grepo.value.trim(),pt=gpath.value.trim();if(!rp||!pt)return;
-    gbtn.disabled=true;gmsg.className="ksst";gmsg.textContent="reading GitHub…";
+  gbtn.addEventListener("click",function(){var rp=grepo.value.trim(),pt=gpath.value.trim();if(!rp)return;
+    gbtn.disabled=true;gmsg.className="ksst";gmsg.textContent=pt?"reading GitHub…":"downloading the repo…";
     post("/api/ingest/github",{repo:rp,path:pt}).then(function(r){gbtn.disabled=false;
       if(r.ok){gpath.value="";gmsg.className="ksst g";gmsg.textContent="queued "+r.j.added+" from "+(r.j.file||rp);loadIngest();}
       else{gmsg.className="ksst r";gmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
@@ -813,12 +813,13 @@ function loadIngest(){
 function ingestCard(item){
   var card=document.createElement("div");card.className="ing-card";
   var txt=document.createElement("div");txt.className="ing-text";txt.textContent=item.text;card.appendChild(txt);
+  var shorthand=item.summary||"";   // the distilled form that actually gets learned (not the raw text)
   var rd=document.createElement("div");rd.className="ing-reads";
-  rd.innerHTML="<span class='rl'>Rosco reads this as</span> <span class='rv'>"+(item.summary?esc(item.summary):"reading…")+"</span>";
+  rd.innerHTML="<span class='rl'>Rosco's shorthand (this is what gets learned)</span> <span class='rv'>"+(item.summary?esc(item.summary):"distilling…")+"</span>";
   card.appendChild(rd);
   if(!item.summary){post("/api/ingest/read",{text:item.text}).then(function(r){
     var v=rd.querySelector(".rv");if(!v)return;
-    if(r.ok&&r.j&&r.j.summary){v.textContent=r.j.summary;}
+    if(r.ok&&r.j&&r.j.summary){shorthand=r.j.summary;v.textContent=r.j.summary;}
     else{v.textContent="(couldn't read — "+esc((r.j&&(r.j.why||r.j.error))||"no reason given")+")";}
   }).catch(function(){var v=rd.querySelector(".rv");if(v)v.textContent="(couldn't read — server unreachable)";});}
   var prop=document.createElement("div");prop.className="ing-prop";
@@ -835,7 +836,7 @@ function ingestCard(item){
   ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bizTitle(bz);if(bz===ingDef)o.selected=true;sel.appendChild(o);});
   row.appendChild(sel);
   var go=document.createElement("button");go.className="ing-go";go.textContent="Ingest here";
-  go.addEventListener("click",function(){lastIngestBiz=sel.value;decideIngest(item.cand,sel.value,"ingest",card);});
+  go.addEventListener("click",function(){lastIngestBiz=sel.value;decideIngest(item.cand,sel.value,"ingest",card,shorthand);});
   var skip=document.createElement("button");skip.className="ing-skip";skip.textContent="Skip";
   skip.addEventListener("click",function(){decideIngest(item.cand,"","skip",card);});
   row.appendChild(go);row.appendChild(skip);card.appendChild(row);
@@ -858,9 +859,9 @@ function ingestCard(item){
   setTimeout(function(){((lastIngestBiz||item.business)?go:sel).focus();},0);
   return card;
 }
-function decideIngest(cand,business,action,card){
+function decideIngest(cand,business,action,card,shorthand){
   if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=true;});
-  post("/api/ingest/decide",{cand:cand,business:business,action:action}).then(function(r){
+  post("/api/ingest/decide",{cand:cand,business:business,action:action,shorthand:shorthand||""}).then(function(r){
     if(r.ok){loadIngest();}
     else{alert((r.j&&r.j.error)||"couldn't decide");if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=false;});}
   });
