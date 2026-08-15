@@ -1,0 +1,23 @@
+# The log itself. This is the live system of record for a node - grants,
+# learning, encrypted secrets. It is per-machine by design and must never be
+# committed, because two nodes sharing a git history would share a hash chain
+# they cannot both extend.
+*.db
+*.db-wal
+*.db-shm
+var/
+data/
+
+# Anything holding a real credential.
+.env
+.env.*
+config.json
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
