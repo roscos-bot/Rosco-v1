@@ -240,6 +240,104 @@ replicated everywhere. RUM's QBO token is wrapped for the shop; SteelHaven's
 Workspace credentials for the house; the cloud VM is entitled to none and
 therefore cannot open anything it relays.
 
+## Enrolment — how people get into the book
+
+Decided 14 Aug 2026. Ross doesn't type Telegram ids by hand; people enrol
+themselves through a link. **SMS only for now** — no email invite path.
+
+**The link proposes; it never enrols.** Attaching a handle to a person is handing
+them that person's permissions one step removed, so it is a grant, and only Ross
+writes those. The web node holds no key of his and physically cannot write an
+`identity.enrolled` event.
+
+Three event kinds:
+
+| kind | proof | meaning |
+|---|---|---|
+| `identity.invited` | AUTHORED | Ross: "I'm inviting someone I'll call Brent." Holds a *hash* of the token, an expiry, single-use. |
+| `identity.claimed` | NODE | The web node: "invite X completed; these channels were proven, by these methods." |
+| `identity.enrolled` | AUTHORED | Ross confirms at the console. The real thing. |
+
+**The flow:** Ross names the person and supplies their number → the system texts
+the invite link → they open it (having thereby proven they hold the phone) → they
+do the Telegram bot handshake, which proves control of an actual account id
+rather than an address → Ross confirms at the console.
+
+Texting the link rather than emailing it removes the interception hole entirely:
+the invite only ever arrives on a number Ross nominated, so an attacker who sees
+the link never had a way to receive it.
+
+### Ross enrols himself differently — the bootstrap
+
+Everyone else is enrolled *by* Ross, so Ross cannot be. His own pairing is a
+bootstrap, and it is also the most security-critical handle in the system: his
+Telegram id is what earns the ungated bypass in `grants.decide()`.
+
+**The console generates a code and displays it. Nothing transmits it.** Ross
+messages that code to the bot from his own Telegram account; the bot sees which
+account id sent it, and the pairing is written at the console with his signing
+key. Short expiry, single use.
+
+The delivery method is the whole point. Every other channel that could carry the
+code — SMS, email, Chat — is weaker than the handle being created, and would
+become the soft path to the most powerful identity in the system. The console is
+already the authority (it holds his key), so a code that never leaves it adds no
+new attack surface.
+
+It is the same bot handshake other people do. Only the delivery differs: console
+for Ross, SMS for everyone else. One code path, two ways in.
+
+**Re-pairing must be loud, and singular.** The system should refuse to hold two
+live `ross` Telegram handles at once — a second must explicitly replace the
+first, never sit quietly alongside it. Adding rather than replacing is how a
+spare key gets left in the door.
+
+**What this does not defend against, stated plainly:** somebody with console
+access can pair their own Telegram as Ross. That is not a new hole — console
+access already means possession of his signing key, at which point they can
+write any grant they like directly. The console is the trust boundary; this
+neither widens nor narrows it.
+
+### SMS proves enrolment; it does not promote phone to STRONG
+
+Two different claims, and it would be easy to slide from one to the other. At
+enrolment, an SMS code binds the session to a human Ross vouched for — good.
+Ongoing, phone stays WEAK in `grants.py`: caller ID is spoofable, SMS is
+interceptable via SIM swap and SS7, and numbers get recycled. The phone gets
+someone *enrolled*; Telegram is what lets them *act* without waiting.
+
+### Constraint: no endpoint may text a user-supplied number
+
+The number always comes from Ross's invite, never from a form field. An open
+"send me a code" endpoint is a standard SMS-pumping fraud target — an attacker
+funnels codes to premium-rate numbers they profit from and the bill lands here.
+Keeping the number Ross-supplied kills that outright. **This is a security
+property, not an inconvenience — do not "improve" it into a self-service field.**
+
+Code hygiene: 6 digits, ~5 minute expiry, single use, capped attempts,
+constant-time compare, hashed at rest. The log never holds a live code.
+
+### What the user is told
+
+> The channel you verify decides what you can do without waiting. Verify Telegram
+> and you can act directly. Email and phone are recorded, but anything you ask
+> through them waits for Ross — because a sender address and a caller ID can both
+> be faked, and we treat them that way.
+
+That is not reassurance-speak; it is exactly what `grants.decide()` does.
+
+**Data minimisation:** the page collects channel identifiers and nothing else. No
+date of birth, no address, no security questions. Knowledge-based verification
+was considered and rejected — the answers are guessable, findable, or known to
+precisely the people most likely to impersonate someone. Ross's out-of-band
+knowledge is used at the *confirmation* step instead, where he already knows
+whether he was expecting this.
+
+**Ross's one-time setup:** a Twilio account, US A2P 10DLC brand and campaign
+registration (unregistered application-to-person SMS gets filtered or blocked,
+links especially, and it takes days), and the SID and auth token stored in the
+vault under `system` at the console.
+
 ## Still open
 
 Recorded here so they are not silently decided by whoever writes the code next:
