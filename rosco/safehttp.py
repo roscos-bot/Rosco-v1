@@ -74,7 +74,10 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
         data = json.dumps(payload).encode()
         h["Content-Type"] = "application/json"
     if bearer:
-        h["Authorization"] = f"Bearer {bearer}"
+        # Strip the credential: a pasted key often carries a trailing newline,
+        # and a header value with a newline in it is both malformed (some
+        # providers 400 it) and a header-injection shape. One .strip() closes both.
+        h["Authorization"] = f"Bearer {bearer.strip()}"
     if headers:
         h.update(headers)
 

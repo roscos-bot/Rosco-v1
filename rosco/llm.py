@@ -49,7 +49,7 @@ def _provider_call(provider, model, key, system, user, max_tokens, temperature,
     if provider == ANTHROPIC:
         d = safehttp.call(
             "https://api.anthropic.com/v1/messages", method="POST", timeout=timeout,
-            headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+            headers={"x-api-key": key.strip(), "anthropic-version": "2023-06-01"},
             payload={"model": model, "max_tokens": max_tokens, "system": system,
                      "messages": [{"role": "user", "content": user}]})
         text = "".join(p.get("text", "") for p in (d.get("content") or [])

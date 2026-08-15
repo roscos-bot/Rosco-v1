@@ -344,14 +344,16 @@ def _list_models(provider, key):
     """The model ids a provider currently serves. Over safehttp, no redirects."""
     from . import safehttp
     if provider == "openrouter":
-        d = safehttp.call("https://openrouter.ai/api/v1/models", method="GET",
-                          bearer=key or None)
+        # The listing is PUBLIC - do NOT send the key. Sending a key with a
+        # stray newline (a common paste artifact) makes OpenRouter 400 the
+        # listing, which emptied the dropdown and dropped it back to a text box.
+        d = safehttp.call("https://openrouter.ai/api/v1/models", method="GET")
         return sorted({m.get("id", "") for m in (d.get("data") or []) if m.get("id")})
     if provider == "anthropic":
         if not key:
             raise RuntimeError("no anthropic key stored")
         d = safehttp.call("https://api.anthropic.com/v1/models", method="GET",
-                          headers={"x-api-key": key, "anthropic-version": "2023-06-01"})
+                          headers={"x-api-key": key.strip(), "anthropic-version": "2023-06-01"})
         return sorted({m.get("id", "") for m in (d.get("data") or []) if m.get("id")})
     if provider == "openai":
         if not key:

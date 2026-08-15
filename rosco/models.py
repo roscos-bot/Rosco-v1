@@ -201,7 +201,10 @@ class Models:
             return ""
         if self.vault is None:
             return None
-        return self.vault.get_secret(SYSTEM, secret_name(choice.provider))
+        # Stripped: a key pasted with a trailing newline would otherwise ride
+        # into the request header malformed and be rejected by the provider.
+        v = self.vault.get_secret(SYSTEM, secret_name(choice.provider))
+        return v.strip() if v else v
 
     def missing(self, *, node: str = "") -> list[str]:
         """Providers a current choice needs and the vault does not hold.
