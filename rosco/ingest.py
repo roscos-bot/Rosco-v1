@@ -138,6 +138,24 @@ class Ingest:
             subject=business or prop.get("source", "ingest"), actor=by)
         return {"ok": True, "accepted": accepted}
 
+    def clear_pending(self, *, by: str = "ross") -> int:
+        """Skip every still-pending candidate at once - a queue reset.
+
+        Each gets a NODE ingest.decided(action='skip'), so nothing is learned and
+        the proposals stay on the append-only log as history; they just leave the
+        pending view. This is the way to wipe a batch that was split badly (e.g.
+        headings orphaned from their bodies) and re-ingest the doc cleanly.
+        """
+        n = 0
+        for item in self.pending():
+            self.log.append(
+                "ingest.decided",
+                {"cand": item["cand"], "action": "skip", "business": "",
+                 "proposed": item.get("business", ""), "accepted": False},
+                subject=item.get("source", "ingest"), actor=by)
+            n += 1
+        return n
+
     # ---- how good is Rosco getting at this? ------------------------------
 
     def readiness(self) -> dict:

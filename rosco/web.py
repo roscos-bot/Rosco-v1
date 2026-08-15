@@ -1115,6 +1115,12 @@ class ConsoleServer(ThreadingHTTPServer):
                                          body.get("business", ""),
                                          body.get("action", "ingest"))
 
+    def ingest_clear(self, s):
+        """Skip every pending item at once - clear the queue to re-ingest."""
+        from .ingest import Ingest
+        n = Ingest(self.console.open(s.passphrase)).clear_pending()
+        return {"ok": True, "cleared": n}
+
     def ingest_readiness(self, s):
         from .ingest import Ingest
         return Ingest(self.console.open(s.passphrase)).readiness()
@@ -1732,6 +1738,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.server.ingest_read(s, body))
             if self.path == "/api/ingest/decide":
                 return self._send(200, self.server.ingest_decide(s, body))
+            if self.path == "/api/ingest/clear":
+                return self._send(200, self.server.ingest_clear(s))
             if self.path.startswith("/api/cfg/"):
                 msg = self.server.cfg(s, self.path[len("/api/cfg/"):], body)
                 return self._send(200, {"ok": True, "msg": msg})

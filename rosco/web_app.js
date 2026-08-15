@@ -790,7 +790,16 @@ function loadIngest(){
     var bar=document.createElement("div");bar.className="ing-bar";
     var l=document.createElement("span");l.textContent=q.length+" waiting";
     var rt=document.createElement("span");rt.textContent=(rd.decided||0)+" placed · "+Math.round((rd.rate||0)*100)+"% on target";
-    bar.appendChild(l);bar.appendChild(rt);host.appendChild(bar);
+    bar.appendChild(l);bar.appendChild(rt);
+    if(q.length){var cl=document.createElement("button");cl.className="ing-clear";cl.textContent="Clear queue";
+      cl.addEventListener("click",function(){
+        if(!confirm("Skip all "+q.length+" pending item(s)? They stay on the log as history but leave the queue, so you can re-ingest cleanly.")) return;
+        cl.disabled=true;cl.textContent="clearing…";
+        post("/api/ingest/clear",{}).then(function(r){ if(r.ok){loadIngest();}
+          else{cl.disabled=false;cl.textContent="Clear queue";alert((r.j&&r.j.error)||"couldn't clear");} })
+          .catch(function(){cl.disabled=false;cl.textContent="Clear queue";alert("server unreachable");});});
+      bar.appendChild(cl);}
+    host.appendChild(bar);
     if(!q.length){var e=document.createElement("div");e.className="ing-empty";e.textContent="Nothing to review. Paste something above to begin.";host.appendChild(e);return;}
     host.appendChild(ingestCard(q[0]));
   });
