@@ -45,6 +45,15 @@ from .tools import Tools
 from .vault import Vault
 
 APP = (Path(__file__).parent / "web_app.html")
+APP_JS = (Path(__file__).parent / "web_app.js")
+
+# script-src is 'self' with NO 'unsafe-inline': the page's script is served as a
+# separate file, so an injected inline handler (an <img onerror=...> smuggled
+# through log data) cannot execute even if an escaping sink is ever missed. This
+# is the layer that makes the XSS class un-exploitable rather than just patched.
+CSP_PAGE = ("default-src 'self'; style-src 'unsafe-inline'; script-src 'self'; "
+            "img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'")
+CSP_API = "default-src 'none'"
 
 
 class Session:
@@ -70,6 +79,11 @@ class ConsoleServer(ThreadingHTTPServer):
         return self.console.open(s.passphrase if s else None)
 
     def overview(self, s):
+        # While locked, disclose nothing and do no work. /api/overview is the one
+        # endpoint served before the session gate, so a locked reply must not
+        # leak the spend total or the queue depth, nor run verify() unauthenticated.
+        if s is None:
+            return {"node": "console", "unlocked": False}
         log = self.console.open()
         asks = Asks(log)
         meter = Meter(log)
@@ -198,8 +212,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
-        # No external anything: the page is self-contained and same-origin only.
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+        self.send_header("Content-Security-Policy", CSP_API)
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -218,9 +231,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(html)))
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:")
+            self.send_header("Content-Security-Policy", CSP_PAGE)
             self.end_headers()
             return self.wfile.write(html)
+        if self.path == "/app.js":
+            try:
+                js = APP_JS.read_bytes()
+            except OSError:
+                js = b"/* web_app.js missing */"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(js)))
+            self.send_header("Content-Security-Policy", CSP_PAGE)
+            self.end_headers()
+            return self.wfile.write(js)
 
         srv = self.server
         if self.path == "/api/overview":

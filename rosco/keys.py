@@ -185,6 +185,12 @@ ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("vault.corrected", "basis"): ("told", "observed", "inferred"),
     ("node.registered", "role"): ("site", "rendezvous"),
     ("grant.given", "scope"): ("all", "subject"),
+    # A raised ask's verb is get or do, nothing else. This is the first line
+    # against a compromised node planting an ask whose "verb" is a script
+    # payload the dashboard would render - a malformed verb is now dropped at
+    # absorb() and replay(), before it can reach any screen. The dashboard also
+    # escapes it and forbids inline script, so it is three layers deep.
+    ("ask.raised", "verb"): ("get", "do"),
 }
 
 

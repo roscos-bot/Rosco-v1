@@ -27,9 +27,13 @@ so the conflict is named rather than discovered later in something that shipped.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from urllib.error import HTTPError
 
 from .keys import ROSS
 from .models import SYSTEM
@@ -38,6 +42,38 @@ from .store import Log
 HTTP = "http"        # a plain JSON-over-HTTPS endpoint
 MCP = "mcp"          # a Model Context Protocol server
 KINDS = (HTTP, MCP)
+
+MAX_RESPONSE = 4 * 1024 * 1024      # 4 MB; a tool reply larger than this is refused
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow no redirects. Ever.
+
+    An audit found urllib re-sends the Authorization header across a redirect,
+    so a compromised tool endpoint could answer 302 -> attacker.example and walk
+    off with the vault credential. It also re-issues the request to whatever
+    host the response names, which is server-side request forgery. Refusing
+    every redirect closes both: the bearer only ever reaches the exact https
+    host Ross registered, and a malicious response cannot redirect us anywhere.
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HTTPError(req.full_url, code,
+                        f"refusing a redirect to {newurl!r}; the credential stays "
+                        f"with the registered host", headers, fp)
+
+
+def _is_internal(host: str) -> bool:
+    """Does this host resolve to somewhere we must never send a credential?"""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_loopback or ip.is_private or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast):
+            return True
+    return False
 
 
 @dataclass
@@ -82,6 +118,11 @@ class Tools:
             raise ValueError(f"kind must be one of {', '.join(KINDS)}")
         if not (name or "").strip() or not (endpoint or "").strip():
             raise ValueError("a tool needs a name and an endpoint")
+        # HTTP tools carry a bearer credential, so the endpoint must be https -
+        # a plaintext endpoint would put the vault secret on the wire in the
+        # clear, and there is no reason to register one.
+        if kind == HTTP and auth_secret and not endpoint.strip().lower().startswith("https://"):
+            raise ValueError("a tool with a credential must have an https endpoint")
         return self.log.append(
             "tool.registered",
             {"name": name.strip().lower(), "kind": kind, "endpoint": endpoint.strip(),
@@ -142,10 +183,20 @@ class Tools:
         t = self.find(name)
         if t is None:
             raise ValueError(f"no such tool {name!r}")
-        if business and not t.reachable_by(business):
-            raise PermissionError(f"{name!r} is not offered to {business}")
+        # Fail CLOSED on the offered-to check. The gate used to be skipped when
+        # `business` was falsy, so a caller that passed nothing reached a tool it
+        # was never offered. A business-scoped tool now refuses an unnamed caller.
+        if "*" not in t.businesses and not t.reachable_by(business or ""):
+            raise PermissionError(
+                f"{name!r} is not offered to {business or '(no business given)'}")
         if t.kind != HTTP:
             raise NotImplementedError(f"{t.kind} tools are not wired yet")
+
+        host = urllib.parse.urlparse(t.endpoint).hostname or ""
+        if t.auth_secret and _is_internal(host):
+            raise PermissionError(
+                f"{name!r} resolves to an internal address ({host}); refusing to "
+                f"send a credential there")
 
         headers = {"Content-Type": "application/json"}
         if t.auth_secret:
@@ -157,5 +208,9 @@ class Tools:
             headers["Authorization"] = f"Bearer {key}"
         req = urllib.request.Request(t.endpoint, data=json.dumps(payload).encode(),
                                      headers=headers)
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.loads(r.read().decode())
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(req, timeout=60) as r:
+            body = r.read(MAX_RESPONSE + 1)
+        if len(body) > MAX_RESPONSE:
+            raise ValueError(f"{name!r} returned more than {MAX_RESPONSE} bytes; refused")
+        return json.loads(body.decode())

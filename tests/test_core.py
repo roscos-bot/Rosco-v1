@@ -920,6 +920,33 @@ def main() -> int:
                          PermissionError)
     tt.retire("higgsfield")
     fails += not check("a retired tool is gone", tt.find("higgsfield"), None)
+    # HOSTILE: a credentialled tool must be https, or the key goes out in clear.
+    fails += not refuses("a credentialled tool must be https",
+                         lambda: tt.register("leaky", "http://x", auth_secret="k"))
+    # HOSTILE: the offered-to check fails CLOSED - an unnamed caller is refused,
+    # not waved through (it used to skip the gate when business was empty).
+    tt.register("scoped", "https://ok.example", businesses=("rum",),
+                auth_secret="scoped_key")
+    tv2 = Vault(tl, key=derive_key("pw", b"s"))
+    fails += not refuses("a business-scoped tool refuses an unnamed caller",
+                         lambda: tt.invoke("scoped", {}, vault=tv2, business=""),
+                         PermissionError)
+
+    print("\nHOSTILE / QUEUE XSS AT INGESTION")
+    # The web audit's critical: a compromised node planted an ask whose verb was
+    # a script payload the dashboard rendered. The verb enum now drops it at the
+    # log's front door, before any screen ever sees it.
+    xl = fresh("console")
+    fails += not refuses("an ask.raised with a script-payload verb is refused",
+                         lambda: xl.append("ask.raised",
+                                           {"person": "x", "business": "rum",
+                                            "capability": "stock",
+                                            "verb": "<img src=x onerror=alert(1)>"}),
+                         Unauthorised)
+    fails += not check("a normal verb still writes",
+                       xl.append("ask.raised", {"person": "x", "business": "rum",
+                                                "capability": "stock", "verb": "get"}
+                                 )["kind"], "ask.raised")
 
     print("\nSUBJECT SCOPE")
     # Ross's rule for his brother and sister: personal information, if it is

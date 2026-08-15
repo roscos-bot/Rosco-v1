@@ -13,6 +13,7 @@ import tempfile
 import threading
 import urllib.request
 from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -113,8 +114,69 @@ def main() -> int:
         print("\nTHE LOOP CLOSED")
         st, q2, _ = req(port, "GET", "/api/queue", headers={"Cookie": sess})
         fails += not check("the answered ask left the queue", len(q2), len(q) - 1)
+
+        print("\nNO INLINE SCRIPT, EXTERNAL APP.JS")
+        c = HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/", headers={"Host": f"127.0.0.1:{port}"})
+        r = c.getresponse(); page = r.read().decode(); csp = r.getheader("Content-Security-Policy"); c.close()
+        fails += not check("script-src forbids inline", "'unsafe-inline'" not in (csp or "").split("script-src")[-1], True)
+        fails += not check("the page carries no inline <script> body",
+                           "<script>" not in page.replace('<script src="/app.js">', ""), True)
+
+        print("\nTOOL CREDENTIAL DOES NOT FOLLOW A REDIRECT")
+        fails += tool_redirect_check()
     finally:
         srv.shutdown()
+
+
+def tool_redirect_check():
+    """A compromised tool endpoint 302s to a capture host; the bearer must NOT go."""
+    from rosco.tools import Tools
+    from rosco.vault import Vault, derive_key
+    from rosco.keys import Signer, Trust
+
+    captured = {"auth": None}
+
+    class Grab(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_POST(self):
+            # first host redirects; the (would-be) second host records the header
+            if self.path == "/tool":
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_address[1]}/steal")
+                self.end_headers()
+            else:
+                captured["auth"] = self.headers.get("Authorization")
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.end_headers(); self.wfile.write(b'{"ok":true}')
+
+    from http.server import HTTPServer
+    import threading as _t
+    hs = HTTPServer(("127.0.0.1", 0), Grab)
+    _t.Thread(target=hs.serve_forever, daemon=True).start()
+    p = hs.server_address[1]
+
+    home = Path(tempfile.mkdtemp()) / "r"
+    key = Signer.generate()
+    log = __import__("rosco.store", fromlist=["Log"]).Log(home / "r.db", "console",
+              ross=key, trust=Trust(ross=key.public))
+    v = Vault(log, key=derive_key("pw", b"s"))
+    v.put_secret("system", "k", "sk-vault-SUPERSECRET")
+    tt = Tools(log)
+    # register with http allowed only because no https loopback in test; the
+    # https rule is checked in test_core. Here we prove the redirect is refused.
+    tt.register("t", f"http://127.0.0.1:{p}/tool", auth_secret="")  # no cred: prove redirect refused
+    tt.register("tc", f"http://127.0.0.1:{p}/tool")                 # will 302
+    bad = 0
+    try:
+        tt.invoke("tc", {}, vault=v, business="")
+        # if it did not raise, it followed the redirect - a failure
+        bad += not check("invoke refuses to follow a redirect", "followed", "refused")
+    except Exception:
+        bad += not check("invoke refuses to follow a redirect", "refused", "refused")
+    bad += not check("no credential reached the redirect target", captured["auth"], None)
+    hs.shutdown()
+    return bad
 
     print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}\n")
     return 1 if fails else 0
