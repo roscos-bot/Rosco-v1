@@ -450,6 +450,28 @@ class Console:
                        f"tool:{t.name}" + (f"  !! {t.caution}" if t.caution else ""))
         return "\n".join(out)
 
+    def github_link(self, passphrase: str, business: str, repo: str, *,
+                    branch: str = "main", secret: str = "github_token") -> str:
+        from .github import GitHub
+        if "/" not in repo:
+            raise SystemExit("repo must be owner/name, e.g. fuzzeh84/shhops")
+        owner, name = repo.split("/", 1)
+        GitHub(self.open(passphrase)).link(business, owner, name,
+                                           default_branch=branch, token_secret=secret)
+        return (f"linked {business} -> {repo} (default {branch})\n"
+                f"store the token:  rosco secret set system {secret}\n"
+                f"then grant agents:  rosco give <agent> {business} git:read\n"
+                f"                    rosco give <agent> {business} git:propose --verb do\n"
+                f"agents may branch, commit and open PRs - never merge. You merge on GitHub.")
+
+    def github_list(self) -> str:
+        from .github import GitHub
+        rows = GitHub(self.open()).all()
+        if not rows:
+            return "no repos linked"
+        return "\n".join(f"  {r.business:14} {r.slug:30} default {r.default_branch}"
+                         for r in rows)
+
     def vault_read(self, business: str) -> str:
         return Vault(self.open()).to_markdown(business)
 
@@ -577,6 +599,12 @@ def main(argv: list[str] | None = None) -> int:
     ta.add_argument("--secret", default=""); ta.add_argument("--caution", default="")
     tsub.add_parser("list")
 
+    gh = sub.add_parser("github", help="link businesses to repos; agents propose, you merge")
+    gsub = gh.add_subparsers(dest="gcmd")
+    gl = gsub.add_parser("link"); gl.add_argument("business"); gl.add_argument("repo")
+    gl.add_argument("--branch", default="main"); gl.add_argument("--secret", default="github_token")
+    gsub.add_parser("list")
+
     va = sub.add_parser("vault", help="what the agents have learned")
     va.add_argument("business")
 
@@ -643,6 +671,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(c.budget_set(_ask_pass(), args.scope, args.usd))
             else:
                 print(c.budget_show())
+        elif args.cmd == "github":
+            if args.gcmd == "link":
+                print(c.github_link(_ask_pass(), args.business, args.repo,
+                                    branch=args.branch, secret=args.secret))
+            else:
+                print(c.github_list())
         elif args.cmd == "tool":
             if args.tcmd == "add":
                 print(c.tool_add(_ask_pass(), args.name, args.endpoint, kind=args.kind,

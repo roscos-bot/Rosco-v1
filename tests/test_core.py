@@ -31,6 +31,7 @@ from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, Models,  # noq
                           secret_name)
 from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
 from rosco.store import Log, Unauthorised  # noqa: E402
+from rosco.github import GitHub  # noqa: E402
 from rosco.tools import Tools  # noqa: E402
 from rosco.vault import INFERRED, OBSERVED, TOLD, Vault, derive_key  # noqa: E402
 
@@ -931,6 +932,42 @@ def main() -> int:
     fails += not refuses("a business-scoped tool refuses an unnamed caller",
                          lambda: tt.invoke("scoped", {}, vault=tv2, business=""),
                          PermissionError)
+
+    print("\nGITHUB")
+    gl2 = fresh("console")
+    gh = GitHub(gl2)
+    fails += not refuses("only Ross links a repo",
+                         lambda: gh.link("rum", "fuzzeh84", "rumachines", by="rosco"),
+                         PermissionError)
+    fails += not refuses("a node without Ross's key cannot link one",
+                         lambda: GitHub(Log(Path(tempfile.mkdtemp()) / "g.db", "cloud",
+                                            trust=Trust(ross=ROSS_KEY.public))
+                                        ).link("rum", "x", "y"),
+                         Unauthorised)
+    gh.link("rum", "fuzzeh84", "rumachines", token_secret="github_token")
+    fails += not check("a linked repo is found", gh.find("rum").slug, "fuzzeh84/rumachines")
+    # Using it is a grant, gated like anything else - read and propose separately.
+    gg = Grants(gl2)
+    fails += not check("git is untaught until granted",
+                       gg.decide(Request("steele", "rum", "git:propose", verb=DO,
+                                         channel=TG)).outcome, ASK)
+    gg.give("steele", "rum", "git:read", verb=GET)
+    gg.give("steele", "rum", "git:propose", verb=DO)
+    fails += not check("reading resolves once granted",
+                       gg.decide(Request("steele", "rum", "git:read", channel=TG)).outcome, SELF)
+    fails += not check("proposing resolves once granted",
+                       gg.decide(Request("steele", "rum", "git:propose", verb=DO,
+                                         channel=TG)).outcome, SELF)
+    # There is no merge capability or operation at all - agents propose, never ship.
+    fails += not check("the module exposes no merge operation",
+                       hasattr(gh, "merge"), False)
+    # The token is required and comes from the vault, never elsewhere.
+    gv = Vault(gl2, key=derive_key("pw", b"s"))
+    fails += not refuses("an operation without the stored token refuses",
+                         lambda: gh.read_file("rum", "README.md", vault=gv),
+                         RuntimeError)
+    fails += not refuses("an operation on an unlinked business refuses",
+                         lambda: gh.read_file("steelhaven", "x", vault=gv), ValueError)
 
     print("\nHOSTILE / QUEUE XSS AT INGESTION")
     # The web audit's critical: a compromised node planted an ask whose verb was

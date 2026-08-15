@@ -112,6 +112,12 @@ KINDS: dict[str, str] = {
     # widens what the system can do, so it is authority, like a grant.
     "tool.registered": AUTHORED,
     "tool.retired": AUTHORED,
+
+    # GitHub - linking a business to a repo is authority; a proposal (branch,
+    # commit, PR) an agent makes is a plain node fact, recorded for the log.
+    "github.linked": AUTHORED,
+    "github.unlinked": AUTHORED,
+    "github.proposed": NODE,
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -174,6 +180,10 @@ REQUIRED: dict[str, tuple[str, ...]] = {
 
     "tool.registered": ("name", "kind", "endpoint"),
     "tool.retired": ("name",),
+
+    "github.linked": ("business", "owner", "name"),
+    "github.unlinked": ("business",),
+    "github.proposed": ("business", "agent", "branch"),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a

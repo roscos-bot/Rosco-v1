@@ -128,6 +128,9 @@ def main() -> int:
     finally:
         srv.shutdown()
 
+    print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}\n")
+    return 1 if fails else 0
+
 
 def tool_redirect_check():
     """A compromised tool endpoint 302s to a capture host; the bearer must NOT go."""

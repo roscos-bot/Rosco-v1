@@ -27,14 +27,9 @@ so the conflict is named rather than discovered later in something that shipped.
 """
 from __future__ import annotations
 
-import ipaddress
-import json
-import socket
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
-from urllib.error import HTTPError
 
+from . import safehttp
 from .keys import ROSS
 from .models import SYSTEM
 from .store import Log
@@ -42,38 +37,6 @@ from .store import Log
 HTTP = "http"        # a plain JSON-over-HTTPS endpoint
 MCP = "mcp"          # a Model Context Protocol server
 KINDS = (HTTP, MCP)
-
-MAX_RESPONSE = 4 * 1024 * 1024      # 4 MB; a tool reply larger than this is refused
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Follow no redirects. Ever.
-
-    An audit found urllib re-sends the Authorization header across a redirect,
-    so a compromised tool endpoint could answer 302 -> attacker.example and walk
-    off with the vault credential. It also re-issues the request to whatever
-    host the response names, which is server-side request forgery. Refusing
-    every redirect closes both: the bearer only ever reaches the exact https
-    host Ross registered, and a malicious response cannot redirect us anywhere.
-    """
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise HTTPError(req.full_url, code,
-                        f"refusing a redirect to {newurl!r}; the credential stays "
-                        f"with the registered host", headers, fp)
-
-
-def _is_internal(host: str) -> bool:
-    """Does this host resolve to somewhere we must never send a credential?"""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return False
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_loopback or ip.is_private or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast):
-            return True
-    return False
 
 
 @dataclass
@@ -192,25 +155,13 @@ class Tools:
         if t.kind != HTTP:
             raise NotImplementedError(f"{t.kind} tools are not wired yet")
 
-        host = urllib.parse.urlparse(t.endpoint).hostname or ""
-        if t.auth_secret and _is_internal(host):
-            raise PermissionError(
-                f"{name!r} resolves to an internal address ({host}); refusing to "
-                f"send a credential there")
-
-        headers = {"Content-Type": "application/json"}
+        key = None
         if t.auth_secret:
             key = vault.get_secret(SYSTEM, t.auth_secret)
             if not key:
                 raise RuntimeError(
                     f"{name!r} needs the vault secret system:{t.auth_secret}, "
                     f"which is not set. `rosco secret set system {t.auth_secret}`")
-            headers["Authorization"] = f"Bearer {key}"
-        req = urllib.request.Request(t.endpoint, data=json.dumps(payload).encode(),
-                                     headers=headers)
-        opener = urllib.request.build_opener(_NoRedirect)
-        with opener.open(req, timeout=60) as r:
-            body = r.read(MAX_RESPONSE + 1)
-        if len(body) > MAX_RESPONSE:
-            raise ValueError(f"{name!r} returned more than {MAX_RESPONSE} bytes; refused")
-        return json.loads(body.decode())
+        # safehttp enforces https, no-redirect, no-internal-target and the size
+        # cap when a credential is present - the hardening that lives in one place.
+        return safehttp.call(t.endpoint, method="POST", payload=payload, bearer=key)
