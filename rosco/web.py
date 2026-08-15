@@ -152,6 +152,40 @@ class ConsoleServer(ThreadingHTTPServer):
                     edges.append({"a": "t:" + t.name, "b": c.captain, "kind": "tool"})
         return {"nodes": nodes, "edges": edges}
 
+    # ---- live activity: what the agents are actually doing ----
+
+    _ACTIVITY = {
+        "agent.produced": ("drafted", "agent"),
+        "agent.answered": ("answered", "agent"),
+        "ask.raised": ("a request landed", "captain"),
+        "github.proposed": ("opened a PR", "captain"),
+    }
+
+    def activity(self, s, limit: int = 40):
+        """Recent real events, each pinned to a node in the mesh.
+
+        The frontend fires a light down the fibre into that node and flares it -
+        so the graph reacts to what the system is genuinely doing, not to a timer.
+        Read-only, session-gated, and it maps only events that name an agent or a
+        business; nothing here discloses a message body.
+        """
+        from .roster import business as biz_of
+        out = []
+        for ev in self.console.open().replay():
+            spec = self._ACTIVITY.get(ev["kind"])
+            if not spec:
+                continue
+            label, kind = spec
+            b = ev["body"]
+            if kind == "agent":
+                node = b.get("agent")
+            else:                                   # a business -> its captain
+                biz = biz_of(b.get("business", ""))
+                node = biz.captain if biz else None
+            if node:
+                out.append({"id": ev["id"], "node": node, "what": label, "at": ev["ts"]})
+        return out[-limit:]
+
     def grants_view(self, s):
         return [{"id": g.id, "person": g.person, "business": g.business,
                  "capability": g.capability, "verb": g.verb, "allow": g.allow,
@@ -254,6 +288,7 @@ class Handler(BaseHTTPRequestHandler):
         if s is None:
             return self._send(401, {"error": "locked"})
         views = {"/api/queue": srv.queue, "/api/mesh": srv.mesh,
+                 "/api/activity": srv.activity,
                  "/api/grants": srv.grants_view, "/api/people": srv.people_view,
                  "/api/spend": srv.spend_view}
         fn = views.get(self.path.split("?")[0])

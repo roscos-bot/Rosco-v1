@@ -111,6 +111,15 @@ def main() -> int:
                        headers={"X-Rosco-CSRF": token})
         fails += not check("no cookie means no write", st, 401)
 
+        print("\nLIVE ACTIVITY FEED")
+        st, act, _ = req(port, "GET", "/api/activity", headers={"Cookie": sess})
+        fails += not check("activity reads with the session", st, 200)
+        # the pending bound-book ask (rum) should map to its captain, CaptainMorgan
+        fails += not check("a real event is pinned to the right captain node",
+                           any(e["node"] == "CaptainMorgan" for e in act), True)
+        fails += not check("and it is refused while locked",
+                           req(port, "GET", "/api/activity")[0], 401)
+
         print("\nTHE LOOP CLOSED")
         st, q2, _ = req(port, "GET", "/api/queue", headers={"Cookie": sess})
         fails += not check("the answered ask left the queue", len(q2), len(q) - 1)

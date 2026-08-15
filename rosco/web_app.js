@@ -23,7 +23,25 @@ document.getElementById("pw").addEventListener("keydown",function(e){if(e.key===
 api("/api/overview").then(function(res){ if(res.j&&res.j.unlocked){ /* still need CSRF; ask to re-unlock */ } });
 
 // ---- boot the live console ----
-function boot(){ refreshHud(); loadQueue(); loadMesh(); setInterval(refreshHud,8000); }
+var seenAct={}, actFirst=true;
+function boot(){ refreshHud(); loadQueue(); loadMesh();
+  setInterval(refreshHud,8000); setInterval(loadQueue,15000);
+  setInterval(loadActivity,4000); setTimeout(loadActivity,1200); }
+
+// Fire a light into every node that just DID something. On the first poll we
+// only mark events seen (no burst of history); after that each new one flares.
+function loadActivity(){ api("/api/activity").then(function(res){var a=res.j||[];
+  var rosco=byId["Rosco"];
+  a.forEach(function(ev){ if(seenAct[ev.id]) return; seenAct[ev.id]=1;
+    if(actFirst) return;
+    var to=byId[ev.node]; if(to==null) return;
+    if(rosco!=null && rosco!==to) signals.push({from:rosco,to:to,t:0,sp:.02});
+    if(N[to]) N[to].pulse=1;
+    var su=document.querySelector(".netcap .su");
+    if(su) su.innerHTML="<span style='color:var(--teal)'>● "+esc(ev.node)+" "+esc(ev.what)+"</span>";
+  });
+  actFirst=false;
+});}
 
 function refreshHud(){ api("/api/overview").then(function(res){var o=res.j;if(!o)return;
   document.getElementById("hud").innerHTML=
@@ -37,10 +55,20 @@ function stat(k,v){return "<div class='stat'><span class='k'>"+k+"</span><span c
 var SENS={"bound-book":1,"books":1,"payroll":1,"taxes":1,"transfers":1,"budget":1};
 function loadQueue(){ api("/api/queue").then(function(res){var q=res.j||[];var el=document.getElementById("qwrap");
   document.getElementById("rhead").textContent="Waiting on you · "+q.length;
+  markWaiting(q);
   if(!q.length){el.innerHTML="<div class='empty'>Nothing waiting. You're clear.</div>";return;}
   el.innerHTML=q.map(askCard).join("");
   q.forEach(function(a){ wireCard(a.id); });
 });}
+
+// Ring the captain of any business with a request waiting on Ross. The captain
+// is the agent node for that business that reports to Rosco.
+function markWaiting(q){
+  var wanted={}; q.forEach(function(a){ wanted[a.business]=1; });
+  N.forEach(function(n){
+    n.waiting = (n.type==="agent" && n.reports==="Rosco" && wanted[n.business]) ? 1 : 0;
+  });
+}
 function esc(s){return (s==null?"":""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
 function askCard(a){
   var sens=SENS[a.capability];
@@ -136,6 +164,8 @@ function frame(){var T=performance.now();
     ctx.globalCompositeOperation="source-over";ctx.globalAlpha=dim?.3:1;
     ctx.beginPath();ctx.arc(n.px,n.py,Math.max(1.2,base*(hi?1.25:1)),0,7);ctx.fillStyle=dim?"#3a4640":col;ctx.fill();
     if(n.core){ctx.beginPath();ctx.arc(n.px,n.py,base+4,0,7);ctx.strokeStyle=col;ctx.globalAlpha=dim?.2:.7;ctx.lineWidth=1;ctx.stroke();}
+    if(n.waiting&&!dim){var pw=base+7+2*Math.sin(T/300+n.tw);ctx.beginPath();ctx.arc(n.px,n.py,pw,0,7);
+      ctx.strokeStyle="#c9a227";ctx.globalAlpha=.5+.3*Math.sin(T/300+n.tw);ctx.lineWidth=1.4;ctx.stroke();}
     ctx.globalAlpha=1;
     if((n.r>=10||hi)&&!dim){ctx.font="700 "+(n.r>=14?12:10.5)+"px ui-monospace,Consolas,monospace";ctx.fillStyle="#e8efeb";ctx.textAlign="center";ctx.fillText(n.label,n.px,n.py-base-7);}
     ctx.globalCompositeOperation="lighter";}
@@ -164,4 +194,6 @@ TOOLS.forEach(function(t,i){var el=document.createElement("div");el.className="t
   el.addEventListener("click",function(){tel.querySelectorAll(".tool").forEach(function(x){x.classList.remove("on");});el.classList.add("on");});
   tel.appendChild(el);});
 
-resize();if(!reduce)setInterval(fire,850);requestAnimationFrame(frame);
+// Ambient pulses are just idle liveness now - real activity drives the graph
+// through loadActivity(), so keep the timer slow and let the log do the talking.
+resize();if(!reduce)setInterval(fire,3200);requestAnimationFrame(frame);
