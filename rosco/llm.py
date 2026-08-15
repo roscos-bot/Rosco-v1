@@ -40,12 +40,15 @@ def complete(models: Models, role: str, system: str, user: str, *,
     return text
 
 
-def _provider_call(provider, model, key, system, user, max_tokens, temperature):
+def _provider_call(provider, model, key, system, user, max_tokens, temperature,
+                   *, timeout: int = 60, force_json: bool = False):
     """(text, prompt_tokens, completion_tokens). safehttp gives every call the
-    no-redirect protection, so a credential never follows a 3xx to a new host."""
+    no-redirect + https + no-internal + size-cap protection, so a model API key
+    never follows a 3xx to a new host. This is the ONE way to reach a model - the
+    classifier uses it too, so the hardening cannot be adjacent-doored again."""
     if provider == ANTHROPIC:
         d = safehttp.call(
-            "https://api.anthropic.com/v1/messages", method="POST",
+            "https://api.anthropic.com/v1/messages", method="POST", timeout=timeout,
             headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
             payload={"model": model, "max_tokens": max_tokens, "system": system,
                      "messages": [{"role": "user", "content": user}]})
@@ -55,18 +58,20 @@ def _provider_call(provider, model, key, system, user, max_tokens, temperature):
         return text, int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0))
 
     if provider == OLLAMA:
-        d = safehttp.call(
-            "http://localhost:11434/api/chat", method="POST",
-            payload={"model": model, "stream": False,
-                     "messages": [{"role": "system", "content": system},
-                                  {"role": "user", "content": user}]})
+        body = {"model": model, "stream": False,
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": user}]}
+        if force_json:
+            body["format"] = "json"
+        d = safehttp.call("http://localhost:11434/api/chat", method="POST",
+                          timeout=timeout, payload=body)
         return ((d.get("message") or {}).get("content", ""),
                 int(d.get("prompt_eval_count", 0)), int(d.get("eval_count", 0)))
 
     url = ("https://openrouter.ai/api/v1/chat/completions" if provider == OPENROUTER
            else "https://api.openai.com/v1/chat/completions")
     d = safehttp.call(
-        url, method="POST", bearer=key,
+        url, method="POST", bearer=key, timeout=timeout,
         payload={"model": model, "max_tokens": max_tokens, "temperature": temperature,
                  "messages": [{"role": "system", "content": system},
                               {"role": "user", "content": user}]})

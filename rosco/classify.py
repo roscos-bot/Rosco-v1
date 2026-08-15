@@ -28,13 +28,12 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
-import urllib.request
 
 from . import capabilities as caps
 from .arrive import Proposal
 from .grants import DO, GET
-from .models import ANTHROPIC, OLLAMA, OPENROUTER, WORKHORSE, Models
+from .llm import _provider_call
+from .models import WORKHORSE, Models
 
 # Hard ceiling on the wait. The doorway is answering a human on a channel; a
 # model that has not replied in this long has effectively failed, and failing to
@@ -121,9 +120,10 @@ class ModelClassifier:
             return None
 
         try:
-            raw, pt, ct = _call(choice.provider, choice.model, key,
-                                SYSTEM % caps.catalogue_for_prompt(), USER % body,
-                                self.timeout)
+            raw, pt, ct = _provider_call(
+                choice.provider, choice.model, key,
+                SYSTEM % caps.catalogue_for_prompt(), USER % body,
+                300, 0, timeout=self.timeout, force_json=True)
         except Exception:
             # Network, auth, rate limit, malformed response - all the same
             # answer. The doorway asks Ross. It never guesses and never stops.
@@ -189,54 +189,8 @@ def _parse(raw: str) -> Proposal | None:
                     str(d.get("why", ""))[:200])
 
 
-# ---- providers ----------------------------------------------------------
-#
-# Three, matching models.DEFAULTS. Each is a few lines because the interesting
-# part is upstream; adding a fourth is a small function and an entry in
-# models.py, not a redesign.
-
-def _post(url: str, headers: dict, payload: dict, timeout: int) -> dict:
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
-
-
-def _call(provider: str, model: str, key: str, system: str, user: str,
-          timeout: int) -> tuple[str, int, int]:
-    """(text, prompt_tokens, completion_tokens). Token counts are what the
-    provider reported, or 0 if it said nothing - the meter treats a call it
-    cannot size as a call, not as free."""
-    if provider == ANTHROPIC:
-        d = _post("https://api.anthropic.com/v1/messages",
-                  {"x-api-key": key, "anthropic-version": "2023-06-01"},
-                  {"model": model, "max_tokens": 300, "system": system,
-                   "messages": [{"role": "user", "content": user}]}, timeout)
-        parts = d.get("content") or []
-        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-        u = d.get("usage") or {}
-        return text, int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0))
-
-    if provider == OLLAMA:
-        # On-machine, no key, no internet. What a sealed or cut-off node uses.
-        d = _post("http://localhost:11434/api/chat", {},
-                  {"model": model, "stream": False, "format": "json",
-                   "messages": [{"role": "system", "content": system},
-                                {"role": "user", "content": user}]}, timeout)
-        return ((d.get("message") or {}).get("content", ""),
-                int(d.get("prompt_eval_count", 0)), int(d.get("eval_count", 0)))
-
-    # OpenRouter, and anything else speaking the OpenAI chat shape.
-    url = ("https://openrouter.ai/api/v1/chat/completions" if provider == OPENROUTER
-           else "https://api.openai.com/v1/chat/completions")
-    d = _post(url, {"Authorization": f"Bearer {key}"},
-              {"model": model, "max_tokens": 300, "temperature": 0,
-               "messages": [{"role": "system", "content": system},
-                            {"role": "user", "content": user}]}, timeout)
-    u = d.get("usage") or {}
-    pt, ct = int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
-    choices = d.get("choices") or []
-    if not choices:
-        return "", pt, ct
-    return (choices[0].get("message") or {}).get("content", ""), pt, ct
+# Provider calls live in llm._provider_call - the ONE hardened way to reach a
+# model (safehttp: https, no redirects, no internal targets, a size cap). The
+# classifier used to have its own urllib copy; an audit found it re-sent the API
+# key across a redirect on the every-message path, the exact class safehttp was
+# built to close. There is now no second model-call path to drift.

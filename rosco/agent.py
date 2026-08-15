@@ -29,6 +29,7 @@ The output is a proposal recorded on the log and put where Ross will see it.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from . import roster
@@ -48,14 +49,25 @@ class Result:
 
 # SteelHaven's hard guardrails, the ones the brand-voice work locked. These are
 # the deterministic catch behind the model - the model is TOLD them in its
-# grounding, and this refuses to let the two catastrophic ones through even if it
+# grounding, and this refuses to let the catastrophic ones through even if it
 # forgets. Other businesses get their own set as they are taught.
-_STEELHAVEN_FORBIDDEN = [
-    (r"\bfortified\b", "mentions FORTIFIED - off-limits in all copy right now"),
-    (r"radon[\s-]*free", "implies radon-free - never claim that"),
+#
+# Matched against a SQUEEZED copy of the draft - unicode-normalised, lowercased,
+# stripped to letters and digits - so "FORT­IFIED", "f o r t i f i e d",
+# "radon-free", "radon​free" and the like cannot walk past a naive word-boundary
+# regex. An audit showed the first version was evadable exactly that way.
+_STEELHAVEN_SQUEEZED_FORBIDDEN = [
+    ("fortif", "mentions FORTIFIED - off-limits in all copy right now"),
+    ("radonfree", "implies radon-free - never claim that"),
 ]
-_STEELHAVEN_STEEL = re.compile(r"\bsteel\b", re.I)
+_STEELHAVEN_STEEL = re.compile(r"steel", re.I)
 _STEELHAVEN_INSULATION = re.compile(r"insulat", re.I)
+
+
+def _squeeze(text: str) -> str:
+    """Unicode-normalised, letters/digits only - the form guardrails match on."""
+    norm = unicodedata.normalize("NFKD", text or "").lower()
+    return re.sub(r"[^a-z0-9]+", "", norm)
 
 
 class Agent:
@@ -106,9 +118,9 @@ class Agent:
     def _check(self, draft: str) -> list[str]:
         warns = []
         if self.business == "steelhaven":
-            low = draft.lower()
-            for pat, why in _STEELHAVEN_FORBIDDEN:
-                if re.search(pat, low):
+            squeezed = _squeeze(draft)
+            for needle, why in _STEELHAVEN_SQUEEZED_FORBIDDEN:
+                if needle in squeezed:
                     warns.append(why)
             if _STEELHAVEN_STEEL.search(draft) and not _STEELHAVEN_INSULATION.search(draft):
                 warns.append("a steel claim with no mention of continuous insulation - "
@@ -133,6 +145,12 @@ class Agent:
                   "\n\nAnswer the person directly and briefly. If you would need "
                   "to look something up that you do not have, say so plainly.")
         text = (self.think(system, question) or "").strip()
+        # The read path runs the same hard guardrails as a draft. An answer is
+        # lower-stakes than published copy, but a FORTIFIED or radon-free claim
+        # said to a person is still a claim, so it is flagged in-line rather than
+        # slipping out unmarked.
+        for w in self._check(text):
+            text += f"\n\n[flag: {w}]"
         self.log.append("agent.answered",
                         {"agent": self.name, "business": self.business,
                          "person": for_person, "chars": len(text)},
@@ -159,9 +177,17 @@ class Agent:
 
         # Learn from having done it. Observed, not told - the agent watched
         # itself do this; it is not Ross's word.
+        #
+        # It records that it did work and how it went - NOT the raw task text.
+        # The task is attacker-controlled (it is the inbound message), and a
+        # lesson is read back into the model prompt on the next run; echoing
+        # untrusted text into an agent's own grounding is a slow prompt-injection
+        # that persists. The count of guardrail flags is the useful signal; the
+        # words are not worth the risk.
         self.vault.learn(self.name, self.business,
-                         f"Handled: {task[:80]}"
-                         + (f" ({len(warnings)} guardrail flag(s))" if warnings else ""),
+                         f"Handled a {self.business} task"
+                         + (f" - {len(warnings)} guardrail flag(s)" if warnings else
+                            " - clean"),
                          basis=OBSERVED, source=self.name)
         narrate("  recorded what it did to the vault")
 
