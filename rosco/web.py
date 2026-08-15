@@ -291,6 +291,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(html)))
             self.send_header("Content-Security-Policy", CSP_PAGE)
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return self.wfile.write(html)
         if self.path == "/app.js":
@@ -302,6 +303,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/javascript; charset=utf-8")
             self.send_header("Content-Length", str(len(js)))
             self.send_header("Content-Security-Policy", CSP_PAGE)
+            # Never cache the app - this is a single-user local tool under active
+            # development, and a stale app.js is exactly the confusion that had
+            # the dashboard calling routes the running server did not yet have.
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return self.wfile.write(js)
 
