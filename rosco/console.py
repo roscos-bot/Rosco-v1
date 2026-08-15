@@ -293,37 +293,77 @@ class Console:
         return "\n".join(out)
 
     # ---- pairing Ross's own telegram ------------------------------------
+    #
+    # The challenge lives in the SIGNED log, not a plaintext file. An audit found
+    # the old pair.json turned file-write into authority: an attacker who could
+    # drop a file chose the code, and the running service - holding the
+    # passphrase - enrolled their phone as Ross. A Ross-signed challenge cannot
+    # be forged without the key, and only its hash is stored, so reading the log
+    # does not reveal the code either.
 
-    def pair_start(self) -> str:
+    MAX_TRIES = 8
+
+    def _live_challenge(self):
+        """The newest pairing challenge that is signed, unexpired and unspent."""
+        import time
+        consumed, attempts, latest = set(), {}, None
+        for ev in self.open().replay(kind="pair.*"):
+            b = ev["body"]
+            if ev["kind"] == "pair.consumed":
+                consumed.add(b["challenge"])
+            elif ev["kind"] == "pair.attempt":
+                attempts[b["challenge"]] = attempts.get(b["challenge"], 0) + 1
+            elif ev["kind"] == "pair.challenge":
+                if int(b["expires"]) > int(time.time()):
+                    latest = ev            # replay is time-ordered; last wins
+        if latest is None or latest["id"] in consumed:
+            return None
+        if attempts.get(latest["id"], 0) >= self.MAX_TRIES:
+            return None
+        return latest
+
+    def pairing_open(self) -> bool:
+        """Is a pairing in progress? The adapter checks this, not a file."""
+        return self._live_challenge() is not None
+
+    def pair_start(self, passphrase: str) -> str:
         """A code, shown here and sent nowhere.
 
-        Every channel that could carry it is weaker than the handle it creates,
-        so the code exists only on this screen. Ross messages it to the bot from
-        his own account; the bot relays (code, telegram id) to pair_claim().
+        Signing the challenge is an authority act, so it needs the passphrase -
+        which is right: only Ross, at the console, may open a pairing. Every
+        channel that could carry the code is weaker than the handle it creates,
+        so it exists only on this screen; only its hash goes into the log.
         """
+        import time
         code = f"{pysecrets.randbelow(10**6):06d}"
-        self.home.mkdir(parents=True, exist_ok=True)
-        self.pair_path.write_text(json.dumps({
-            "hash": hashlib.sha256(code.encode()).hexdigest(),
-            "expires": _epoch() + PAIR_TTL_SECONDS,
-        }), encoding="utf-8")
+        log = self.open(passphrase)
+        log.append("pair.challenge",
+                   {"hash": hashlib.sha256(code.encode()).hexdigest(),
+                    "expires": int(time.time()) + PAIR_TTL_SECONDS},
+                   subject="ross:telegram", actor=ROSS)
         return (f"pairing code: {code}\n"
                 f"send exactly that to the bot from YOUR Telegram within 15 minutes.\n"
                 f"the code is not stored and not transmitted - this screen is the "
                 f"only place it exists.")
 
     def pair_claim(self, passphrase: str, code: str, telegram_id: str) -> str:
-        if not self.pair_path.exists():
+        ch = self._live_challenge()
+        if ch is None:
             raise SystemExit("no pairing in progress - run `rosco pair` first")
-        d = json.loads(self.pair_path.read_text(encoding="utf-8"))
-        self.pair_path.unlink()          # single use, success or not
-        if _epoch() > d["expires"]:
-            raise SystemExit("that pairing code expired; start again")
         if not hmac.compare_digest(
-                hashlib.sha256(code.strip().encode()).hexdigest(), d["hash"]):
-            raise SystemExit("wrong code; start again")
-        return self.enrol(passphrase, ROSS, "telegram", telegram_id,
-                          note="paired at the console")
+                hashlib.sha256(code.strip().encode()).hexdigest(), ch["body"]["hash"]):
+            # A wrong guess records an attempt but does NOT consume the
+            # challenge - otherwise an outsider who glimpsed that a pairing was
+            # open could burn it with one wrong code and lock Ross out. After
+            # MAX_TRIES the challenge dies on its own.
+            self.open(passphrase).append("pair.attempt", {"challenge": ch["id"]},
+                                         subject=ch["id"], actor=ROSS)
+            raise SystemExit("wrong code")
+        out = self.enrol(passphrase, ROSS, "telegram", telegram_id,
+                         note="paired at the console")
+        self.open(passphrase).append("pair.consumed", {"challenge": ch["id"]},
+                                     subject=ch["id"], actor=ROSS)
+        return out
 
     # ---- secrets / models / nodes / vault -------------------------------
 
@@ -535,7 +575,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "strangers":
             print(c.strangers())
         elif args.cmd == "pair":
-            print(c.pair_start())
+            print(c.pair_start(_ask_pass()))
         elif args.cmd == "pair-claim":
             print(c.pair_claim(_ask_pass(), args.code, args.telegram_id))
         elif args.cmd == "secret":

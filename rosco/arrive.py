@@ -88,6 +88,7 @@ class Handling:
     decision: Decision | None = None
     proposal: Proposal | None = None
     ask_id: str = ""
+    new_ask: bool = False       # True only when THIS arrival created the ask
 
     @property
     def needs_ross(self) -> bool:
@@ -243,12 +244,14 @@ class Doorway:
         queued = Request(
             person=req.person, business=req.business, capability=req.capability,
             verb=req.verb, channel=arrival.channel, detail=detail)
-        self.asks.raise_(queued, dec)
+        ev = self.asks.raise_(queued, dec)
         # The CANONICAL ask id, not the raw event's - a repeat returns its own
         # event id, and anything later looking the ask up by that (notifying
-        # Ross) would find nothing.
+        # Ross) would find nothing. new_ask distinguishes a fresh question from
+        # a repeat, so the adapter can notify once rather than on every nag.
         return Handling(ASK, "I've passed that to Ross.", who, dec, proposal,
-                        ask_id=self.asks.open_id(queued))
+                        ask_id=self.asks.open_id(queued),
+                        new_ask=(ev.get("kind") == "ask.raised"))
 
 
 class Keywords:

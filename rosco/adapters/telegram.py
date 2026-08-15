@@ -139,7 +139,15 @@ class TelegramBot:
                 # must not crash the service. It is dropped; the sender can try
                 # again. Nothing was written on a path that raised.
                 pass
-            self._set_offset(int(u["update_id"]) + 1)
+            # Advancing the offset is what acks the update to Telegram, so it
+            # must happen even for a poison message - otherwise the same one
+            # returns forever and wedges the poll. Guarded on its own: a
+            # non-integer update_id (only a hostile or fake update) is skipped
+            # rather than crashing the advance.
+            try:
+                self._set_offset(int(u["update_id"]) + 1)
+            except (KeyError, ValueError, TypeError):
+                pass
         return len(updates)
 
     def serve(self) -> None:
@@ -180,17 +188,18 @@ class TelegramBot:
         handling = self.doorway.handle(arrival)
         self.send(chat_id, _REPLIES.get(handling.outcome, _REPLIES[ASK]))
 
-        # A heads-up to Ross when something lands in his queue - read-only. He
-        # still answers at the console; Telegram is not an approval surface, by
-        # the same rule that keeps it from changing anything.
-        if handling.outcome == ASK:
+        # A heads-up to Ross when something NEW lands in his queue - read-only.
+        # Only a fresh ask, never a repeat: otherwise an enrolled account could
+        # nag the same question and flood his phone through the notifier. He
+        # still answers at the console; Telegram is not an approval surface.
+        if handling.outcome == ASK and handling.new_ask:
             self._notify_ross(handling)
 
     def _maybe_pair(self, sender_id: str, chat_id, text: str) -> bool:
         code = text.strip()
         if not (code.isdigit() and len(code) == 6):
             return False
-        if not (Path(self.console.home) / "pair.json").exists():
+        if not self.console.pairing_open():
             return False
         try:
             self.console.pair_claim(self._passphrase, code, sender_id)

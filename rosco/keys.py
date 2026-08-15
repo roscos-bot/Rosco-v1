@@ -98,6 +98,15 @@ KINDS: dict[str, str] = {
     "budget.set": AUTHORED,           # a spend cap is Ross's policy
     "model.billed": NODE,             # what a call cost - agents record it
     "spend.alerted": NODE,            # a soft threshold was crossed, warned once
+
+    # Pairing Ross's own Telegram. The challenge is AUTHORED - it must carry his
+    # signature - because an audit found the old plaintext pair.json turned a
+    # mere file-write into a Ross-signed enrolment: anyone who could drop a file
+    # picked the code, and the running service honoured it. A signed challenge
+    # in the log cannot be forged by a file-writer who lacks the key.
+    "pair.challenge": AUTHORED,
+    "pair.consumed": AUTHORED,         # a challenge was spent, signed on success
+    "pair.attempt": NODE,             # a wrong code was tried - for the lockout
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -153,6 +162,10 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "budget.set": ("scope", "monthly_usd"),
     "model.billed": ("provider", "model", "prompt_tokens", "completion_tokens"),
     "spend.alerted": ("scope", "period", "threshold"),
+
+    "pair.challenge": ("hash", "expires"),
+    "pair.consumed": ("challenge",),
+    "pair.attempt": ("challenge",),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a

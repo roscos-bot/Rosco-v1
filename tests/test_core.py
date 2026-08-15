@@ -958,7 +958,7 @@ def main() -> int:
                        "replaced 1 earlier pairing" in out2, True)
     fails += not check("and only the new handle resolves",
                        People(con2.open()).resolve("telegram", "111").person, "")
-    code = con2.pair_start().split()[2]
+    code = con2.pair_start(PW).split()[2]
     con2.pair_claim(PW, code, "31337")
     fails += not refuses("a pairing code is single use",
                          lambda: con2.pair_claim(PW, code, "31337"), SystemExit)
@@ -1034,6 +1034,8 @@ def main() -> int:
                 return Proposal("sugar-creek", "spray-log", GET, 0.95, "clear")
             if "bound book" in low:
                 return Proposal("rum", "bound-book", GET, 0.95, "named")
+            if "price" in low or "pricing" in low:
+                return Proposal("rum", "pricing", GET, 0.95, "priced")
             return None
 
     sent = []
@@ -1063,28 +1065,34 @@ def main() -> int:
                        People(tc.open()).resolve("telegram", "8481123").person, "brent")
 
     # Ross pairs his own phone through the bot - console minted the code.
-    code = tc.pair_start().split()[2]
+    code = tc.pair_start(PW).split()[2]
     tg(5, 70000, code)
     fails += not check("Ross pairs his phone via the bot",
                        People(tc.open()).resolve("telegram", "70000").person, "ross")
     fails += not refuses("a wrong pairing code does not pair",
                          lambda: tc.pair_claim(PW, "000000", "80000"), SystemExit)
 
-    # A fresh ask now notifies Ross, at HIS id, read-only.
+    # A fresh ask now notifies Ross, at HIS id, read-only. (Pricing is new -
+    # the bound-book ask already exists, and a repeat must NOT re-notify.)
     sent.clear()
-    tg(6, 8481123, "the bound book for rum")
+    tg(6, 8481123, "can you send me the RUM price list?")
     notes = [(cid, t) for cid, t in sent if "\U0001f514" in t]
-    fails += not check("Ross is notified when a request waits", bool(notes), True)
+    fails += not check("Ross is notified when a NEW request waits", bool(notes), True)
     fails += not check("and the notice goes to Ross, not the requester",
                        notes[0][0] if notes else "", "70000")
+    # HOSTILE: a repeat of an existing ask must not re-ping Ross's phone.
+    sent.clear()
+    tg(7, 8481123, "seriously, the RUM price list?")
+    fails += not check("a repeat does not re-notify",
+                       [t for c, t in sent if "\U0001f514" in t], [])
 
     # The bell is a heads-up, not an approval surface - the bot cannot answer.
     fails += not check("the adapter exposes no way to answer, grant or enrol",
                        any(hasattr(bot, m) for m in ("answer", "give", "enrol",
                                                      "deny", "revoke")), False)
     # A malformed update is dropped, not fatal.
-    bot.handle_update({"update_id": 7})
-    bot.handle_update({"update_id": 8, "message": {"text": "no sender"}})
+    bot.handle_update({"update_id": 8})
+    bot.handle_update({"update_id": 9, "message": {"text": "no sender"}})
     fails += not check("a malformed update does not crash the adapter",
                        tc.verify().startswith("every"), True)
 

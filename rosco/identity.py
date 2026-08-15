@@ -89,6 +89,12 @@ def _utc_or_lapsed(value: str) -> str:
     except ValueError:
         return LAPSED
 
+
+def _within_ago(seconds: int) -> str:
+    """RFC3339 timestamp `seconds` in the past, for cheap recency checks."""
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
+
 CERTAIN = "certain"
 CLAIMED = "claimed"
 UNKNOWN = "unknown"
@@ -208,22 +214,26 @@ class People:
     def handles(self, *, person: str = "", include_retired: bool = False) -> list[Handle]:
         rows: dict[str, Handle] = {}
         retired: set[str] = set()
-        for n, ev in enumerate(self.log.replay(kind="identity.*")):
+        # Two EXACT-kind replays, not a broad "identity.*". resolve() calls this
+        # on every inbound message, and "identity.*" also matches the
+        # identity.stranger flood - so a stream of messages from unpaired
+        # accounts made every later resolve() fetch and parse every stranger
+        # row ever recorded. These two queries never touch strangers.
+        for n, ev in enumerate(self.log.replay(kind="identity.enrolled")):
             b = ev["body"]
-            if ev["kind"] == "identity.retired":
-                retired.add(b["handle"])
-            elif ev["kind"] == "identity.enrolled":
-                rows[ev["id"]] = Handle(
-                    id=ev["id"], person=b["person"], channel=b["channel"],
-                    address=b["address"], raw=b.get("raw", b["address"]),
-                    note=b.get("note", ""), enrolled=ev["ts"], order=n,
-                    # Re-parsed on READ as well as on write. Normalising only in
-                    # enrol() left the raw string comparison live for any
-                    # identity.enrolled event assembled another way - a Ross-signed
-                    # body from a script, a future importer - and that is exactly
-                    # the comparison that let an offset time expire two hours late.
-                    until=_utc_or_lapsed(b.get("until", "")),
-                )
+            rows[ev["id"]] = Handle(
+                id=ev["id"], person=b["person"], channel=b["channel"],
+                address=b["address"], raw=b.get("raw", b["address"]),
+                note=b.get("note", ""), enrolled=ev["ts"], order=n,
+                # Re-parsed on READ as well as on write. Normalising only in
+                # enrol() left the raw string comparison live for any
+                # identity.enrolled event assembled another way - a Ross-signed
+                # body from a script, a future importer - and that is exactly
+                # the comparison that let an offset time expire two hours late.
+                until=_utc_or_lapsed(b.get("until", "")),
+            )
+        for ev in self.log.replay(kind="identity.retired"):
+            retired.add(ev["body"]["handle"])
         out = []
         for hid, h in rows.items():
             h.retired = hid in retired
@@ -323,11 +333,27 @@ class People:
         rows = [ev for ev in self.log.replay(kind="identity.stranger")]
         return rows[-limit:]
 
-    def saw_stranger(self, channel: str, address: str, detail: str = "") -> dict:
-        """Record an arrival we could not place."""
+    STRANGER_WINDOW = 3600      # seconds; one record per address per hour
+
+    def saw_stranger(self, channel: str, address: str, detail: str = "") -> dict | None:
+        """Record an arrival we could not place - at most once per address, hourly.
+
+        Without the window, an unpaired account sending a stream of messages
+        wrote one permanent event each: unbounded disk, and a growing pile the
+        stranger list has to page through. The dedupe is keyed on the subject,
+        which is indexed, so the check is cheap and touches only this address's
+        own rows - not the whole stranger pile. Returns None when it collapses a
+        repeat, so the caller can tell nothing new was written.
+        """
+        subject = f"{channel}:{normalise(channel, address)}"
+        recent = [ev for ev in self.log.replay(kind="identity.stranger", subject=subject)]
+        if recent:
+            last = recent[-1]["ts"]
+            if last > _within_ago(self.STRANGER_WINDOW):
+                return None
         return self.log.append(
             "identity.stranger",
             {"channel": channel, "address": normalise(channel, address),
              "raw": address, "detail": detail[:400]},
-            subject=f"{channel}:{normalise(channel, address)}",
+            subject=subject,
         )
