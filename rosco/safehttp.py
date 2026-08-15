@@ -35,6 +35,53 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
                         f"with the host it was sent to", headers, fp)
 
 
+# The invisibles a paste drags in: ASCII whitespace, every C0 control (NUL..US -
+# this is where U+0016/SYN, a stray Ctrl-V, lives), DEL, the C1 controls, and the
+# zero-width/BOM family. Stripped only from the ENDS of a credential, where they
+# are unambiguously paste noise - no API key begins or ends with a control char.
+_EDGE_JUNK = ("".join(chr(c) for c in range(0x00, 0x21)) + "\x7f"
+              + "".join(chr(c) for c in range(0x80, 0xA0))
+              + "​‌‍⁠﻿")
+
+
+def clean_credential(value: str, *, label: str = "value") -> str:
+    """A credential fit to use, or a clear refusal.
+
+    A pasted key arrives with junk at the edges (a trailing newline, a leading
+    Ctrl-V/SYN, a zero-width space from a copy) or - more insidiously - a control
+    character in the MIDDLE. Sent as an HTTP header, urllib latin-1s any of it
+    into the request and the provider's edge (Cloudflare) rejects it with an
+    opaque, EMPTY-bodied 400 that reads like a bad model id or a mystery.
+
+    Edge junk is stripped (it is never part of the token); an interior forbidden
+    character is refused by name, because a control char between real characters
+    means the stored value is genuinely corrupt - two things concatenated, a
+    smart-quote in a passphrase - not an edge artifact to quietly paper over.
+
+    Used both when SENDING (below) and when STORING (vault.put_secret), so a
+    corrupt paste is caught at the door and never persists to fail cryptically
+    on some later request.
+    """
+    v = (value or "").strip(_EDGE_JUNK)
+    if not v:
+        raise ValueError(
+            f"the {label} is empty once stray/invisible characters are removed; "
+            f"re-enter it")
+    for i, ch in enumerate(v):
+        o = ord(ch)
+        if o < 0x20 or o > 0x7E:
+            raise ValueError(
+                f"the {label} carries a character HTTP forbids (U+{o:04X} at "
+                f"position {i}) in the middle; the value is corrupt - re-enter "
+                f"it cleanly")
+    return v
+
+
+def _header_value(name: str, value: str) -> str:
+    """Clean a header value on its way onto the wire. See clean_credential."""
+    return clean_credential(value, label=f"{name} header")
+
+
 def is_internal(host: str) -> bool:
     """Does this host resolve to somewhere a credential must never go?"""
     try:
@@ -50,17 +97,25 @@ def is_internal(host: str) -> bool:
 
 
 def call(url: str, *, method: str = "POST", payload: dict | None = None,
-         bearer: str | None = None, headers: dict | None = None,
-         timeout: int = 60, max_bytes: int = MAX_RESPONSE,
-         allow_internal: bool = False) -> dict:
-    """Make one request and return the parsed JSON reply ({} for an empty body).
+         form: dict | None = None, bearer: str | None = None,
+         headers: dict | None = None, timeout: int = 60,
+         max_bytes: int = MAX_RESPONSE, allow_internal: bool = False,
+         raw: bool = False):
+    """Make one request and return the parsed JSON reply ({} for an empty body),
+    or - with raw=True - the response body decoded as text. raw is for endpoints
+    that return a document, not JSON (a Google Doc exported to text/plain, a CSV
+    sheet); every other guard (https-on-credential, no redirect, size cap) is
+    unchanged.
 
-    A bearer credential forces https, forbids an internal target, and forbids
-    following any redirect. Without a bearer the same no-redirect and size-cap
-    protections still apply - they are cheap and there is no reason to relax them.
+    A bearer credential (or a `form` body, which for OAuth carries the client
+    secret) forces https, forbids an internal target, and forbids following any
+    redirect. Without either the same no-redirect and size-cap protections still
+    apply - they are cheap and there is no reason to relax them.
     """
     parsed = urllib.parse.urlparse(url)
-    if bearer is not None:
+    if bearer is not None or form is not None:
+        # A form body carries the OAuth client_secret; hold it to the same bar as
+        # a bearer - https only, never an internal host, never a redirect.
         if parsed.scheme != "https":
             raise ValueError(f"refusing to send a credential over {parsed.scheme!r}; https only")
         if not allow_internal and is_internal(parsed.hostname or ""):
@@ -70,16 +125,22 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
 
     h = {"Accept": "application/json"}
     data = None
-    if payload is not None:
+    if form is not None:
+        data = urllib.parse.urlencode(form).encode()
+        h["Content-Type"] = "application/x-www-form-urlencoded"
+    elif payload is not None:
         data = json.dumps(payload).encode()
         h["Content-Type"] = "application/json"
     if bearer:
-        # Strip the credential: a pasted key often carries a trailing newline,
-        # and a header value with a newline in it is both malformed (some
-        # providers 400 it) and a header-injection shape. One .strip() closes both.
-        h["Authorization"] = f"Bearer {bearer.strip()}"
+        # Validate, don't just strip: a trailing newline, an interior control
+        # char, or a non-ASCII paste artifact all corrupt the credential header
+        # and earn an opaque 400. _header_value refuses any of them by name.
+        h["Authorization"] = f"Bearer {_header_value('Authorization', bearer)}"
     if headers:
-        h.update(headers)
+        # Any caller-set header may carry a credential too (x-api-key,
+        # x-goog-api-key) - hold them to the same clean-value bar.
+        for k, val in headers.items():
+            h[k] = _header_value(k, val) if isinstance(val, str) else val
 
     req = urllib.request.Request(url, data=data, headers=h, method=method)
     opener = urllib.request.build_opener(_NoRedirect)
@@ -96,10 +157,21 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
             detail = e.read(2000).decode("utf-8", "replace").strip()
         except Exception:
             pass
+        # A 401's body reflects the submitted credential back - every OpenAI-shaped
+        # provider echoes a masked key ("Incorrect API key provided: sk-...XXXX").
+        # That body is surfaced all the way to the browser, so on 401 keep only
+        # status+host and drop it. A 403 is "forbidden / API not enabled /
+        # insufficient scope" - no credential echo, and the body ("enable the
+        # Drive API in project X") is the useful part - so 403 and every other
+        # code keep their body.
+        if e.code == 401:
+            detail = "authentication rejected"
         raise ValueError(f"HTTP {e.code} from {parsed.hostname}: "
                          f"{detail[:400] or e.reason}") from None
     if len(body) > max_bytes:
         raise ValueError(f"reply larger than {max_bytes} bytes; refused")
+    if raw:
+        return body.decode("utf-8", "replace")
     if not body.strip():
         return {}
     return json.loads(body.decode())

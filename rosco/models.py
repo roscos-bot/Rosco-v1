@@ -48,7 +48,11 @@ ROLES = (CHAT, WORKHORSE, CHEAP, VISION, LOCAL)
 OPENROUTER = "openrouter"
 ANTHROPIC = "anthropic"
 OPENAI = "openai"
-GOOGLE = "google"
+# The Gemini model API (AI Studio key, generativelanguage.googleapis.com) - a
+# DIFFERENT credential from the Google Workspace OAuth used by the Gmail/Drive/
+# Calendar connectors. Named 'gemini' so the model key (gemini_api_key) never
+# gets confused with the Workspace creds (google_client_id/secret/refresh_token).
+GEMINI = "gemini"
 XAI = "xai"
 OLLAMA = "ollama"          # on-machine; needs no key and no internet
 

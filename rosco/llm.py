@@ -13,8 +13,8 @@ surfaces that to Ross rather than quietly reaching for something cheaper.
 from __future__ import annotations
 
 from . import safehttp
-from .models import (ANTHROPIC, OLLAMA, OPENAI, OPENROUTER, WORKHORSE, Models,
-                     secret_name)
+from .models import (ANTHROPIC, GEMINI, OLLAMA, OPENAI, OPENROUTER, WORKHORSE,
+                     Models, secret_name)
 
 
 class NoModel(RuntimeError):
@@ -56,6 +56,26 @@ def _provider_call(provider, model, key, system, user, max_tokens, temperature,
                        if isinstance(p, dict))
         u = d.get("usage") or {}
         return text, int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0))
+
+    if provider == GEMINI:
+        # Gemini's own shape: system_instruction + contents, key in a header. A
+        # different API from the OpenAI-style ones below, hence its own branch.
+        d = safehttp.call(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            method="POST", timeout=timeout,
+            headers={"x-goog-api-key": key.strip()},
+            payload={"system_instruction": {"parts": [{"text": system}]},
+                     "contents": [{"role": "user", "parts": [{"text": user}]}],
+                     "generationConfig": {"maxOutputTokens": max_tokens,
+                                          "temperature": temperature}})
+        cand = d.get("candidates") or []
+        text = ""
+        if cand:
+            parts = ((cand[0].get("content") or {}).get("parts") or [])
+            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        u = d.get("usageMetadata") or {}
+        return (text, int(u.get("promptTokenCount", 0)),
+                int(u.get("candidatesTokenCount", 0)))
 
     if provider == OLLAMA:
         body = {"model": model, "stream": False,

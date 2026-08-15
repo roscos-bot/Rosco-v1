@@ -32,6 +32,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from urllib.error import HTTPError
 
 from ..arrive import Arrival
 from ..asks import Asks
@@ -150,15 +151,51 @@ class TelegramBot:
                 pass
         return len(updates)
 
+    def whoami(self) -> str:
+        """The bot's @username per Telegram, or '' if the token is rejected.
+
+        A startup handshake so a bad token fails LOUDLY instead of the loop
+        silently long-polling a bot that will never answer - the exact shape of
+        'I stored the token and messaged it and nothing happened'.
+        """
+        try:
+            d = self._api("getMe", {}, timeout=15)
+        except Exception:
+            return ""
+        if d.get("ok") and isinstance(d.get("result"), dict):
+            return d["result"].get("username") or "bot"
+        return ""
+
     def serve(self) -> None:
-        print(f"listening on Telegram as of {now()}. Ctrl-C to stop.")
+        who = self.whoami()
+        if not who:
+            print("the stored telegram_bot_token was rejected by Telegram. "
+                  "Fix it (dashboard -> Settings -> Telegram bot, or\n"
+                  "  rosco secret set system telegram_bot_token\n"
+                  "then start again.")
+            return
+        print(f"listening on Telegram as @{who} as of {now()}. Ctrl-C to stop.")
+        print("message @%s from your phone; run `rosco pair` to link it." % who)
         print("authority stays at the console - this only carries messages.")
+        warned_conflict = False
         while True:
             try:
                 self.poll_once()
+                warned_conflict = False
             except KeyboardInterrupt:
                 print("\nstopped.")
                 return
+            except HTTPError as e:
+                # 409 = another process is already long-polling this same bot
+                # (a second `rosco serve`, or another app - e.g. fusz_agent -
+                # sharing the token). Telegram hands each update to ONE poller,
+                # so this must be surfaced, not silently retried forever.
+                if e.code == 409 and not warned_conflict:
+                    print("Telegram 409: another process is polling this bot. "
+                          "Two pollers can't share one bot - stop the other "
+                          "listener, or give Rosco its own BotFather bot.")
+                    warned_conflict = True
+                time.sleep(5)
             except Exception:
                 # Network blip, Telegram hiccup. Wait a moment and carry on -
                 # the service is meant to sit up for weeks.

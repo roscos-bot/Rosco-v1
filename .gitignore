@@ -24,3 +24,15 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+
+# Vault-home artifacts — normally in ~/.rosco, but ignored here too in case
+# ROSCO_HOME is ever pointed at the repo. These hold keys / the hash chain.
+trust.json
+salt
+*.sealed
+pair.json
+chat.json
+insights*.json
+
+# Local-only editor/agent settings
+.claude/settings.local.json

@@ -123,6 +123,14 @@ KINDS: dict[str, str] = {
     # agent watched itself do this; it is not Ross's word and grants nothing.
     "agent.produced": NODE,
     "agent.answered": NODE,           # an agent answered an allowed read
+
+    # Ingestion review: a candidate item Rosco proposes a home for (NODE - a
+    # proposal grants nothing), and Ross's one-by-one routing decision. The
+    # actual knowledge write on 'ingest' is a separate SIGNED vault.learned;
+    # these two only drive the review queue and the routing-accuracy signal, so
+    # a forged one plants no knowledge - it grants nothing and stores nothing.
+    "ingest.proposed": NODE,
+    "ingest.decided": NODE,
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -192,6 +200,9 @@ REQUIRED: dict[str, tuple[str, ...]] = {
 
     "agent.produced": ("agent", "business"),
     "agent.answered": ("agent", "business"),
+
+    "ingest.proposed": ("cand", "text"),
+    "ingest.decided": ("cand", "action"),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a
@@ -209,6 +220,9 @@ ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     # absorb() and replay(), before it can reach any screen. The dashboard also
     # escapes it and forbids inline script, so it is three layers deep.
     ("ask.raised", "verb"): ("get", "do"),
+    # A routing decision is 'ingest' (learn it into the chosen business) or
+    # 'skip'. A malformed action from a compromised node is dropped at absorb().
+    ("ingest.decided", "action"): ("ingest", "skip"),
 }
 
 

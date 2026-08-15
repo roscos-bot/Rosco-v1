@@ -1,8 +1,23 @@
 "use strict";
 var CSRF="", TYPEC={agent:"#c9a227",person:"#5b8fb0",site:"#4ea86e",tool:"#37b0a0",core:"#e8efeb"};
 
-function api(path){return fetch(path,{headers:{"Accept":"application/json"}}).then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j};});});}
-function post(path,body){return fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Rosco-CSRF":CSRF},body:JSON.stringify(body||{})}).then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j};});});}
+// The session lives only in the server's memory (the passphrase never touches
+// disk, by design), so every server restart - including the auto-reload on a
+// code change - silently invalidates an unlocked tab. Without this, the next
+// write just returned "locked" in a result box with no way forward. Now any
+// post-unlock 401/403 bounces straight back to the lock screen to re-unlock.
+function relock(msg){
+  CSRF="";
+  var app=document.getElementById("app"),lock=document.getElementById("lock"),err=document.getElementById("err");
+  if(app)app.style.display="none";
+  if(lock)lock.style.display="flex";
+  if(err)err.textContent=msg||"Session ended — unlock to continue.";
+  var pw=document.getElementById("pw");if(pw){pw.value="";pw.focus();}
+}
+function guard(r){ if(CSRF&&(r.status===401||r.status===403))
+  relock("Session ended (server restarted). Unlock to continue."); return r; }
+function api(path){return fetch(path,{headers:{"Accept":"application/json"}}).then(guard).then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j,status:r.status};});});}
+function post(path,body){return fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Rosco-CSRF":CSRF},body:JSON.stringify(body||{})}).then(guard).then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j,status:r.status};});});}
 
 // ---- unlock ----
 function doUnlock(){
@@ -19,14 +34,27 @@ function doUnlock(){
 document.getElementById("unlock").addEventListener("click",doUnlock);
 document.getElementById("pw").addEventListener("keydown",function(e){if(e.key==="Enter")doUnlock();});
 
-// if a prior session cookie is still good, /api/overview will say unlocked
-api("/api/overview").then(function(res){ if(res.j&&res.j.unlocked){ /* still need CSRF; ask to re-unlock */ } });
+// A still-valid session cookie (page reloaded, server never restarted) should
+// walk straight in: recover the CSRF token from overview and boot, instead of
+// stranding on the lock screen where the graph never builds.
+api("/api/overview").then(function(res){
+  if(res.ok&&res.j&&res.j.unlocked&&res.j.csrf){
+    CSRF=res.j.csrf;
+    document.getElementById("lock").style.display="none";
+    document.getElementById("app").style.display="flex";
+    boot();
+  }
+});
 
 // ---- boot the live console ----
 var seenAct={}, actFirst=true;
-function boot(){ refreshHud(); loadQueue(); loadMesh();
+var booted=false;
+function boot(){ resize(); requestAnimationFrame(resize);   // app is visible now: size the canvas
+  refreshHud(); loadQueue(); loadMesh(); pollIngestPip();
+  if(booted)return; booted=true;                            // re-unlock must not stack a 2nd set of timers
   setInterval(refreshHud,8000); setInterval(loadQueue,15000);
-  setInterval(loadActivity,4000); setTimeout(loadActivity,1200); }
+  setInterval(loadActivity,4000); setTimeout(loadActivity,1200);
+  setInterval(pollIngestPip,20000); }
 
 // Fire a light into every node that just DID something. On the first poll we
 // only mark events seen (no burst of history); after that each new one flares.
@@ -113,8 +141,9 @@ function makeSprite(col){var s=64,c=document.createElement("canvas");c.width=c.h
   g.fillStyle=rg;g.fillRect(0,0,s,s);return c;}
 Object.keys(TYPEC).forEach(function(k){sprite[k]=makeSprite(TYPEC[k]);});
 
-function loadMesh(){ api("/api/mesh").then(function(res){
+function loadMesh(retry){ api("/api/mesh").then(function(res){
   var m=(res.ok&&res.j&&res.j.nodes)?res.j:{nodes:[],edges:[]};
+  if(!m.nodes.length&&!retry){setTimeout(function(){loadMesh(true);},800);return;} // transient empty -> one retry
   byId={};N=m.nodes.map(function(n,i){byId[n.id]=i;
     return {id:n.id,label:n.label,type:n.type,rank:n.rank,biz:n.business,reports:n.reports,
       x:(Math.random()-.5)*1.6,y:(Math.random()-.5)*1.6,z:(Math.random()-.5)*1.6,
@@ -122,7 +151,7 @@ function loadMesh(){ api("/api/mesh").then(function(res){
       core:(n.label==="Rosco"||n.label==="Ross"),links:0,pulse:0,tw:Math.random()*6.28};});
   E=m.edges.map(function(e){return[byId[e.a],byId[e.b],e.kind];}).filter(function(e){return e[0]!=null&&e[1]!=null;});
   E.forEach(function(e){N[e[0]].links++;N[e[1]].links++;});
-  layout(); if(N.length){ selected=byId["Rosco"]!=null?byId["Rosco"]:0; }
+  layout(); if(N.length){ selected=byId["Rosco"]!=null?byId["Rosco"]:0; resize(); }
 });}
 
 function layout(){ // simple 3D force: repel all pairs, spring edges, center pull
@@ -145,10 +174,18 @@ function rot(p){var cy=Math.cos(yaw),sy=Math.sin(yaw),x=p.x*cy-p.z*sy,z=p.x*sy+p
 var cv=document.getElementById("cv"),ctx=cv.getContext("2d"),W=0,H=0,DPR=1;
 function resize(){DPR=Math.min(window.devicePixelRatio||1,2);var b=cv.getBoundingClientRect();W=b.width;H=b.height;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);}
 window.addEventListener("resize",resize);
+// The canvas is first measured while #app is display:none (0x0) and only re-sized
+// on a window resize - so on unlock the graph rendered onto a 0x0 canvas and
+// stayed invisible until something nudged the window. Observe the canvas itself:
+// the moment it gains a real size (unlock, layout settle, DevTools), re-measure.
+if(window.ResizeObserver){try{new ResizeObserver(function(){resize();}).observe(cv);}catch(e){}}
 function project(r){var fov=3.4,scale=Math.min(W,H)*.42,f=fov/(fov+r.z);return{x:W/2+r.x*scale*f,y:H/2+r.y*scale*f,f:f,z:r.z};}
 function fire(){if(!E.length)return;var e=E[(Math.random()*E.length)|0];signals.push({from:e[0],to:e[1],t:0,sp:.012+Math.random()*.014});}
 
 function frame(){var T=performance.now();
+  // Self-heal a stale 0x0 canvas (measured while hidden): if it now has a real
+  // size, adopt it; if still zero, keep the loop alive but skip the dead draw.
+  if(!W||!H){resize();if(!W||!H){return requestAnimationFrame(frame);}}
   if(auto&&!drag)tYaw+=.0015;yaw+=(tYaw-yaw)*.08;pitch+=(tPitch-pitch)*.08;ctx.clearRect(0,0,W,H);
   for(var i=0;i<N.length;i++){var r=rot(N[i]),p=project(r);N[i].px=p.x;N[i].py=p.y;N[i].pf=p.f;N[i].pz=r.z;
     N[i].pr=N[i].r*p.f*(1+Math.min(N[i].links,10)*.03);if(N[i].pulse>0)N[i].pulse*=.94;}
@@ -249,14 +286,20 @@ document.getElementById("chatin").addEventListener("keydown",function(e){if(e.ke
 var CFG=[
  {t:"Models",a:"model",n:"Pick a role, a provider, then a model your key can serve.",
   f:[{k:"role",l:"Role",sel:"roles"},{k:"provider",l:"Provider",sel:"providers"},{k:"model",l:"Model",dyn:"models"}]},
- {t:"API keys",a:"secret",n:"Stored encrypted in the vault. Never shown again.",
-  f:[{k:"name",l:"Key name",ph:"openrouter_api_key"},{k:"value",l:"Value",type:"password"}]},
+ {t:"API keys",a:"secret",n:"Stored encrypted in the vault. A live green check means the provider accepts it. Model keys use scope 'system'; a connector credential (Google, GitHub) goes under its business. Click a row to fill its name.",
+  f:[{k:"business",l:"Scope",sel:"scopes"},{k:"name",l:"Key name",ph:"openrouter_api_key"},{k:"value",l:"Value",type:"password"}]},
+ {t:"Google Workspace",google:true,n:"Connect each Google account by OAuth — full Gmail/Drive/Calendar/Docs/Sheets/Chat/Contacts. First store that account's google_client_id + google_client_secret above (scope = the business), then Authorize and consent as the right account in the tab that opens.",f:[]},
+ {t:"Test a model",a:"test",btn:"Test",n:"Pings the model a role actually uses and reports the raw reply — or the exact provider error. Use it right after pasting a key.",
+  f:[{k:"role",l:"Role",sel:"roles"}]},
  {t:"Spend cap",a:"budget",n:"A soft monthly cap. Warns at 80% and 100%; never blocks.",
   f:[{k:"scope",l:"Scope (* = all)",ph:"*"},{k:"usd",l:"Monthly $",ph:"200"}]},
  {t:"Teach a business",a:"ingest",n:"Paste a doc to load as lessons, or leave blank to load the starter facts.",
   f:[{k:"business",l:"Business",sel:"businesses"},{k:"text",l:"Doc (optional)",type:"textarea"}]},
  {t:"Enrol a person",a:"enrol",n:"Telegram/chat prove identity; email/phone are treated as spoofable.",
   f:[{k:"person",l:"Name",ph:"brent"},{k:"channel",l:"Channel",opt:["telegram","chat","email","phone"]},{k:"address",l:"Address or id",ph:"8481123"}]},
+ {t:"Telegram bot",a:"secret",fixed:{name:"telegram_bot_token"},tg:true,
+  n:"Give Rosco a phone line. Create a bot with @BotFather, paste its token here — a green ● with the @name means Telegram accepts it. Then, in a terminal: `rosco serve` starts the bot, and `rosco pair` links your own phone.",
+  f:[{k:"value",l:"BotFather token",type:"password",ph:"123456:ABC-DEF…"}]},
  {t:"Grant a capability",a:"grant",n:"Who may reach what. 'subject' scope = only rows about them.",
   f:[{k:"person",l:"Person"},{k:"business",l:"Business",sel:"businesses"},{k:"capability",l:"Capability",sel:"capabilities"},{k:"verb",l:"Verb",opt:["get","do"]},{k:"scope",l:"Scope",opt:["all","subject"]}]},
  {t:"External tool",a:"tool",n:"An endpoint agents can be granted. The key goes in the vault.",
@@ -284,15 +327,76 @@ function renderState(){var s=cfgState,el=document.getElementById("cfgState");
 }
 function optionsFor(field){
   if(field.opt) return field.opt;
+  if(field.sel==="scopes") return ["system"].concat(cfgState.businesses||[]); // model keys -> system; connector creds -> a business
   if(field.sel && Array.isArray(cfgState[field.sel])) return cfgState[field.sel];
   return null;
 }
+// The persisted key panel under Models: one row per provider, a live dot -
+// green (provider accepts the stored key), red (rejected), amber (stored but
+// unverified/unreachable), grey (nothing stored). Clicking a row fills the key
+// name so a paste goes to the right slot. Probing is live, so show it working.
+function loadKeyStatus(el,nameInput,scopeInput){
+  el.innerHTML="<div class='n'>checking stored keys…</div>";
+  api("/api/cfg/keystatus").then(function(r){
+    el.innerHTML="";
+    var keys=(r.ok&&r.j&&Array.isArray(r.j.keys))?r.j.keys:[];
+    if(!keys.length){el.innerHTML="<div class='n'>(no key status)</div>";return;}
+    keys.forEach(function(k){
+      var cls=(k.valid===true)?"g":(k.valid===false)?"r":(k.stored?"a":"o");
+      var st=(k.valid===true)?"valid":(k.valid===false)?(k.detail||"rejected")
+             :(k.stored?(k.detail||"unverified"):"not set");
+      var row=document.createElement("div");row.className="ksrow";
+      var dot=document.createElement("span");dot.className="dot "+cls;
+      var nm=document.createElement("span");nm.className="ksname";nm.textContent=k.provider;
+      var sv=document.createElement("span");sv.className="ksst "+cls;sv.textContent=st;
+      row.appendChild(dot);row.appendChild(nm);row.appendChild(sv);
+      if(k.provider!=="ollama"&&k.secret){row.classList.add("pick");
+        row.addEventListener("click",function(){
+          if(scopeInput)scopeInput.value="system";             // model keys always live in system scope
+          if(nameInput){nameInput.value=k.secret;nameInput.focus();}});}
+      el.appendChild(row);
+    });
+  }).catch(function(){el.innerHTML="<div class='n'>(couldn't check keys)</div>";});
+}
+// The bot-token line: green ● @name when Telegram's getMe accepts it, red when
+// it's rejected, grey when nothing's stored. Same look as the key rows.
+function loadTelegramStatus(el){
+  el.innerHTML="<div class='n'>checking bot token…</div>";
+  api("/api/cfg/telegram").then(function(r){
+    el.innerHTML="";
+    var k=(r.ok&&r.j)?r.j:{};
+    var cls=(k.valid===true)?"g":(k.valid===false)?"r":(k.stored?"a":"o");
+    var st=(k.valid===true)?("live "+(k.username||"")):(k.valid===false)?"token rejected"
+           :(k.stored?(k.detail||"unverified"):"not set");
+    var row=document.createElement("div");row.className="ksrow";
+    var dot=document.createElement("span");dot.className="dot "+cls;
+    var nm=document.createElement("span");nm.className="ksname";nm.textContent="bot";
+    var sv=document.createElement("span");sv.className="ksst "+cls;sv.textContent=st;
+    row.appendChild(dot);row.appendChild(nm);row.appendChild(sv);el.appendChild(row);
+  }).catch(function(){el.innerHTML="<div class='n'>(couldn't check bot)</div>";});
+}
+// ---- settings sidebar: one section at a time, no long scroll ----
+var cfgSel=-1;
+function addNav(sec,label){var nav=document.getElementById("cfgNav");if(!nav)return;
+  var b=document.createElement("div");b.className="ni";b.setAttribute("data-sec",String(sec));b.textContent=label;
+  b.addEventListener("click",function(){selectSection(sec);});nav.appendChild(b);}
+function selectSection(sec){cfgSel=sec;var S=String(sec);
+  var state=document.getElementById("cfgState");if(state)state.style.display=(S==="-1")?"block":"none";
+  var forms=document.getElementById("cfgForms");if(forms){var cs=forms.children;
+    for(var i=0;i<cs.length;i++){cs[i].style.display=(cs[i].getAttribute("data-sec")===S)?"block":"none";}}
+  var nav=document.getElementById("cfgNav");if(nav){var ns=nav.children;
+    for(var j=0;j<ns.length;j++){ns[j].classList.toggle("on",ns[j].getAttribute("data-sec")===S);}}
+}
 function buildForms(){var host=document.getElementById("cfgForms");host.innerHTML="";
-  CFG.forEach(function(sec){
-    var card=document.createElement("div");card.className="cfg";
+  var nav=document.getElementById("cfgNav");if(nav)nav.innerHTML="";addNav(-1,"Overview");
+  CFG.forEach(function(sec,idx){
+    var card=document.createElement("div");card.className="cfg";card.setAttribute("data-sec",idx);
     var h=document.createElement("h4");h.textContent=sec.t;card.appendChild(h);
     if(sec.n){var nn=document.createElement("div");nn.className="n";nn.textContent=sec.n;card.appendChild(nn);}
-    var inputs={},dyn={};
+    if(sec.google){renderGooglePane(card);host.appendChild(card);addNav(idx,sec.t);return;}
+    var inputs={},dyn={},ksEl=null,tgEl=null;
+    if(sec.a==="secret"&&!sec.tg){ksEl=document.createElement("div");ksEl.className="keystat";card.appendChild(ksEl);}
+    if(sec.tg){tgEl=document.createElement("div");tgEl.className="keystat";card.appendChild(tgEl);}
     sec.f.forEach(function(fl){
       var lab=document.createElement("label");lab.textContent=fl.l;card.appendChild(lab);
       if(fl.dyn){var wrap=document.createElement("div");card.appendChild(wrap);dyn[fl.k]=wrap;inputs[fl.k]=null;return;}
@@ -322,24 +426,189 @@ function buildForms(){var host=document.getElementById("cfgForms");host.innerHTM
       };
       inputs.provider.addEventListener("change",fillModels); fillModels();
     }
-    var btn=document.createElement("button");btn.className="go";btn.textContent="Apply";
+    if(ksEl)loadKeyStatus(ksEl,inputs.name,inputs.business);
+    if(tgEl)loadTelegramStatus(tgEl);
+    var btn=document.createElement("button");btn.className="go";btn.textContent=sec.btn||"Apply";
     var res=document.createElement("div");res.className="res";
     btn.addEventListener("click",function(){
       var body={};for(var k in inputs){body[k]=inputs[k]?inputs[k].value:"";}
+      if(sec.fixed)for(var fk in sec.fixed)body[fk]=sec.fixed[fk];   // e.g. the telegram card fixes name
       if(body.businesses!==undefined) body.businesses=body.businesses.split(",").map(function(x){return x.trim();}).filter(Boolean);
       btn.disabled=true;res.className="res";res.textContent="working…";
       post("/api/cfg/"+sec.a,body).then(function(r){btn.disabled=false;
         if(r.ok){res.className="res ok";res.textContent=r.j.msg||"done";
           if(inputs.value)inputs.value.value="";               // never keep a secret in the field
           api("/api/cfg/state").then(function(x){cfgState=(x.ok&&x.j)?x.j:cfgState;renderState();});
+          if(ksEl)loadKeyStatus(ksEl,inputs.name,inputs.business);             // a saved key re-probes its status
+          if(tgEl)loadTelegramStatus(tgEl);                    // a saved bot token re-probes via getMe
         } else {res.className="res err";res.textContent=(r.j&&r.j.error)||"failed";}
       }).catch(function(){btn.disabled=false;res.className="res err";res.textContent="server unreachable";});
     });
     card.appendChild(btn);card.appendChild(res);host.appendChild(card);
+    addNav(idx,sec.t);
   });
+  selectSection(cfgSel);
+}
+// ---- Google Workspace: per-account OAuth "Authorize" ----
+function renderGooglePane(card){
+  var wrap=document.createElement("div");wrap.className="keystat";card.appendChild(wrap);
+  loadGoogleStatus(wrap);
+}
+function loadGoogleStatus(wrap){
+  wrap.innerHTML="<div class='n'>checking Google connections…</div>";
+  api("/api/google/status").then(function(r){
+    wrap.innerHTML="";
+    var accs=(r.ok&&r.j&&Array.isArray(r.j.accounts))?r.j.accounts:[];
+    if(!accs.length){wrap.innerHTML="<div class='n'>(no accounts)</div>";return;}
+    accs.forEach(function(a){
+      var block=document.createElement("div");block.className="gacct";
+      var cls=a.connected?"g":(a.clientReady?"o":"a");
+      var st=a.connected?("connected "+(a.email||"")):(a.clientReady?"ready — not connected":"needs client id + secret");
+      var row=document.createElement("div");row.className="ksrow";
+      var dot=document.createElement("span");dot.className="dot "+cls;
+      var nm=document.createElement("span");nm.className="ksname";nm.textContent=a.account;
+      var sv=document.createElement("span");sv.className="ksst "+cls;sv.textContent=st;
+      row.appendChild(dot);row.appendChild(nm);row.appendChild(sv);
+      if(a.clientReady){                                   // only meaningful once the app creds exist
+        var btn=document.createElement("button");btn.className="btn";btn.style.marginLeft="8px";
+        btn.textContent=a.connected?"Reconnect":"Authorize";
+        btn.addEventListener("click",function(){authorizeGoogle(a.account,btn,wrap);});
+        row.appendChild(btn);
+      }
+      block.appendChild(row);
+      // Inline app credentials, right here — no hunting through API keys. Stored
+      // under this account's own vault scope, then the row refreshes and (once
+      // both are set) Authorize appears.
+      var det=document.createElement("details");det.className="gapp";if(!a.clientReady)det.open=true;
+      var sum=document.createElement("summary");sum.textContent=a.clientReady?"Replace app credentials":"Set app credentials";det.appendChild(sum);
+      var l1=document.createElement("label");l1.textContent="Client ID";det.appendChild(l1);
+      var cid=document.createElement("input");cid.type="text";cid.placeholder="…apps.googleusercontent.com";cid.autocomplete="off";det.appendChild(cid);
+      var l2=document.createElement("label");l2.textContent="Client secret";det.appendChild(l2);
+      var csec=document.createElement("input");csec.type="password";csec.placeholder="GOCSPX-…";csec.autocomplete="off";det.appendChild(csec);
+      var actions=document.createElement("div");actions.className="ing-row";actions.style.marginTop="8px";
+      var sbtn=document.createElement("button");sbtn.className="ing-go";sbtn.textContent="Save app";
+      var msg=document.createElement("span");msg.className="ksst";
+      actions.appendChild(sbtn);actions.appendChild(msg);det.appendChild(actions);
+      sbtn.addEventListener("click",function(){
+        var idv=cid.value.trim(),scv=csec.value.trim();
+        if(!idv||!scv){msg.className="ksst r";msg.textContent="both fields needed";return;}
+        sbtn.disabled=true;msg.className="ksst";msg.textContent="saving…";
+        post("/api/cfg/secret",{business:a.account,name:"google_client_id",value:idv}).then(function(r1){
+          if(!r1.ok){sbtn.disabled=false;msg.className="ksst r";msg.textContent=(r1.j&&r1.j.error)||"id failed";return;}
+          post("/api/cfg/secret",{business:a.account,name:"google_client_secret",value:scv}).then(function(r2){
+            if(!r2.ok){sbtn.disabled=false;msg.className="ksst r";msg.textContent=(r2.j&&r2.j.error)||"secret failed";return;}
+            loadGoogleStatus(wrap);                        // refresh: Authorize should now appear
+          });
+        });
+      });
+      block.appendChild(det);
+      wrap.appendChild(block);
+    });
+  }).catch(function(){wrap.innerHTML="<div class='n'>(couldn't check Google connections)</div>";});
+}
+function authorizeGoogle(account,btn,wrap){
+  var old=btn.textContent;btn.disabled=true;btn.textContent="opening…";
+  post("/api/google/authurl",{account:account}).then(function(r){
+    if(!(r.ok&&r.j&&r.j.url)){btn.disabled=false;btn.textContent=old;
+      alert((r.j&&r.j.error)||"couldn't start authorization");return;}
+    window.open(r.j.url,"_blank","noopener");
+    btn.textContent="finish in the tab…";
+    var tries=0,iv=setInterval(function(){tries++;
+      api("/api/google/status").then(function(s){
+        var accs=(s.ok&&s.j&&s.j.accounts)||[];
+        var a=accs.filter(function(x){return x.account===account;})[0];
+        if(a&&a.connected){clearInterval(iv);loadGoogleStatus(wrap);}
+      });
+      if(tries>90){clearInterval(iv);btn.disabled=false;btn.textContent=old;}
+    },2000);
+  }).catch(function(){btn.disabled=false;btn.textContent=old;});
 }
 document.getElementById("gear").addEventListener("click",openSettings);
 document.getElementById("settingsClose").addEventListener("click",closeSettings);
+
+// ---- ingestion review: learn one item at a time ----
+function ingestBusinesses(){return (cfgState&&cfgState.businesses)||[];}
+function setIngestPip(n){var pip=document.getElementById("ingestPip");if(pip)pip.style.display=n>0?"inline-block":"none";}
+function pollIngestPip(){api("/api/ingest/queue").then(function(r){setIngestPip(((r.ok&&r.j&&r.j.items)||[]).length);});}
+function openIngest(){document.getElementById("ingest").style.display="flex";
+  api("/api/cfg/state").then(function(r){if(r.ok&&r.j&&r.j.businesses)cfgState=r.j;loadIngest();});}
+function closeIngest(){document.getElementById("ingest").style.display="none";}
+function loadIngest(){
+  var host=document.getElementById("ingestBody");host.innerHTML="";
+  var add=document.createElement("div");add.className="ing-add";
+  var ta=document.createElement("textarea");ta.placeholder="Paste notes, a doc, an email — Rosco splits it into items and proposes where each goes. Nothing is learned until you say so.";
+  var addBtn=document.createElement("button");addBtn.className="ing-go";addBtn.textContent="Queue items";addBtn.style.alignSelf="flex-start";
+  addBtn.addEventListener("click",function(){var t=ta.value.trim();if(!t)return;
+    addBtn.disabled=true;addBtn.textContent="reading…";
+    post("/api/ingest/add",{text:t}).then(function(r){addBtn.disabled=false;addBtn.textContent="Queue items";
+      if(r.ok){ta.value="";loadIngest();}else alert((r.j&&r.j.error)||"couldn't queue");});});
+  add.appendChild(ta);add.appendChild(addBtn);host.appendChild(add);
+  // or pull a Google Drive file's contents straight into the queue
+  var drow=document.createElement("div");drow.className="ing-row";
+  var dl=document.createElement("label");dl.textContent="or Drive file";drow.appendChild(dl);
+  var din=document.createElement("input");din.type="text";din.placeholder="file name, e.g. DECISIONS.md";din.autocomplete="off";
+  din.style.cssText="flex:1;min-width:150px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
+  var dbtn=document.createElement("button");dbtn.className="ing-go";dbtn.textContent="Pull from Drive";
+  var dmsg=document.createElement("span");dmsg.className="ksst";
+  dbtn.addEventListener("click",function(){var nm=din.value.trim();if(!nm)return;
+    dbtn.disabled=true;dmsg.className="ksst";dmsg.textContent="reading Drive…";
+    post("/api/ingest/drive",{name:nm}).then(function(r){dbtn.disabled=false;
+      if(r.ok){din.value="";dmsg.className="ksst g";dmsg.textContent="queued "+r.j.added+" from "+(r.j.file||nm);loadIngest();}
+      else{dmsg.className="ksst r";dmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
+  drow.appendChild(din);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
+  Promise.all([api("/api/ingest/queue"),api("/api/ingest/readiness")]).then(function(res){
+    var q=(res[0].ok&&res[0].j&&res[0].j.items)||[];
+    var rd=(res[1].ok&&res[1].j)||{};
+    setIngestPip(q.length);
+    if(rd.confident&&q.length){
+      var rb=document.createElement("div");rb.className="ing-ready";
+      var msg=document.createElement("span");msg.textContent="Rosco has been placing these well lately ("+Math.round((rd.recentRate||0)*100)+"% on target). Auto-route the rest?";
+      var ab=document.createElement("button");ab.className="ing-go";ab.textContent="Auto-route "+q.length;
+      ab.addEventListener("click",function(){ab.disabled=true;autoRoute(q);});
+      rb.appendChild(msg);rb.appendChild(ab);host.appendChild(rb);
+    }
+    var bar=document.createElement("div");bar.className="ing-bar";
+    var l=document.createElement("span");l.textContent=q.length+" waiting";
+    var rt=document.createElement("span");rt.textContent=(rd.decided||0)+" placed · "+Math.round((rd.rate||0)*100)+"% on target";
+    bar.appendChild(l);bar.appendChild(rt);host.appendChild(bar);
+    if(!q.length){var e=document.createElement("div");e.className="ing-empty";e.textContent="Nothing to review. Paste something above to begin.";host.appendChild(e);return;}
+    host.appendChild(ingestCard(q[0]));
+  });
+}
+function ingestCard(item){
+  var card=document.createElement("div");card.className="ing-card";
+  var txt=document.createElement("div");txt.className="ing-text";txt.textContent=item.text;card.appendChild(txt);
+  var prop=document.createElement("div");prop.className="ing-prop";
+  if(item.business){var s1=document.createElement("span");s1.textContent="Rosco →";
+    var b=document.createElement("b");b.textContent=item.business;
+    var s2=document.createElement("span");s2.textContent=Math.round((item.confidence||0)*100)+"% · "+(item.why||"");
+    prop.appendChild(s1);prop.appendChild(b);prop.appendChild(s2);
+  } else {var s0=document.createElement("span");s0.textContent="Rosco isn't sure — you place this one";prop.appendChild(s0);}
+  card.appendChild(prop);
+  var row=document.createElement("div");row.className="ing-row";
+  var lab=document.createElement("label");lab.textContent="File into";row.appendChild(lab);
+  var sel=document.createElement("select");
+  ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bz;if(bz===item.business)o.selected=true;sel.appendChild(o);});
+  row.appendChild(sel);
+  var go=document.createElement("button");go.className="ing-go";go.textContent="Ingest here";
+  go.addEventListener("click",function(){decideIngest(item.cand,sel.value,"ingest",card);});
+  var skip=document.createElement("button");skip.className="ing-skip";skip.textContent="Skip";
+  skip.addEventListener("click",function(){decideIngest(item.cand,"","skip",card);});
+  row.appendChild(go);row.appendChild(skip);card.appendChild(row);
+  return card;
+}
+function decideIngest(cand,business,action,card){
+  if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=true;});
+  post("/api/ingest/decide",{cand:cand,business:business,action:action}).then(function(r){
+    if(r.ok){loadIngest();}
+    else{alert((r.j&&r.j.error)||"couldn't decide");if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=false;});}
+  });
+}
+function autoRoute(items){var withBiz=items.filter(function(x){return x.business;});var i=0;
+  (function next(){if(i>=withBiz.length){loadIngest();return;}var it=withBiz[i++];
+    post("/api/ingest/decide",{cand:it.cand,business:it.business,action:"ingest"}).then(next,next);})();}
+document.getElementById("ingestBtn").addEventListener("click",openIngest);
+document.getElementById("ingestClose").addEventListener("click",closeIngest);
 
 // Ambient pulses are just idle liveness now - real activity drives the graph
 // through loadActivity(), so keep the timer slow and let the log do the talking.

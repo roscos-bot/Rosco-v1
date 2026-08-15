@@ -368,6 +368,14 @@ class Vault:
             raise PermissionError(
                 f"only Ross stores secrets; {by!r} tried to set {business}:{name}")
         self._require_key()
+        # Clean the paste before it is sealed. A vault secret is always a
+        # credential, and a leading Ctrl-V/SYN or a zero-width space (the exact
+        # bug that gave an opaque 400 on every model call) has no business being
+        # encrypted and kept - strip the edge junk, refuse an interior control
+        # char as corrupt. Done here so no stored secret can carry the poison,
+        # whichever path later reads it.
+        from . import safehttp
+        value = safehttp.clean_credential(value, label=f"{business}:{name}")
         nonce = os.urandom(16)
         raw = value.encode()
         blob = bytes(a ^ b for a, b in zip(raw, self._stream(nonce, len(raw))))
