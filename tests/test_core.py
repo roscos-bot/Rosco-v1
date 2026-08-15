@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rosco.grants import (ANSWER, ASK, DECLINE, DO, GET, SELF, Grants,  # noqa: E402
                           Request)
+from rosco.identity import CERTAIN, CLAIMED, UNKNOWN, People  # noqa: E402
+from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
 from rosco.store import Log  # noqa: E402
 from rosco.vault import INFERRED, OBSERVED, TOLD, Vault, derive_key  # noqa: E402
 
@@ -85,8 +87,16 @@ def main() -> int:
                        g.decide(Request("ed", "spring-valley", "quotes")).outcome, ASK)
 
     print("\nROSS")
-    fails += not check("Ross is never gated",
-                       g.decide(Request("ross", "rum", "anything", verb=DO)).outcome, SELF)
+    fails += not check("Ross is ungated on a strong channel",
+                       g.decide(Request("ross", "rum", "anything", verb=DO,
+                                        channel="telegram")).outcome, SELF)
+    # The worst hole in the system if it regresses: a forged From: header
+    # naming Ross would otherwise hand over everything at once.
+    fails += not check("a forged Ross email does NOT bypass",
+                       g.decide(Request("ross", "rum", "anything", verb=DO,
+                                        channel="email")).outcome, ASK)
+    fails += not check("nor does a phone call claiming to be him",
+                       g.decide(Request("ross", "rum", "books", channel="phone")).outcome, ASK)
 
     print("\nTHE LOG")
     problems = log.verify()
@@ -145,6 +155,120 @@ def main() -> int:
         fails += not check("no key means no plaintext", "read", "refused")
     except RuntimeError:
         fails += not check("no key means no plaintext", "refused", "refused")
+
+    print("\nIDENTITY")
+    idl = fresh("home")
+    p = People(idl)
+    try:
+        p.enrol("lucas", "telegram", "551", by="lucas")
+        fails += not check("only Ross enrols", "allowed", "refused")
+    except PermissionError:
+        fails += not check("only Ross enrols", "refused", "refused")
+
+    p.enrol("brent", "telegram", "8481123", note="his phone")
+    p.enrol("brent", "email", "Brent@SugarCreek.com")
+    fails += not check("paired strong channel is certain",
+                       p.resolve("telegram", "8481123").confidence, CERTAIN)
+    fails += not check("email is only ever a claim",
+                       p.resolve("email", "brent@sugarcreek.com").confidence, CLAIMED)
+    fails += not check("email matching is case-insensitive",
+                       p.resolve("email", "BRENT@SUGARCREEK.COM").person, "brent")
+    fails += not check("an unpaired telegram id is a stranger",
+                       p.resolve("telegram", "9999").person, "")
+    fails += not check("a stranger is never 'certain' of nobody",
+                       p.resolve("telegram", "9999").confidence, UNKNOWN)
+
+    # Phone shapes that are the same line.
+    p.enrol("grace", "phone", "+1 (314) 555-0123")
+    fails += not check("phone normalises across formats",
+                       p.resolve("phone", "3145550123").person, "grace")
+    fails += not check("a phone call is never proof",
+                       p.resolve("phone", "3145550123").proven, False)
+
+    # Ambiguity must never resolve to a pick.
+    p.enrol("augie", "email", "family@fusz.com")
+    p.enrol("courtney", "email", "family@fusz.com")
+    amb = p.resolve("email", "family@fusz.com")
+    fails += not check("two people behind one address is nobody", amb.person, "")
+    fails += not check("and it says why", "refusing to choose" in amb.why, True)
+
+    # Expiry - a recycled number belongs to a stranger.
+    p.enrol("kyle", "phone", "6365550199", until="2026-01-01T00:00:00Z")
+    fails += not check("a lapsed enrolment stops resolving",
+                       p.resolve("phone", "6365550199", at="2026-08-14T00:00:00Z").person, "")
+    fails += not check("and it resolved before it lapsed",
+                       p.resolve("phone", "6365550199", at="2025-06-01T00:00:00Z").person, "kyle")
+
+    # Retirement.
+    h = p.enrol("ed", "telegram", "77123")
+    fails += not check("enrolled", p.resolve("telegram", "77123").person, "ed")
+    p.retire(h["id"], reason="job finished")
+    fails += not check("retired handle stops resolving",
+                       p.resolve("telegram", "77123").person, "")
+
+    print("\nNODES")
+    nl = fresh("home")
+    nn = Nodes(nl)
+    try:
+        nn.register("rogue", "somewhere", by="rosco")
+        fails += not check("only Ross registers a node", "allowed", "refused")
+    except PermissionError:
+        fails += not check("only Ross registers a node", "refused", "refused")
+
+    nn.register("home", "Spring Valley", reach="10.0.1.10:7799")
+    nn.register("shop", "RUM, W. Outer Rd", reach="10.0.2.10:7799")
+    fails += not check("registered nodes are trusted", nn.trusted(), {"home", "shop"})
+
+    # A peer offering its own chain.
+    shop = fresh("shop")
+    Grants(shop).give("lucas", "rum", "stock", verb=DO)
+    rep = nn.sync_from(shop)
+    fails += not check("peer chain absorbed", rep.chains.get("shop"), 1)
+    fails += not check("sync is idempotent", nn.sync_from(shop).taken, 0)
+
+    # An unregistered chain is refused, however it arrives.
+    stranger = fresh("audit")
+    Grants(stranger).give("nobody", "rum", "*", verb=DO)
+    rep = nn.sync_from(stranger)
+    fails += not check("an unregistered chain is refused", rep.taken, 0)
+    fails += not check("and the refusal is reported", rep.clean, False)
+
+    # Relay: the shop's events reach home THROUGH the cloud.
+    nn.register("cloud", "VM", role=RENDEZVOUS, reach="rosco.example:7799")
+    cloud = fresh("cloud")
+    Nodes(cloud).register("shop", "RUM")           # cloud trusts shop too
+    shop2 = fresh("shop2")                          # a second shop-side write
+    Grants(shop).give("lucas", "rum", "orders")     # shop writes again, home is offline
+    Nodes(cloud).sync_from(shop)                    # cloud picks it up
+    rep = nn.sync_from(cloud)                       # home gets it via the cloud
+    fails += not check("a chain relays through the rendezvous",
+                       rep.chains.get("shop"), 1)
+    fails += not check("relayed events still verify", nl.verify(), [])
+
+    print("\nTHE LOG / HOSTILE PEERS")
+    hl = fresh("home")
+    other = fresh("shop")
+    other.append("test.a", {"x": 1})
+    rows = other.since("shop", 0)
+
+    # An event stamped with OUR node name would let a peer rewrite our history.
+    forged = dict(rows[0], node="home")
+    try:
+        hl.absorb([forged])
+        fails += not check("an event claiming to be ours is refused", "taken", "refused")
+    except ValueError:
+        fails += not check("an event claiming to be ours is refused", "refused", "refused")
+
+    # A tampered body must not survive the trip.
+    bad = dict(rows[0], body={"x": 999})
+    try:
+        hl.absorb([bad])
+        fails += not check("a tampered event is refused", "taken", "refused")
+    except ValueError:
+        fails += not check("a tampered event is refused", "refused", "refused")
+
+    fails += not check("the honest event still absorbs", hl.absorb(rows), 1)
+    fails += not check("chain sound after absorbing", hl.verify(), [])
 
     print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}\n")
     return 1 if fails else 0

@@ -207,14 +207,44 @@ class Log:
 
         Idempotent by primary key, so re-syncing the same range is harmless -
         which matters because a shop on a flaky link will do exactly that.
-        Foreign events are never re-hashed: their hash is the peer's claim about
-        its own chain, and verify() checks it independently.
+
+        Three things are refused rather than stored, because each one lets a
+        peer corrupt history rather than merely add to it:
+
+        EVENTS CLAIMING TO BE OURS. Nothing may write our chain but us. Without
+        this a peer can hand us a row stamped with our own node name at a seq
+        beyond our high-water, and the next append() chains onto the forgery -
+        our own history, rewritten by somebody else's database.
+
+        EVENTS THAT DO NOT HASH. A foreign hash is the peer's claim about its
+        own chain, and the claim is cheap to check on the way in. Checking here
+        rather than only in verify() means a bad row never lands, so a sound
+        peer is not made unverifiable by a broken one.
+
+        A SEQ ALREADY TAKEN ON THAT CHAIN. Two different events at the same
+        (node, seq) is a fork - the peer's log branched, or something forged a
+        row. Either way the honest response is to refuse and let verify() and a
+        human sort out which branch is real.
         """
         n = 0
         for ev in events:
+            if ev.get("node") == self.node:
+                raise ValueError(
+                    f"refusing an event claiming to be from this node ({self.node}); "
+                    f"nothing writes our chain but us")
             cur = self.db.execute("SELECT 1 FROM events WHERE id=?", (ev["id"],))
             if cur.fetchone():
                 continue
+            if not self._hashes(ev):
+                raise ValueError(
+                    f"event {ev['id']} from {ev.get('node')!r} does not match its own hash")
+            clash = self.db.execute(
+                "SELECT id FROM events WHERE node=? AND seq=?", (ev["node"], ev["seq"])
+            ).fetchone()
+            if clash:
+                raise ValueError(
+                    f"{ev['node']} seq {ev['seq']} is already held by a different event "
+                    f"({clash['id']}); the peer's chain has forked")
             body = ev["body"]
             self.db.execute(
                 "INSERT INTO events(id,seq,node,ts,kind,subject,actor,body,prev,hash)"
@@ -226,6 +256,18 @@ class Log:
             )
             n += 1
         return n
+
+    @staticmethod
+    def _hashes(ev: dict) -> bool:
+        """Does this event match the hash it carries?"""
+        body = ev["body"]
+        want = hashlib.sha256(canonical({
+            "id": ev["id"], "node": ev["node"], "ts": ev["ts"], "kind": ev["kind"],
+            "subject": ev.get("subject", ""), "actor": ev.get("actor", ""),
+            "body": json.loads(body) if isinstance(body, str) else body,
+            "prev": ev.get("prev", ""),
+        }).encode()).hexdigest()
+        return want == ev["hash"]
 
     def close(self) -> None:
         self.db.close()

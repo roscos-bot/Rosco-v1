@@ -152,7 +152,22 @@ class Grants:
     def decide(self, req: Request) -> Decision:
         """The one call the whole system turns on."""
         if req.person == ROSS:
-            return Decision(SELF, "Ross")
+            # Ross is ungated - but only where the channel proves it is him.
+            #
+            # His address is the most valuable one in the system to forge: a
+            # From: header saying ross@steelhaven.homes costs nothing to fake,
+            # and an ungated bypass reached that way hands over everything at
+            # once. So the bypass requires a channel that cannot be spoofed,
+            # and Ross arriving by mail or phone is treated as a claim like
+            # anybody else's - it lands in the queue and he confirms it at the
+            # console. That is the same "only localhost changes anything" rule
+            # the rest of the system runs on, applied to its owner.
+            if req.channel in STRONG:
+                return Decision(SELF, "Ross, on a channel that proves it")
+            return Decision(
+                ASK,
+                f"claims to be Ross over {req.channel}, which is spoofable; "
+                f"confirm at the console")
 
         if req.verb not in (GET, DO):
             return Decision(DECLINE, f"unknown verb {req.verb!r}")
