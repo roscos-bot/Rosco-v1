@@ -730,7 +730,8 @@ class ConsoleServer(ThreadingHTTPServer):
                     "rosco-v1", "rosco_v1", "rosco v1", "your code", "your source",
                     "your files", "how you're coded", "how you are coded",
                     "how you're built", "how you are built", "ingest yourself"))
-                or (_wants_file_content(low) and _looks_like_code(low))):
+                or (_wants_file_content(low) and _looks_like_code(low))
+                or _about_the_app(low)):
             return ""
         if f"system:{gh.TOKEN_SECRET}" not in set(Vault(log).secret_names()):
             return ""
@@ -743,7 +744,8 @@ class ConsoleServer(ThreadingHTTPServer):
             if not repos:
                 return "GITHUB: the stored token reaches no repositories."
             repo = _match_repo(repos, low)
-            if repo is None and (_looks_like_code(low) or any(w in low for w in (
+            if repo is None and (_looks_like_code(low) or _about_the_app(low)
+                    or any(w in low for w in (
                     "your code", "your source", "your files", "yourself", "how you",
                     "rosco-v1", "rosco_v1", "rosco v1", "ingest yourself"))):
                 # no repo named, but they clearly mean one — the repo we're already
@@ -1536,6 +1538,19 @@ def _looks_like_code(low):
     return bool(re.search(r"[\w\-]+/[\w\-./]+\.\w{1,5}", low)
                 or re.search(r"\.(py|js|ts|tsx|jsx|go|rs|java|rb|md|json|ya?ml|toml|"
                              r"html|css|sh|sql|cfg|ini)\b", low))
+
+
+def _about_the_app(low):
+    """The message is about changing or understanding THIS app's own UI/code — a
+    panel, a button, a page, an endpoint. Rosco should then read its OWN repo
+    (Rosco-v1) rather than guess at files. Broad on purpose: over-showing the
+    file tree is cheap context; under-showing is exactly why it invents file
+    names (a 'NodePanel.tsx' that does not exist) instead of reading web_app.js."""
+    return any(w in low for w in (
+        "node panel", "node-panel", "the panel", "component", "dropdown", "sidebar",
+        "modal", "widget", "the ui", "frontend", "front end", "backend", "back end",
+        "endpoint", "dashboard", "the graph", "chat box", "chatbox", "ingest screen",
+        "settings page", "wire up", "wire it", "the button", "the form", "the tab"))
 
 
 def _best_path(tree, term):
