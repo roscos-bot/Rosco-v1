@@ -1512,6 +1512,9 @@ def _extract_json_array(raw):
     rb = s.rfind("]")
     if 0 <= lb < rb:
         cands.append(s[lb:rb + 1])
+    om = re.search(r"\{.*\}", s, re.S)       # a bare object — the model dropped the [ ] for a single item
+    if om:
+        cands.append(om.group(0))
     for c in cands:
         try:
             v = json.loads(c)
@@ -1519,6 +1522,8 @@ def _extract_json_array(raw):
             continue
         if isinstance(v, list):
             return v
+        if isinstance(v, dict):
+            return [v]                       # one object -> a one-item list
     return None
 
 
