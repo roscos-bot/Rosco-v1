@@ -36,9 +36,33 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from .grants import ROSS, STRONG, WEAK
 from .store import Log
+
+
+def _utc(value: str) -> str:
+    """Normalise a time to the one spelling the rest of the system uses.
+
+    Expiry used to be compared as a raw string, which works only while every
+    value happens to share a format. It does not: '2026-12-01' sorts against
+    '2026-08-14T00:00:00Z' by luck, and an offset like '+02:00' compares as
+    though it were UTC, leaving a lapsed handle live for two extra hours.
+    Parsing on the way in means the comparison is between like and like, and a
+    value nobody can parse is rejected at enrolment rather than silently
+    treated as 'never expires'.
+    """
+    v = (value or "").strip()
+    if not v:
+        return ""
+    try:
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(f"cannot read {value!r} as a time: {e}") from None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 CERTAIN = "certain"
 CLAIMED = "claimed"
@@ -140,7 +164,7 @@ class People:
             "identity.enrolled",
             {"person": person.strip().lower(), "channel": channel,
              "address": normalise(channel, address), "raw": address.strip(),
-             "note": note, "until": until},
+             "note": note, "until": _utc(until)},
             subject=f"{channel}:{normalise(channel, address)}", actor=ROSS,
         )
 
@@ -187,9 +211,18 @@ class People:
         if not addr:
             return Identity("", UNKNOWN, "no address on the message")
 
-        when = at or now()
+        when = _utc(at) if at else now()
         matches = [h for h in self.handles()
                    if h.channel == channel and h.address == addr]
+
+        # Only the newest enrolment per person counts. Re-enrolling an address
+        # is how Ross adds an expiry or a note to one, and the first version
+        # kept both rows live - so the older, unexpiring handle went on
+        # resolving and the new expiry did nothing at all.
+        newest: dict[str, Handle] = {}
+        for h in sorted(matches, key=lambda h: (h.enrolled, h.id)):
+            newest[h.person] = h
+        matches = list(newest.values())
 
         # Expiry is checked before anything else. A recycled mobile number
         # belongs to a stranger the moment the enrolment lapses, and a stranger

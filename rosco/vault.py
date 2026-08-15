@@ -44,7 +44,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .store import Log, now
+from .keys import ROSS
+from .store import Log, canonical, now
 
 # How a lesson came to be believed, weakest last. An agent must never present
 # INFERRED as though Ross had said it.
@@ -131,25 +132,45 @@ class Vault:
         replaced: dict[str, str] = {}
         dropped: set[str] = set()
 
-        for ev in self.log.replay(kind="vault.*"):
+        # Two passes, because replay order is (ts, node, seq) across nodes and a
+        # correction can therefore arrive before the lesson it replaces - the
+        # shop corrects at 10:00:01 while the house recorded the original at
+        # 10:00:01 too, and the tie breaks on node name. The first version
+        # applied corrections inline, so an early-ordered correction found no
+        # target, dropped itself, and still marked the lesson superseded. Both
+        # vanished, silently, and the agent forgot something it had been told.
+        events = list(self.log.replay(kind="vault.*"))
+
+        for ev in events:
+            if ev["kind"] != "vault.learned":
+                continue
             b = ev["body"]
-            if ev["kind"] == "vault.learned":
-                lessons[ev["id"]] = Lesson(
-                    id=ev["id"], agent=b["agent"], business=b["business"],
-                    text=b["text"], basis=b.get("basis", INFERRED),
-                    source=b.get("source", ""), learned=ev["ts"],
-                    tags=tuple(b.get("tags", ())),
-                )
-            elif ev["kind"] == "vault.corrected":
+            lessons[ev["id"]] = Lesson(
+                id=ev["id"], agent=b["agent"], business=b["business"],
+                text=b["text"], basis=b.get("basis", INFERRED),
+                source=b.get("source", ""), learned=ev["ts"],
+                tags=tuple(b.get("tags", ())),
+            )
+
+        # Corrections resolve against the full set, and chain: a correction of a
+        # correction inherits from whichever link is already known.
+        for ev in events:
+            b = ev["body"]
+            if ev["kind"] == "vault.corrected":
                 old = b["replaces"]
+                src = lessons.get(old)
+                if src is None:
+                    # Nothing to replace. Refusing to mark anything superseded
+                    # is the honest handling - a correction of a lesson we have
+                    # never seen is a message from a node whose history we are
+                    # missing, not a licence to delete.
+                    continue
                 replaced[old] = ev["id"]
-                if old in lessons:
-                    src = lessons[old]
-                    lessons[ev["id"]] = Lesson(
-                        id=ev["id"], agent=src.agent, business=src.business,
-                        text=b["text"], basis=b.get("basis", TOLD),
-                        source=ev["actor"], learned=ev["ts"], tags=src.tags,
-                    )
+                lessons[ev["id"]] = Lesson(
+                    id=ev["id"], agent=src.agent, business=src.business,
+                    text=b["text"], basis=b.get("basis", TOLD),
+                    source=ev["actor"], learned=ev["ts"], tags=src.tags,
+                )
             elif ev["kind"] == "vault.forgot":
                 dropped.add(b["lesson"])
 
@@ -211,19 +232,51 @@ class Vault:
             ctr += 1
         return out[:n]
 
+    SCHEME = "hmac-sha256-ctr/2"
+
+    def _tag(self, business: str, name: str, nonce_b64: str, blob_b64: str) -> str:
+        """The MAC, over the envelope AND where it lives.
+
+        Version 1 authenticated only nonce+blob, which meant an envelope was
+        valid anywhere: an attacker with write access to the log could copy the
+        row holding RUM's QBO token, relabel it as SteelHaven's Workspace
+        credential, and get_secret would happily decrypt and return it under the
+        new name. Binding the business and the name into the tag - and
+        recomputing it on read from the caller's arguments rather than from the
+        stored body - makes a spliced envelope fail instead of decrypt.
+
+        The concatenation is canonical JSON rather than raw bytes so there is no
+        boundary ambiguity between the fields.
+        """
+        return hmac.new(
+            self._key,
+            canonical({"scheme": self.SCHEME, "business": business, "name": name,
+                       "nonce": nonce_b64, "blob": blob_b64}).encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
     def put_secret(self, business: str, name: str, value: str, *,
                    by: str = "ross") -> dict:
-        """Store a credential. Only Ross puts secrets in, by construction."""
+        """Store a credential. Only Ross puts secrets in.
+
+        The author check was a docstring in the first version and nothing else.
+        It is a rule now, and the event is an authority kind, so it also carries
+        Ross's signature and is discarded on replay without one.
+        """
+        if by != ROSS:
+            raise PermissionError(
+                f"only Ross stores secrets; {by!r} tried to set {business}:{name}")
         self._require_key()
         nonce = os.urandom(16)
         raw = value.encode()
         blob = bytes(a ^ b for a, b in zip(raw, self._stream(nonce, len(raw))))
-        tag = hmac.new(self._key, nonce + blob, hashlib.sha256).hexdigest()
+        nonce_b64 = base64.b64encode(nonce).decode()
+        blob_b64 = base64.b64encode(blob).decode()
         return self.log.append(
             "vault.secret",
-            {"business": business, "name": name, "scheme": "hmac-sha256-ctr/1",
-             "nonce": base64.b64encode(nonce).decode(),
-             "blob": base64.b64encode(blob).decode(), "tag": tag},
+            {"business": business, "name": name, "scheme": self.SCHEME,
+             "nonce": nonce_b64, "blob": blob_b64,
+             "tag": self._tag(business, name, nonce_b64, blob_b64)},
             subject=f"{business}:{name}", actor=by,
         )
 
@@ -245,11 +298,18 @@ class Vault:
         if not latest:
             return None
         b = latest["body"]
-        nonce = base64.b64decode(b["nonce"])
-        blob = base64.b64decode(b["blob"])
-        want = hmac.new(self._key, nonce + blob, hashlib.sha256).hexdigest()
+        if b.get("scheme") != self.SCHEME:
+            raise ValueError(
+                f"{business}:{name} was written under {b.get('scheme')!r}; this build "
+                f"reads {self.SCHEME!r}. Re-store it rather than reading it unchecked.")
+        # Recomputed from the arguments the CALLER passed, never from the stored
+        # body - checking a relabelled envelope against its own new label would
+        # authenticate the relabelling.
+        want = self._tag(business, name, b["nonce"], b["blob"])
         if not hmac.compare_digest(want, b["tag"]):
             raise ValueError(f"{business}:{name} failed its integrity check")
+        nonce = base64.b64decode(b["nonce"])
+        blob = base64.b64decode(b["blob"])
         return bytes(a ^ b2 for a, b2 in zip(blob, self._stream(nonce, len(blob)))).decode()
 
     def secret_names(self, business: str = "") -> list[str]:

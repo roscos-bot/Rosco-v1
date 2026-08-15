@@ -18,10 +18,17 @@ WHY IT COPIES OTHER NODES' CHAINS TOO. The house and the shop may never see
 each other directly - one is behind a residential connection and the other is
 on a business line, and the only mutually reachable machine is the cloud VM. So
 sync pulls every chain the peer holds, not just the peer's own. The shop's
-events reach the house by way of the cloud, and the hash chain still proves
-they are the shop's, because the cloud cannot alter them without breaking a
-hash it does not have the ability to recompute convincingly - it would have to
-forge the whole chain forward from the edit, and verify() walks the whole chain.
+events reach the house by way of the cloud.
+
+WHAT MAKES THAT RELAY SAFE - and a correction. The first version of this file
+claimed the hash chain proved the relayed events were the shop's, "because the
+cloud cannot alter them without breaking a hash it does not have the ability to
+recompute convincingly". That was wrong, and an audit said so. The hash is
+unkeyed: a relay can alter a row and recompute every hash forward from it in
+milliseconds, and verify() would call the result clean. What actually protects
+the relay is the signature - every event carries one from the node that wrote
+it, so the cloud can pass the shop's events along and cannot change one, having
+no way to produce the shop's signature over the change. See keys.py.
 
 WHAT IT DOES NOT DO. It does not sync selectively. Filtering by kind - keeping
 RUM's bound book off the house machine, say - would leave gaps in a chain whose
@@ -201,15 +208,21 @@ class Nodes:
             if their_max <= ours:
                 continue
             rows = peer.since(chain, ours)
-            try:
-                took = self.log.absorb(rows)
-            except ValueError as e:
-                # One bad chain must not stop the others. A forked or forged
-                # chain is exactly the thing worth reporting rather than
-                # swallowing, and the honest handling is to leave it alone and
-                # tell Ross.
-                report.refused.append(f"{chain}: {e}")
-                continue
+            # One row at a time so the count stays true. Absorbing the batch and
+            # catching the exception reported taken=0 while the rows that landed
+            # before the bad one stayed in the log - a report that says nothing
+            # happened when something did is worse than no report.
+            took = 0
+            for row in rows:
+                try:
+                    took += self.log.absorb([row])
+                except ValueError as e:
+                    # One bad chain must not stop the others, and one bad row
+                    # must not discard the good ones before it. Stop this chain
+                    # here - everything after a break is unverifiable anyway -
+                    # and tell Ross.
+                    report.refused.append(f"{chain} at seq {row.get('seq')}: {e}")
+                    break
             if took:
                 report.chains[chain] = took
                 report.taken += took

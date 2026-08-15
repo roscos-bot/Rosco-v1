@@ -11,15 +11,23 @@ something from some business, and this decides which of four things happens.
 Two rules are structural rather than configurable, because they are the ones
 that make the rest safe:
 
-ONLY ROSS GRANTS. give() refuses any other author. Not John for SteelHaven, not
-Lucas for RUM, not a person widening their own scope. The power to say yes is
-not delegable, so there is no path by which the system talks itself into more
-access than it was given.
+ONLY ROSS GRANTS. give() refuses any other author, and - since a Python check is
+worth nothing across three machines - the event itself carries his signature and
+is discarded on replay without it. See keys.py. The power to say yes is not
+delegable, so there is no path by which the system talks itself into more access
+than it was given.
 
 UNKNOWN IS NEVER YES. An untaught request returns ASK, never a guess from a
 similar case. Silence from Ross is not consent: the request waits, indefinitely,
 with no timeout that quietly becomes an approval. This is the rule that costs
 the most in practice and is worth every bit of it.
+
+The rule is also why an *unidentified* sender returns ASK rather than matching
+anything. An audit found that an empty person - which is exactly what identity
+resolution returns for a stranger - fell through the listing filter and matched
+every grant in the business, turning "unknown is never yes" into "unknown is
+everyone". Both ends are now guarded: decide() refuses a request that cannot
+name who is asking, and live() distinguishes "no filter" from "the empty name".
 
 Everything else is learned. Grants accumulate one answer at a time and are
 permanent until revoked, so the system starts nearly ignorant and gets quieter
@@ -30,6 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .keys import ROSS
 from .store import Log
 
 # The four outcomes.
@@ -49,10 +58,25 @@ DO = "do"
 # authenticated by Google. An email From: header is a suggestion, and caller ID
 # is worse - both are trivially faked for a few pence, which matters the moment
 # the thing on the other end can move stock or take a payment.
+#
+# This is an ALLOW-LIST, and that is the whole point. The first version tested
+# `channel in WEAK`, which meant every string that was not literally "email" or
+# "phone" - a typo, a new adapter, a value an attacker chose - was handled as
+# unforgeable. A channel nobody has classified is not trusted; it asks.
 STRONG = ("telegram", "chat", "console")
 WEAK = ("email", "phone")
+KNOWN = STRONG + WEAK
 
-ROSS = "ross"
+
+def _norm(s: str) -> str:
+    """One spelling for names.
+
+    identity.py lowercases the people it resolves. If this module did not, a
+    grant written 'Brent' and a request carrying 'brent' would silently fail to
+    meet - and worse, a deny written in the wrong case would be inert while the
+    allow it was meant to overturn stayed in force.
+    """
+    return (s or "").strip().lower()
 
 
 @dataclass(frozen=True)
@@ -61,7 +85,7 @@ class Request:
     business: str          # 'sugar-creek'
     capability: str        # 'spray-log', 'bom', 'qbo.classify'
     verb: str = GET        # GET | DO
-    channel: str = "telegram"
+    channel: str = ""      # deliberately no default - see decide()
     detail: str = ""       # free text, carried into the ask so Ross sees it
 
 
@@ -87,6 +111,7 @@ class Grant:
     outcome: str           # for allows: SELF or ANSWER
     reason: str
     given: str
+    order: int = 0          # position in the log's total order - see _match()
     revoked: bool = False
 
 
@@ -115,10 +140,13 @@ class Grants:
             raise ValueError(f"verb must be {GET!r} or {DO!r}")
         if outcome not in (SELF, ANSWER):
             raise ValueError(f"an allow resolves to {SELF!r} or {ANSWER!r}")
+        if not _norm(person) or not _norm(business) or not _norm(capability):
+            raise ValueError("a grant needs a person, a business and a capability")
         return self.log.append(
             "grant.given",
-            {"person": person, "business": business, "capability": capability,
-             "verb": verb, "allow": True, "outcome": outcome, "reason": reason},
+            {"person": _norm(person), "business": _norm(business),
+             "capability": _norm(capability), "verb": verb, "allow": True,
+             "outcome": outcome, "reason": reason},
             subject=self._key(person, business, capability, verb), actor=ROSS,
         )
 
@@ -133,8 +161,9 @@ class Grants:
             raise PermissionError(f"only Ross denies; {by!r} tried to")
         return self.log.append(
             "grant.denied",
-            {"person": person, "business": business, "capability": capability,
-             "verb": verb, "allow": False, "reason": reason},
+            {"person": _norm(person), "business": _norm(business),
+             "capability": _norm(capability), "verb": verb, "allow": False,
+             "reason": reason},
             subject=self._key(person, business, capability, verb), actor=ROSS,
         )
 
@@ -151,7 +180,31 @@ class Grants:
 
     def decide(self, req: Request) -> Decision:
         """The one call the whole system turns on."""
-        if req.person == ROSS:
+        person, business = _norm(req.person), _norm(req.business)
+        capability = _norm(req.capability)
+
+        # An unidentified sender matches nothing. This is the first check on
+        # purpose: identity.resolve() returns an empty person for a stranger,
+        # an ambiguous address and a lapsed enrolment alike, and every one of
+        # those must reach Ross rather than the grant table.
+        if not person:
+            return Decision(ASK, "cannot tell who is asking")
+        if not business:
+            return Decision(ASK, "cannot tell which business this is about")
+        if not capability:
+            return Decision(ASK, "cannot tell what is being asked for")
+
+        # A channel nobody has classified is not assumed safe.
+        if req.channel not in KNOWN:
+            return Decision(
+                ASK,
+                f"arrived on {req.channel or 'no channel'}, which has no trust tier; "
+                f"classify it in grants.STRONG or grants.WEAK")
+
+        if req.verb not in (GET, DO):
+            return Decision(DECLINE, f"unknown verb {req.verb!r}")
+
+        if person == ROSS:
             # Ross is ungated - but only where the channel proves it is him.
             #
             # His address is the most valuable one in the system to forge: a
@@ -169,10 +222,7 @@ class Grants:
                 f"claims to be Ross over {req.channel}, which is spoofable; "
                 f"confirm at the console")
 
-        if req.verb not in (GET, DO):
-            return Decision(DECLINE, f"unknown verb {req.verb!r}")
-
-        g = self._match(req)
+        g = self._match(person, business, capability, req.verb)
 
         if g is None:
             # Never taught. This is the common case early on, and the rule is
@@ -201,50 +251,66 @@ class Grants:
 
     # ---- reading ---------------------------------------------------------
 
-    def live(self, *, person: str = "", business: str = "") -> list[Grant]:
-        """Every grant currently in force."""
+    def live(self, *, person: str | None = None,
+             business: str | None = None) -> list[Grant]:
+        """Every grant currently in force.
+
+        `None` means no filter; the empty string means the empty name and
+        matches nothing. The first version conflated them with a falsy test,
+        and an unidentified sender consequently matched every grant in the
+        business. Keeping the distinction in the type is what stops that
+        recurring.
+        """
         out: dict[str, Grant] = {}
         revoked: set[str] = set()
-        for ev in self.log.replay(kind="grant.*"):
+        for n, ev in enumerate(self.log.replay(kind="grant.*")):
             b = ev["body"]
             if ev["kind"] == "grant.revoked":
                 revoked.add(b["grant"])
                 continue
             out[ev["id"]] = Grant(
-                id=ev["id"], person=b["person"], business=b["business"],
-                capability=b["capability"], verb=b.get("verb", GET),
+                id=ev["id"], person=_norm(b["person"]), business=_norm(b["business"]),
+                capability=_norm(b["capability"]), verb=b.get("verb", GET),
                 allow=b.get("allow", False), outcome=b.get("outcome", SELF),
-                reason=b.get("reason", ""), given=ev["ts"],
+                reason=b.get("reason", ""), given=ev["ts"], order=n,
             )
         rows = [g for gid, g in out.items() if gid not in revoked]
-        if person:
-            rows = [g for g in rows if g.person == person]
-        if business:
-            rows = [g for g in rows if g.business == business]
+        if person is not None:
+            rows = [g for g in rows if g.person == _norm(person)]
+        if business is not None:
+            rows = [g for g in rows if g.business == _norm(business)]
         rows.sort(key=lambda g: (g.business, g.person, g.capability))
         return rows
 
-    def _match(self, req: Request) -> Grant | None:
-        """Newest live grant for exactly this person/business/capability/verb.
+    def _match(self, person: str, business: str, capability: str,
+               verb: str) -> Grant | None:
+        """The grant that governs this request: most specific, then newest.
 
-        Deliberately exact. A wildcard would be convenient and is precisely how
-        a system ends up granting more than anyone remembers agreeing to; if
-        Ross wants Brent to have everything in Sugar Creek, that is a capability
-        called '*' he grants on purpose, not one inferred here.
+        Specificity outranks recency, and that ordering is the whole content of
+        this function. If Ross grants 'brent:*:get' and then denies
+        'brent:bom:get', the exact deny governs the BOM however much later the
+        wildcard was written - the first version compared dates first and a
+        later wildcard allow silently overrode an earlier explicit deny.
+
+        Within one specificity tier the newest wins, because that is Ross
+        changing his mind, which he is entitled to do. Overturning a deny
+        therefore means granting the same exact capability again, not casting a
+        wider net around it.
+
+        "Newest" means position in the log's total order, NOT the timestamp.
+        Timestamps have one-second resolution, so a deny and the allow that
+        overturns it can share one - and the first version then tie-broke on a
+        random uuid, which meant the same pair of grants could decide either way
+        on two machines. `order` comes from replay(), which is sorted
+        (ts, node, seq) and is therefore identical on every node.
         """
-        best: Grant | None = None
-        for g in self.live(person=req.person, business=req.business):
-            if g.verb != req.verb:
-                continue
-            if g.capability not in (req.capability, "*"):
-                continue
-            if best is None or g.given >= best.given:
-                # An exact capability always beats a wildcard, whatever the date.
-                if best is not None and best.capability == req.capability and g.capability == "*":
-                    continue
-                best = g
-        return best
+        cands = [g for g in self.live(person=person, business=business)
+                 if g.verb == verb and g.capability in (capability, "*")]
+        if not cands:
+            return None
+        cands.sort(key=lambda g: (0 if g.capability == "*" else 1, g.order))
+        return cands[-1]
 
     @staticmethod
     def _key(person: str, business: str, capability: str, verb: str) -> str:
-        return f"{person}@{business}:{capability}:{verb}"
+        return f"{_norm(person)}@{_norm(business)}:{_norm(capability)}:{verb}"

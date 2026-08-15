@@ -3,6 +3,9 @@
 These are not unit tests in the usual sense - they are the safety properties
 written down so a future change that breaks one fails loudly rather than
 quietly widening what the system will do.
+
+Everything under HOSTILE marks something a real audit found in an earlier
+version. Those are regressions waiting to happen; each one was live code once.
 """
 from __future__ import annotations
 
@@ -12,19 +15,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from rosco.asks import (ALLOW_ALWAYS, ALLOW_ONCE, DENY_ALWAYS, Asks)  # noqa: E402
 from rosco.grants import (ANSWER, ASK, DECLINE, DO, GET, SELF, Grants,  # noqa: E402
                           Request)
 from rosco.identity import CERTAIN, CLAIMED, UNKNOWN, People  # noqa: E402
+from rosco.keys import Signer, Trust  # noqa: E402
 from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, Models,  # noqa: E402
                           secret_name)
 from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
-from rosco.store import Log  # noqa: E402
+from rosco.store import Log, Unauthorised  # noqa: E402
 from rosco.vault import INFERRED, OBSERVED, TOLD, Vault, derive_key  # noqa: E402
 
+# Ross's console key. In production this lives on one machine and nowhere else.
+ROSS_KEY = Signer.generate()
 
-def fresh(node="shop"):
+
+def fresh(node="shop", *, trust=None, ross=ROSS_KEY):
+    """A node with its own key, trusting Ross."""
     d = tempfile.mkdtemp()
-    return Log(Path(d) / "rosco.db", node)
+    return Log(Path(d) / "rosco.db", node,
+               ross=ross, trust=trust if trust is not None else Trust(ross=ROSS_KEY.public))
 
 
 def check(name, got, want):
@@ -33,101 +43,209 @@ def check(name, got, want):
     return ok
 
 
+def refuses(name, fn, *exc):
+    """Assert a call is refused. The default is the whole point of the system."""
+    try:
+        fn()
+        return check(name, "allowed", "refused")
+    except (exc or (PermissionError, ValueError, Unauthorised)):
+        return check(name, "refused", "refused")
+
+
 def main() -> int:
     fails = 0
     log = fresh()
     g = Grants(log)
+    TG = "telegram"
 
     print("\nPERMISSION RULES")
-    # Unknown is never yes.
-    d = g.decide(Request("brent", "sugar-creek", "spray-log"))
+    d = g.decide(Request("brent", "sugar-creek", "spray-log", channel=TG))
     fails += not check("untaught request asks Ross", d.outcome, ASK)
+    fails += not refuses("a non-Ross grant is refused",
+                         lambda: g.give("lucas", "rum", "stock", by="lucas"))
+    fails += not refuses("John cannot grant himself SteelHaven",
+                         lambda: g.give("john", "steelhaven", "books", by="john"))
 
-    # Only Ross grants.
-    try:
-        g.give("lucas", "rum", "stock", by="lucas")
-        fails += not check("a non-Ross grant is refused", "allowed", "refused")
-    except PermissionError:
-        fails += not check("a non-Ross grant is refused", "refused", "refused")
-
-    # Nobody widens their own scope, even for their own business.
-    try:
-        g.give("john", "steelhaven", "books", by="john")
-        fails += not check("John cannot grant himself SteelHaven", "allowed", "refused")
-    except PermissionError:
-        fails += not check("John cannot grant himself SteelHaven", "refused", "refused")
-
-    # A taught grant resolves.
     g.give("brent", "sugar-creek", "spray-log", verb=GET, reason="he flies them")
-    d = g.decide(Request("brent", "sugar-creek", "spray-log"))
-    fails += not check("granted GET resolves to self-serve", d.outcome, SELF)
-
-    # The silo holds across businesses.
-    d = g.decide(Request("brent", "rum", "spray-log"))
-    fails += not check("same person, other business, still asks", d.outcome, ASK)
-
-    # Explicit deny is remembered and is not the same as silence.
+    fails += not check("granted GET resolves to self-serve",
+                       g.decide(Request("brent", "sugar-creek", "spray-log",
+                                        channel=TG)).outcome, SELF)
+    fails += not check("same person, other business, still asks",
+                       g.decide(Request("brent", "rum", "spray-log", channel=TG)).outcome, ASK)
     g.deny("kyle", "steelhaven", "books", reason="Velent only")
-    d = g.decide(Request("kyle", "steelhaven", "books"))
-    fails += not check("explicit deny declines", d.outcome, DECLINE)
+    fails += not check("explicit deny declines",
+                       g.decide(Request("kyle", "steelhaven", "books", channel=TG)).outcome,
+                       DECLINE)
 
     print("\nCHANNEL TRUST")
     g.give("lucas", "rum", "stock", verb=DO, reason="he works the counter")
-    d = g.decide(Request("lucas", "rum", "stock", verb=DO, channel="telegram"))
-    fails += not check("DO over Telegram is allowed", d.outcome, SELF)
-    d = g.decide(Request("lucas", "rum", "stock", verb=DO, channel="email"))
-    fails += not check("same DO over email escalates", d.outcome, ASK)
+    fails += not check("DO over Telegram is allowed",
+                       g.decide(Request("lucas", "rum", "stock", verb=DO,
+                                        channel=TG)).outcome, SELF)
+    fails += not check("same DO over email escalates",
+                       g.decide(Request("lucas", "rum", "stock", verb=DO,
+                                        channel="email")).outcome, ASK)
     g.give("vicki", "steelhaven", "schedule", verb=GET)
-    d = g.decide(Request("vicki", "steelhaven", "schedule", channel="phone"))
-    fails += not check("GET over phone downgrades to answered", d.outcome, ANSWER)
+    fails += not check("GET over phone downgrades to answered",
+                       g.decide(Request("vicki", "steelhaven", "schedule",
+                                        channel="phone")).outcome, ANSWER)
+    # HOSTILE: trust used to be a deny-list, so any string that was not
+    # literally 'email' or 'phone' - a typo, a new adapter, an attacker's
+    # choice - was handled as unforgeable.
+    fails += not check("an unclassified channel is not assumed safe",
+                       g.decide(Request("lucas", "rum", "stock", verb=DO,
+                                        channel="sms")).outcome, ASK)
+    fails += not check("and neither is no channel at all",
+                       g.decide(Request("lucas", "rum", "stock", verb=DO)).outcome, ASK)
+
+    print("\nSPECIFICITY")
+    # HOSTILE: a later wildcard allow used to override an earlier exact deny,
+    # because the match compared dates before specificity.
+    g.deny("john", "rum", "bound-book", reason="RUM only, ATF record")
+    g.give("john", "rum", "*", verb=GET, reason="he runs SteelHaven, give him the rest")
+    fails += not check("a wildcard allow does NOT overturn an exact deny",
+                       g.decide(Request("john", "rum", "bound-book", channel=TG)).outcome,
+                       DECLINE)
+    fails += not check("but the wildcard still covers everything else",
+                       g.decide(Request("john", "rum", "invoices", channel=TG)).outcome, SELF)
+    g.give("john", "rum", "bound-book", verb=GET, reason="changed my mind")
+    fails += not check("an exact allow does overturn an exact deny",
+                       g.decide(Request("john", "rum", "bound-book", channel=TG)).outcome, SELF)
+
+    print("\nCASE")
+    # HOSTILE: identity lowercases people, grants did not - so a deny written
+    # in the wrong case was inert and left the earlier allow in force.
+    g.give("Grace", "personal", "House", verb=DO)
+    fails += not check("a grant matches whatever the case",
+                       g.decide(Request("grace", "personal", "house", verb=DO,
+                                        channel=TG)).outcome, SELF)
+    g.deny("GRACE", "Personal", "HOUSE", verb=DO, reason="not while I'm away")
+    fails += not check("and so does the deny that overturns it",
+                       g.decide(Request("grace", "personal", "house", verb=DO,
+                                        channel=TG)).outcome, DECLINE)
 
     print("\nREVOCATION")
     ev = g.give("ed", "spring-valley", "quotes")
-    fails += not check("granted", g.decide(Request("ed", "spring-valley", "quotes")).outcome, SELF)
+    fails += not check("granted",
+                       g.decide(Request("ed", "spring-valley", "quotes", channel=TG)).outcome,
+                       SELF)
     g.revoke(ev["id"], reason="finished the job")
     fails += not check("revoked returns to asking",
-                       g.decide(Request("ed", "spring-valley", "quotes")).outcome, ASK)
+                       g.decide(Request("ed", "spring-valley", "quotes", channel=TG)).outcome,
+                       ASK)
 
     print("\nROSS")
     fails += not check("Ross is ungated on a strong channel",
                        g.decide(Request("ross", "rum", "anything", verb=DO,
-                                        channel="telegram")).outcome, SELF)
-    # The worst hole in the system if it regresses: a forged From: header
-    # naming Ross would otherwise hand over everything at once.
+                                        channel=TG)).outcome, SELF)
+    # HOSTILE: the owner bypass fired before any channel check, so a forged
+    # From: header naming Ross handed over everything at once.
     fails += not check("a forged Ross email does NOT bypass",
                        g.decide(Request("ross", "rum", "anything", verb=DO,
                                         channel="email")).outcome, ASK)
     fails += not check("nor does a phone call claiming to be him",
                        g.decide(Request("ross", "rum", "books", channel="phone")).outcome, ASK)
 
+    print("\nHOSTILE / THE UNIDENTIFIED SENDER")
+    # The worst finding of the audit. identity.resolve() returns person="" for
+    # a stranger, an ambiguous address and a lapsed enrolment alike. That empty
+    # string fell through the listing filter and matched EVERY grant in the
+    # business: unknown is never yes had become unknown is everyone.
+    fails += not check("a nameless request matches nothing",
+                       g.decide(Request("", "rum", "stock", verb=DO, channel=TG)).outcome, ASK)
+    fails += not check("even with no business either",
+                       g.decide(Request("", "", "stock", verb=DO, channel=TG)).outcome, ASK)
+    fails += not check("a nameless GET matches nothing",
+                       g.decide(Request("", "sugar-creek", "spray-log", channel=TG)).outcome,
+                       ASK)
+    fails += not check("and an unnamed capability asks too",
+                       g.decide(Request("lucas", "rum", "", verb=DO, channel=TG)).outcome, ASK)
+    fails += not check("listing with no filter still lists",
+                       len(g.live()) > 0, True)
+    fails += not check("listing the empty name lists nothing",
+                       g.live(person=""), [])
+
     print("\nTHE LOG")
-    problems = log.verify()
-    fails += not check("hash chain is sound", problems, [])
+    fails += not check("hash chain is sound", log.verify(), [])
     n_before = len(list(log.replay()))
     log.append("test.thing", {"a": 1})
     fails += not check("append grows the log", len(list(log.replay())), n_before + 1)
     fails += not check("chain still sound after append", log.verify(), [])
 
-    # Tamper detection: edit a row behind the log's back.
     row = log.db.execute("SELECT id FROM events LIMIT 1").fetchone()
     log.db.execute("UPDATE events SET body='{\"a\":999}' WHERE id=?", (row["id"],))
     fails += not check("tampering is detected", len(log.verify()) > 0, True)
 
+    print("\nHOSTILE / FORGED AUTHORITY")
+    # A node without Ross's key cannot write a grant at all.
+    blind = Log(Path(tempfile.mkdtemp()) / "r.db", "cloud",
+                trust=Trust(ross=ROSS_KEY.public))
+    fails += not refuses("a node without Ross's key cannot write a grant",
+                         lambda: Grants(blind).give("mallory", "rum", "*", verb=DO),
+                         Unauthorised)
+    fails += not refuses("nor enrol anybody",
+                         lambda: People(blind).enrol("ross", "telegram", "666000"),
+                         Unauthorised)
+
+    # A node WITH a key of its own - but not Ross's - signs its own forgery and
+    # is disbelieved on replay, on its own machine and everywhere else.
+    evil_ross = Signer.generate()
+    evil = Log(Path(tempfile.mkdtemp()) / "r.db", "cloud",
+               ross=evil_ross, trust=Trust(ross=ROSS_KEY.public))
+    Grants(evil).give("mallory", "rum", "*", verb=DO, reason="I am Ross, honestly")
+    People(evil).enrol("ross", "telegram", "666000")
+    fails += not check("a self-signed grant is not replayed", Grants(evil).live(), [])
+    fails += not check("a self-signed enrolment does not resolve",
+                       People(evil).resolve("telegram", "666000").person, "")
+    fails += not check("the forged grant grants nothing",
+                       Grants(evil).decide(Request("mallory", "rum", "stock", verb=DO,
+                                                   channel=TG)).outcome, ASK)
+    fails += not check("and it is surfaced rather than merely ignored",
+                       len(evil.rejected()) >= 2, True)
+    fails += not check("verify() names the problem",
+                       any("without Ross's signature" in p for p in evil.verify()), True)
+
     print("\nSYNC")
-    a = fresh("shop")
-    b = fresh("home")
+    shared = Trust(ross=ROSS_KEY.public)
+    a = fresh("shop", trust=shared)
+    b = fresh("home", trust=shared)
     ga = Grants(a)
     ga.give("lucas", "rum", "stock", verb=DO)
     ga.give("lucas", "rum", "orders", verb=GET)
-    moved = b.absorb(a.since("shop", 0))
-    fails += not check("peer events absorbed", moved, 2)
+    fails += not check("peer events absorbed", b.absorb(a.since("shop", 0)), 2)
     fails += not check("absorbing twice is idempotent", b.absorb(a.since("shop", 0)), 0)
     fails += not check("decision matches on the other node",
-                       Grants(b).decide(Request("lucas", "rum", "stock", verb=DO)).outcome, SELF)
+                       Grants(b).decide(Request("lucas", "rum", "stock", verb=DO,
+                                                channel=TG)).outcome, SELF)
+
+    print("\nHOSTILE / SYNC")
+    hl = fresh("home", trust=shared)
+    rows = a.since("shop", 0)
+    fails += not refuses("an event claiming to be ours is refused",
+                         lambda: hl.absorb([dict(rows[0], node="home")]), Unauthorised)
+    fails += not refuses("a tampered body is refused",
+                         lambda: hl.absorb([dict(rows[0], body={"x": 999})]), Unauthorised)
+    fails += not refuses("a re-hashed forgery is still refused (no signature)",
+                         lambda: hl.absorb([_rehash(dict(rows[0]), {"x": 999})]),
+                         Unauthorised)
+    fails += not refuses("an unknown node is refused",
+                         lambda: hl.absorb([dict(rows[0], node="ghost")]), Unauthorised)
+    fails += not check("the honest events still absorb", hl.absorb(rows), 2)
+    fails += not check("chain sound after absorbing", hl.verify(), [])
+
+    # HOSTILE: high_water used MAX(seq), so one row at seq 9,000,000 raised the
+    # mark past every real event and censored the rest of that chain forever.
+    ghost = fresh("shop", trust=shared)
+    ghost.db.execute(
+        "INSERT INTO events(id,seq,node,ts,kind,subject,actor,body,prev,hash,nsig,rsig)"
+        " VALUES('x',9000000,'shop','2026-01-01T00:00:00Z','junk','','','{}','','h','s','')")
+    fails += not check("a stray high seq cannot censor a chain",
+                       ghost.high_water()["shop"] < 9000000, True)
 
     print("\nVAULT / LEARNING")
     v = Vault(a)
-    l1 = v.learn("Remington", "rum", "Dix wants 60 days notice on the lease", basis=TOLD, source="ross")
+    l1 = v.learn("Remington", "rum", "Dix wants 60 days notice on the lease",
+                 basis=TOLD, source="ross")
     v.learn("Remington", "rum", "Suppressor transfers need the SOT on file", basis=OBSERVED)
     v.learn("Steele", "steelhaven", "PermaHaven is patent-pending", basis=INFERRED)
     rum = v.recall(business="rum")
@@ -135,13 +253,28 @@ def main() -> int:
     fails += not check("strongest basis sorts first", rum[0].basis, TOLD)
     fails += not check("other business is not visible",
                        [l.business for l in v.recall(business="steelhaven")], ["steelhaven"])
-
     v.correct(l1["id"], "Dix wants 90 days notice, not 60")
     live = [l.text for l in v.recall(business="rum")]
     fails += not check("correction replaces the belief",
-                       any("90 days" in t for t in live) and not any("60 days" in t for t in live), True)
+                       any("90 days" in t for t in live) and not any("60 days" in t for t in live),
+                       True)
     fails += not check("the wrong belief is still readable",
-                       any("60 days" in l.text for l in v.recall(business="rum", include_dead=True)), True)
+                       any("60 days" in l.text for l in v.recall(business="rum",
+                                                                 include_dead=True)), True)
+    # HOSTILE: a lesson claiming Ross said it needs his signature, or an agent
+    # can put words in his mouth and then argue with him using them.
+    fails += not refuses("an agent cannot claim Ross told it something",
+                         lambda: Vault(blind).learn("x", "rum", "Ross said do it",
+                                                    basis=TOLD), Unauthorised)
+    fails += not check("but it may record what it observed",
+                       bool(Vault(blind).learn("x", "rum", "saw it happen", basis=OBSERVED)),
+                       True)
+    # HOSTILE: a correction whose target had not replayed yet used to delete
+    # both itself and the lesson.
+    orphan = Vault(a)
+    orphan.correct("no-such-lesson-id", "a correction of nothing")
+    fails += not check("an orphan correction deletes nothing",
+                       len(v.recall(business="rum")), 2)
 
     print("\nVAULT / SECRETS")
     key = derive_key("a passphrase Ross picks", b"rosco-salt-v1")
@@ -149,24 +282,33 @@ def main() -> int:
     sv.put_secret("rum", "qbo_refresh", "tok-abc-123")
     fails += not check("secret round-trips", sv.get_secret("rum", "qbo_refresh"), "tok-abc-123")
     sv.put_secret("rum", "qbo_refresh", "tok-rotated-456")
-    fails += not check("rotation returns the newest", sv.get_secret("rum", "qbo_refresh"), "tok-rotated-456")
+    fails += not check("rotation returns the newest",
+                       sv.get_secret("rum", "qbo_refresh"), "tok-rotated-456")
     fails += not check("names list without the key",
                        Vault(a).secret_names("rum"), ["rum:qbo_refresh"])
-    try:
-        Vault(a).get_secret("rum", "qbo_refresh")
-        fails += not check("no key means no plaintext", "read", "refused")
-    except RuntimeError:
-        fails += not check("no key means no plaintext", "refused", "refused")
+    fails += not refuses("no key means no plaintext",
+                         lambda: Vault(a).get_secret("rum", "qbo_refresh"), RuntimeError)
+    fails += not refuses("an agent cannot store a secret",
+                         lambda: sv.put_secret("rum", "x", "y", by="rosco"))
+
+    # HOSTILE: the MAC covered only nonce+blob, so an envelope was valid under
+    # ANY name - RUM's QBO token could be relabelled as SteelHaven's Workspace
+    # credential and would decrypt happily under the new label.
+    sv.put_secret("steelhaven", "workspace", "steelhaven-secret")
+    stolen = None
+    for ev in a.replay(kind="vault.secret"):
+        if ev["body"]["name"] == "qbo_refresh":
+            stolen = ev["body"]
+    a.append("vault.secret", {**stolen, "business": "steelhaven", "name": "workspace"},
+             subject="steelhaven:workspace", actor="ross")
+    fails += not refuses("a relabelled envelope does not decrypt",
+                         lambda: sv.get_secret("steelhaven", "workspace"), ValueError)
 
     print("\nIDENTITY")
     idl = fresh("home")
     p = People(idl)
-    try:
-        p.enrol("lucas", "telegram", "551", by="lucas")
-        fails += not check("only Ross enrols", "allowed", "refused")
-    except PermissionError:
-        fails += not check("only Ross enrols", "refused", "refused")
-
+    fails += not refuses("only Ross enrols",
+                         lambda: p.enrol("lucas", "telegram", "551", by="lucas"))
     p.enrol("brent", "telegram", "8481123", note="his phone")
     p.enrol("brent", "email", "Brent@SugarCreek.com")
     fails += not check("paired strong channel is certain",
@@ -179,112 +321,113 @@ def main() -> int:
                        p.resolve("telegram", "9999").person, "")
     fails += not check("a stranger is never 'certain' of nobody",
                        p.resolve("telegram", "9999").confidence, UNKNOWN)
-
-    # Phone shapes that are the same line.
     p.enrol("grace", "phone", "+1 (314) 555-0123")
     fails += not check("phone normalises across formats",
                        p.resolve("phone", "3145550123").person, "grace")
     fails += not check("a phone call is never proof",
                        p.resolve("phone", "3145550123").proven, False)
-
-    # Ambiguity must never resolve to a pick.
     p.enrol("augie", "email", "family@fusz.com")
     p.enrol("courtney", "email", "family@fusz.com")
     amb = p.resolve("email", "family@fusz.com")
     fails += not check("two people behind one address is nobody", amb.person, "")
     fails += not check("and it says why", "refusing to choose" in amb.why, True)
-
-    # Expiry - a recycled number belongs to a stranger.
     p.enrol("kyle", "phone", "6365550199", until="2026-01-01T00:00:00Z")
     fails += not check("a lapsed enrolment stops resolving",
                        p.resolve("phone", "6365550199", at="2026-08-14T00:00:00Z").person, "")
     fails += not check("and it resolved before it lapsed",
-                       p.resolve("phone", "6365550199", at="2025-06-01T00:00:00Z").person, "kyle")
-
-    # Retirement.
+                       p.resolve("phone", "6365550199", at="2025-06-01T00:00:00Z").person,
+                       "kyle")
     h = p.enrol("ed", "telegram", "77123")
     fails += not check("enrolled", p.resolve("telegram", "77123").person, "ed")
     p.retire(h["id"], reason="job finished")
     fails += not check("retired handle stops resolving",
                        p.resolve("telegram", "77123").person, "")
 
-    print("\nNODES")
-    nl = fresh("home")
-    nn = Nodes(nl)
-    try:
-        nn.register("rogue", "somewhere", by="rosco")
-        fails += not check("only Ross registers a node", "allowed", "refused")
-    except PermissionError:
-        fails += not check("only Ross registers a node", "refused", "refused")
+    # HOSTILE: re-enrolling to ADD an expiry left the older unexpiring row live,
+    # so the expiry did nothing whatsoever.
+    p.enrol("vicki", "phone", "6185550100")
+    p.enrol("vicki", "phone", "6185550100", until="2026-06-01T00:00:00Z")
+    fails += not check("re-enrolling with an expiry takes effect",
+                       p.resolve("phone", "6185550100", at="2026-08-14T00:00:00Z").person, "")
+    # HOSTILE: 'until' was compared as a raw string, so an offset time or a
+    # bare date compared wrong and some values never expired.
+    p.enrol("nate", "phone", "3145559000", until="2026-06-01T12:00:00+02:00")
+    fails += not check("an offset expiry is normalised, not string-compared",
+                       p.resolve("phone", "3145559000", at="2026-06-01T11:00:00Z").person, "")
+    fails += not refuses("an unparseable expiry is refused at enrolment",
+                         lambda: p.enrol("x", "phone", "1", until="whenever"))
 
+    print("\nNODES")
+    shared2 = Trust(ross=ROSS_KEY.public)
+    nl = fresh("home", trust=shared2)
+    nn = Nodes(nl)
+    fails += not refuses("only Ross registers a node",
+                         lambda: nn.register("rogue", "somewhere", by="rosco"))
     nn.register("home", "Spring Valley", reach="10.0.1.10:7799")
     nn.register("shop", "RUM, W. Outer Rd", reach="10.0.2.10:7799")
     fails += not check("registered nodes are trusted", nn.trusted(), {"home", "shop"})
 
-    # A peer offering its own chain.
-    shop = fresh("shop")
+    shop = fresh("shop", trust=shared2)
     Grants(shop).give("lucas", "rum", "stock", verb=DO)
-    rep = nn.sync_from(shop)
-    fails += not check("peer chain absorbed", rep.chains.get("shop"), 1)
+    fails += not check("peer chain absorbed", nn.sync_from(shop).chains.get("shop"), 1)
     fails += not check("sync is idempotent", nn.sync_from(shop).taken, 0)
 
-    # An unregistered chain is refused, however it arrives.
-    stranger = fresh("audit")
+    outsider = Trust(ross=ROSS_KEY.public)
+    stranger = fresh("audit", trust=outsider)
     Grants(stranger).give("nobody", "rum", "*", verb=DO)
+    shared2.add_node("audit", outsider.nodes["audit"])   # key known, node NOT registered
     rep = nn.sync_from(stranger)
     fails += not check("an unregistered chain is refused", rep.taken, 0)
     fails += not check("and the refusal is reported", rep.clean, False)
 
-    # Relay: the shop's events reach home THROUGH the cloud.
     nn.register("cloud", "VM", role=RENDEZVOUS, reach="rosco.example:7799")
-    cloud = fresh("cloud")
-    Nodes(cloud).register("shop", "RUM")           # cloud trusts shop too
-    shop2 = fresh("shop2")                          # a second shop-side write
-    Grants(shop).give("lucas", "rum", "orders")     # shop writes again, home is offline
-    Nodes(cloud).sync_from(shop)                    # cloud picks it up
-    rep = nn.sync_from(cloud)                       # home gets it via the cloud
-    fails += not check("a chain relays through the rendezvous",
-                       rep.chains.get("shop"), 1)
+    cloud = fresh("cloud", trust=shared2)
+    Nodes(cloud).register("shop", "RUM")
+    Grants(shop).give("lucas", "rum", "orders")
+    Nodes(cloud).sync_from(shop)
+    rep = nn.sync_from(cloud)
+    fails += not check("a chain relays through the rendezvous", rep.chains.get("shop"), 1)
     fails += not check("relayed events still verify", nl.verify(), [])
 
-    print("\nTHE LOG / HOSTILE PEERS")
-    hl = fresh("home")
-    other = fresh("shop")
-    other.append("test.a", {"x": 1})
-    rows = other.since("shop", 0)
-
-    # An event stamped with OUR node name would let a peer rewrite our history.
-    forged = dict(rows[0], node="home")
-    try:
-        hl.absorb([forged])
-        fails += not check("an event claiming to be ours is refused", "taken", "refused")
-    except ValueError:
-        fails += not check("an event claiming to be ours is refused", "refused", "refused")
-
-    # A tampered body must not survive the trip.
-    bad = dict(rows[0], body={"x": 999})
-    try:
-        hl.absorb([bad])
-        fails += not check("a tampered event is refused", "taken", "refused")
-    except ValueError:
-        fails += not check("a tampered event is refused", "refused", "refused")
-
-    fails += not check("the honest event still absorbs", hl.absorb(rows), 1)
-    fails += not check("chain sound after absorbing", hl.verify(), [])
+    print("\nASKS")
+    ql = fresh("home")
+    qg, q = Grants(ql), Asks(ql, Grants(ql))
+    r = Request("brent", "sugar-creek", "spray-log", channel=TG, detail="last week's log?")
+    q.raise_(r, qg.decide(r))
+    q.raise_(r, qg.decide(r))
+    q.raise_(r, qg.decide(r))
+    fails += not check("asking three times is one question", len(q.pending()), 1)
+    fails += not check("and the count is kept", q.pending()[0].times, 3)
+    fails += not refuses("an agent cannot answer the queue",
+                         lambda: q.answer(q.pending()[0].id, ALLOW_ALWAYS, by="rosco"))
+    aid = q.pending()[0].id
+    q.answer(aid, ALLOW_ALWAYS, note="he flies them")
+    fails += not check("answering for good writes the grant",
+                       qg.decide(r).outcome, SELF)
+    fails += not check("and empties the queue", q.pending(), [])
+    fails += not refuses("the same ask cannot be answered twice",
+                         lambda: q.answer(aid, ALLOW_ALWAYS))
+    r2 = Request("kyle", "steelhaven", "books", channel=TG)
+    q.raise_(r2, qg.decide(r2))
+    q.answer(q.pending()[0].id, DENY_ALWAYS, note="Velent only")
+    fails += not check("denying for good writes the deny",
+                       qg.decide(r2).outcome, DECLINE)
+    r3 = Request("ed", "spring-valley", "quotes", channel=TG)
+    q.raise_(r3, qg.decide(r3))
+    q.answer(q.pending()[0].id, ALLOW_ONCE)
+    fails += not check("answering once teaches nothing",
+                       qg.decide(r3).outcome, ASK)
+    fails += not refuses("only an ASK belongs in the queue",
+                         lambda: q.raise_(Request("ross", "rum", "x", channel=TG),
+                                          qg.decide(Request("ross", "rum", "x", channel=TG))))
 
     print("\nMODELS")
     ml = fresh("home")
-    mk = derive_key("pw", b"s")
-    mv = Vault(ml, key=mk)
+    mv = Vault(ml, key=derive_key("pw", b"s"))
     m = Models(ml, mv)
-    fails += not check("a role always resolves, even unset",
-                       bool(m.pick(CHAT).model), True)
-    try:
-        m.choose(CHAT, "evil/model", OPENROUTER, by="rosco")
-        fails += not check("an agent cannot pick its own model", "allowed", "refused")
-    except PermissionError:
-        fails += not check("an agent cannot pick its own model", "refused", "refused")
-
+    fails += not check("a role always resolves, even unset", bool(m.pick(CHAT).model), True)
+    fails += not refuses("an agent cannot pick its own model",
+                         lambda: m.choose(CHAT, "evil/model", OPENROUTER, by="rosco"))
     m.choose(CHAT, "x-ai/grok-4.6", OPENROUTER)
     fails += not check("Ross's choice takes effect", m.pick(CHAT).model, "x-ai/grok-4.6")
     m.choose(CHEAP, "tiny/model", OPENROUTER, node="cloud")
@@ -297,11 +440,24 @@ def main() -> int:
     mv.put_secret(SYSTEM, secret_name(OPENROUTER), "sk-or-x")
     fails += not check("and stops being reported once held",
                        OPENROUTER in m.missing(), False)
-    fails += not check("the local model needs no key",
-                       m.key_for(m.pick(LOCAL)), "")
+    fails += not check("the local model needs no key", m.key_for(m.pick(LOCAL)), "")
 
     print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}\n")
     return 1 if fails else 0
+
+
+def _rehash(ev, new_body):
+    """Forge an event the way an attacker would: change it, then fix the hash.
+
+    This is exactly what the unkeyed chain could not stop, and what the node
+    signature does.
+    """
+    import hashlib
+
+    from rosco.store import signable
+    ev["body"] = new_body
+    ev["hash"] = hashlib.sha256(signable(ev)).hexdigest()
+    return ev
 
 
 if __name__ == "__main__":
