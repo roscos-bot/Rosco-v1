@@ -884,6 +884,64 @@ def main() -> int:
                        kw.handle(Arrival("telegram", "8481123",
                                          "something about the field")).outcome, ASK)
 
+    print("\nDOORWAY FULFILMENT")
+    # A SELF/ANSWER decision now hands the job to the business's agent. The
+    # fulfiller is injected (like the classifier), so it is testable with a stub.
+    fdl = fresh("console")
+    fp, fg = People(fdl), Grants(fdl)
+    fp.enrol("brent", "telegram", "8481123")
+    fp.enrol("brent", "email", "brent@sugarcreek.com")
+    fg.give("brent", "sugar-creek", "spray-log", verb=GET)
+    fg.give("brent", "sugar-creek", "schedule", verb=DO)
+    seen = {}
+
+    def fulfiller(req, decision):
+        seen["verb"] = req.verb
+        if req.verb == GET:
+            return "Last week: Kirby field, 3 passes, Tuesday."
+        return "I've drafted that for Ross - not sent."
+
+    fd = Doorway(fdl, Fake(Proposal("sugar-creek", "spray-log", GET, 0.95, "clear")),
+                 fulfiller=fulfiller)
+    h = fd.handle(Arrival("telegram", "8481123", "last week's spray log?"))
+    fails += not check("a cleared read is fulfilled with an answer", h.outcome, SELF)
+    fails += not check("and the answer rides back in the reply",
+                       "Kirby" in h.reply, True)
+
+    # An action is drafted, never executed - the fulfiller is handed verb=do and
+    # the contract is that it proposes.
+    fd2 = Doorway(fdl, Fake(Proposal("sugar-creek", "schedule", DO, 0.95, "clear")),
+                  fulfiller=fulfiller)
+    h2 = fd2.handle(Arrival("telegram", "8481123", "move tomorrow's flight to Friday"))
+    fails += not check("a cleared action is allowed", h2.outcome, SELF)
+    fails += not check("but fulfilment drafts it, does not run it",
+                       "drafted" in h2.reply.lower(), True)
+    fails += not check("the fulfiller saw an action verb", seen.get("verb"), DO)
+
+    # A weak channel downgrades a read to ANSWER, and that is still fulfilled.
+    fd3 = Doorway(fdl, Fake(Proposal("sugar-creek", "spray-log", GET, 0.95, "clear")),
+                  fulfiller=fulfiller)
+    h3 = fd3.handle(Arrival("email", "brent@sugarcreek.com", "spray log?"))
+    fails += not check("an ANSWER is fulfilled too", h3.outcome, ANSWER)
+    fails += not check("with the composed answer", "Kirby" in h3.reply, True)
+
+    # A fulfiller that throws must not crash the doorway - it degrades to cleared.
+    def boom(req, decision):
+        raise RuntimeError("model down")
+
+    fd4 = Doorway(fdl, Fake(Proposal("sugar-creek", "spray-log", GET, 0.95, "clear")),
+                  fulfiller=boom)
+    h4 = fd4.handle(Arrival("telegram", "8481123", "spray log?"))
+    fails += not check("a failed fulfiller degrades to cleared, not a crash",
+                       h4.outcome, SELF)
+    fails += not check("and says so honestly", "cleared" in h4.reply.lower(), True)
+
+    # No fulfiller at all: still decides correctly, replies that it is cleared.
+    fd5 = Doorway(fdl, Fake(Proposal("sugar-creek", "spray-log", GET, 0.95, "clear")))
+    h5 = fd5.handle(Arrival("telegram", "8481123", "spray log?"))
+    fails += not check("no fulfiller still resolves to self", h5.outcome, SELF)
+    fails += not check("with a plain cleared reply", "cleared" in h5.reply.lower(), True)
+
     print("\nEXTERNAL TOOLS")
     tl = fresh("console")
     tt = Tools(tl)
@@ -1183,8 +1241,8 @@ def main() -> int:
     fails += not check("a granted request gets a cleared reply",
                        "cleared" in sent[-1][1].lower(), True)
     tg(2, 55555, "help me")
-    fails += not check("a stranger is turned away", "can't share" in sent[-1][1]
-                       or "not something" in sent[-1][1].lower(), True)
+    fails += not check("a stranger is turned away",
+                       "recognise" in sent[-1][1] or "invite" in sent[-1][1], True)
     tg(3, 8481123, "send me the bound book")
     fails += not check("a sensitive ask is passed to Ross",
                        "Ross" in sent[-1][1], True)

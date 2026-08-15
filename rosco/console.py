@@ -411,17 +411,43 @@ class Console:
         back to Keywords - which sends nearly everything to Ross, the right
         behaviour for a node that cannot reach a model.
         """
+        from .agent import Agent
         from .arrive import Doorway, Keywords
         from .classify import ModelClassifier
+        from .grants import DO, GET
+        from .llm import complete
+        from . import roster
 
         log = self.open(passphrase)
         meter = Meter(log)
-        if passphrase is not None:
-            models = Models(log, Vault(log, key=self._vault_key(passphrase)))
-            classifier = ModelClassifier(models, meter=meter, node=NODE)
-        else:
-            classifier = Keywords()
-        return Doorway(log, classifier)
+        if passphrase is None:
+            # Sealed: no model, no fulfilment. Decisions still hold; the reply
+            # says the request is cleared and stops there.
+            return Doorway(log, Keywords())
+
+        models = Models(log, Vault(log, key=self._vault_key(passphrase)))
+        classifier = ModelClassifier(models, meter=meter, node=NODE)
+
+        def think(system, user):
+            return complete(models, "workhorse", system, user, node=NODE, meter=meter)
+
+        def fulfiller(req, decision):
+            biz = roster.business(req.business)
+            captain = biz.captain if biz else None
+            if not captain:
+                return "You're cleared for that."
+            agent = Agent(captain, log, think=think, meter=meter)
+            if req.verb == GET:
+                # A read: the captain answers directly.
+                return agent.answer(req.detail, for_person=req.person)
+            # An action: the captain DRAFTS it. Nothing is executed or sent from
+            # an inbound message - the draft is a proposal for Ross to ship.
+            r = agent.work(req.detail)
+            note = (" (heads-up: " + "; ".join(r.warnings) + ")") if r.warnings else ""
+            return (f"I've drafted that and put it in front of Ross - I won't "
+                    f"send or run it myself.{note}")
+
+        return Doorway(log, classifier, fulfiller=fulfiller)
 
     def tool_add(self, passphrase: str, name: str, endpoint: str, *,
                  kind: str = "http", businesses: tuple = ("*",),

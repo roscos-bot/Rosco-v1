@@ -115,6 +115,30 @@ class Agent:
                              "steel conducts, so always pair the two")
         return warns
 
+    # ---- answering a read ------------------------------------------------
+
+    def answer(self, question: str, *, for_person: str = "", narrate=lambda s: None) -> str:
+        """Compose a direct answer to a read request. Grounds, thinks, replies.
+
+        This is the read half of fulfilment - the doorway calls it when an
+        allowed GET arrives. It never acts: it answers from what the agent knows
+        and what the model composes, and records that it answered. Live-data
+        connectors (QBO, Drive, a spray-log store) are the tools layer; until one
+        is wired, the honest answer is what the agent knows plus what it would
+        need to look up.
+        """
+        narrate(f"{self.name} answering for {self.business}")
+        lessons = self.knows()
+        system = (self._system(lessons) +
+                  "\n\nAnswer the person directly and briefly. If you would need "
+                  "to look something up that you do not have, say so plainly.")
+        text = (self.think(system, question) or "").strip()
+        self.log.append("agent.answered",
+                        {"agent": self.name, "business": self.business,
+                         "person": for_person, "chars": len(text)},
+                        subject=self.business, actor=self.name)
+        return text
+
     # ---- the loop --------------------------------------------------------
 
     def work(self, task: str, *, narrate=lambda s: None) -> Result:

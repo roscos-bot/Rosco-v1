@@ -186,7 +186,10 @@ class TelegramBot:
 
         arrival = Arrival(CHANNEL, sender_id, text, at=now())
         handling = self.doorway.handle(arrival)
-        self.send(chat_id, _REPLIES.get(handling.outcome, _REPLIES[ASK]))
+        # The doorway's reply carries the fulfilled work (an answer, or a
+        # "drafted for Ross" note) when a fulfiller is wired; fall back to the
+        # plain per-outcome line only when it left the reply empty.
+        self.send(chat_id, handling.reply or _REPLIES.get(handling.outcome, _REPLIES[ASK]))
 
         # A heads-up to Ross when something NEW lands in his queue - read-only.
         # Only a fresh ask, never a repeat: otherwise an enrolled account could

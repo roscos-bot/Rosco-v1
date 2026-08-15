@@ -98,12 +98,19 @@ class Handling:
 class Doorway:
     """The one way in. Adapters hand it arrivals; it hands back handlings."""
 
-    def __init__(self, log: Log, classifier: Classifier | None = None) -> None:
+    def __init__(self, log: Log, classifier: Classifier | None = None,
+                 fulfiller=None) -> None:
         self.log = log
         self.people = People(log)
         self.grants = Grants(log)
         self.asks = Asks(log, self.grants)
         self.classifier = classifier
+        # fulfiller(req, decision) -> reply text. Injected, like the classifier:
+        # the console builds one backed by the business's agent and the model; a
+        # doorway without one still decides correctly and just replies that the
+        # request is cleared. It is only ever called AFTER a SELF/ANSWER
+        # decision, so it can widen no permission - it can only do, or fail safe.
+        self.fulfiller = fulfiller
 
     def handle(self, arrival: Arrival) -> Handling:
         who = self.people.resolve(arrival.channel, arrival.address,
@@ -161,9 +168,32 @@ class Doorway:
         if decision.outcome == DECLINE:
             return Handling(DECLINE, "That one's not something I can share.",
                             who, decision, proposal)
-        if decision.outcome == ANSWER:
-            return Handling(ANSWER, "", who, decision, proposal)
-        return Handling(SELF, "", who, decision, proposal)
+        # SELF or ANSWER: the request is allowed, so hand it to the business's
+        # agent to actually do - answer a read, draft an action. The permission
+        # decision above is unchanged; fulfilment happens only after it says yes.
+        reply = self._fulfil(req, decision)
+        return Handling(decision.outcome, reply, who, decision, proposal)
+
+    # ---- fulfilment ------------------------------------------------------
+
+    def _fulfil(self, req: Request, decision: Decision) -> str:
+        """Do the allowed thing, or say plainly that it is cleared.
+
+        A missing fulfiller, or one that fails, degrades to a cleared-message -
+        never a crash, never a silent nothing. Whatever the fulfiller does, it
+        does not execute an outward action here: the contract is that it answers
+        a read and DRAFTS an action, and a draft is a proposal for Ross. The
+        doorway cannot, by construction, turn an inbound message into a sent,
+        posted or moved thing.
+        """
+        if self.fulfiller is None:
+            return ("You're cleared for that. The connector that would fetch or "
+                    "do it isn't wired yet - the permission is in place.")
+        try:
+            return self.fulfiller(req, decision) or "Done."
+        except Exception:
+            return ("You're cleared for that, but I couldn't complete it just now. "
+                    "Try again shortly.")
 
     # ---- the reading -----------------------------------------------------
 
