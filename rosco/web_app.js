@@ -152,7 +152,7 @@ function loadMesh(retry){ api("/api/mesh").then(function(res){
   byId={};N=m.nodes.map(function(n,i){byId[n.id]=i;
     return {id:n.id,label:n.label,type:n.type,rank:n.rank,biz:n.business,reports:n.reports,
       x:(Math.random()-.5)*1.6,y:(Math.random()-.5)*1.6,z:(Math.random()-.5)*1.6,
-      vx:0,vy:0,vz:0,r:n.type==="agent"?(n.rank==="Chief of Staff"?16:n.rank==="Commander"?14:n.rank==="Captain"?10:6.5):8,
+      vx:0,vy:0,vz:0,r:n.type==="agent"?(n.rank==="Admiral"?16:n.rank==="Commander"?14:n.rank==="Captain"?10:6.5):8,
       core:(n.label==="Rosco"||n.label==="Ross"),links:0,pulse:0,tw:Math.random()*6.28};});
   E=m.edges.map(function(e){return[byId[e.a],byId[e.b],e.kind];}).filter(function(e){return e[0]!=null&&e[1]!=null;});
   E.forEach(function(e){N[e[0]].links++;N[e[1]].links++;});
@@ -451,7 +451,7 @@ function renderState(){var s=cfgState,el=document.getElementById("cfgState");
 }
 function optionsFor(field){
   if(field.opt) return field.opt;
-  if(field.sel==="scopes") return ["system"].concat(cfgState.businesses||[]); // model keys -> system; connector creds -> a business
+  if(field.sel==="scopes") return ["system"].concat((cfgState.businesses||[]).filter(function(b){return b!=="system";})); // model keys -> system; connector creds -> a business (system listed once)
   if(field.sel && Array.isArray(cfgState[field.sel])) return cfgState[field.sel];
   return null;
 }
@@ -736,6 +736,8 @@ document.getElementById("settingsClose").addEventListener("click",closeSettings)
 
 // ---- ingestion review: learn one item at a time ----
 function ingestBusinesses(){return (cfgState&&cfgState.businesses)||[];}
+function bizTitle(slug){return (cfgState&&cfgState.businessTitles&&cfgState.businessTitles[slug])||slug;}
+var lastIngestBiz="";   // remember the last "File into" pick so bulk-routing (e.g. a whole repo into Rosco's Vault) is Enter, Enter, Enter
 function setIngestPip(n){ingCount=n;var pip=document.getElementById("ingestPip");if(pip)pip.style.display=n>0?"inline-block":"none";
   var ib=document.querySelector(".ingbanner");if((ib?1:0)!==(n>0?1:0)&&document.getElementById("qwrap"))loadQueue();}
 function pollIngestPip(){api("/api/ingest/queue").then(function(r){setIngestPip(((r.ok&&r.j&&r.j.items)||[]).length);});}
@@ -818,7 +820,7 @@ function ingestCard(item){
     var v=rd.querySelector(".rv");if(v)v.textContent=(r.ok&&r.j&&r.j.summary)||"(couldn't read it)";});}
   var prop=document.createElement("div");prop.className="ing-prop";
   if(item.business){var s1=document.createElement("span");s1.textContent="Rosco →";
-    var b=document.createElement("b");b.textContent=item.business;
+    var b=document.createElement("b");b.textContent=bizTitle(item.business);
     var s2=document.createElement("span");s2.textContent=Math.round((item.confidence||0)*100)+"% · "+(item.why||"");
     prop.appendChild(s1);prop.appendChild(b);prop.appendChild(s2);
   } else {var s0=document.createElement("span");s0.textContent="Rosco isn't sure — you place this one";prop.appendChild(s0);}
@@ -826,10 +828,11 @@ function ingestCard(item){
   var row=document.createElement("div");row.className="ing-row";
   var lab=document.createElement("label");lab.textContent="File into";row.appendChild(lab);
   var sel=document.createElement("select");
-  ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bz;if(bz===item.business)o.selected=true;sel.appendChild(o);});
+  var ingDef=lastIngestBiz||item.business;   // last pick wins, so a run of code chunks stays on Rosco's Vault
+  ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bizTitle(bz);if(bz===ingDef)o.selected=true;sel.appendChild(o);});
   row.appendChild(sel);
   var go=document.createElement("button");go.className="ing-go";go.textContent="Ingest here";
-  go.addEventListener("click",function(){decideIngest(item.cand,sel.value,"ingest",card);});
+  go.addEventListener("click",function(){lastIngestBiz=sel.value;decideIngest(item.cand,sel.value,"ingest",card);});
   var skip=document.createElement("button");skip.className="ing-skip";skip.textContent="Skip";
   skip.addEventListener("click",function(){decideIngest(item.cand,"","skip",card);});
   row.appendChild(go);row.appendChild(skip);card.appendChild(row);
@@ -849,7 +852,7 @@ function ingestCard(item){
       document.activeElement.blur();
     }
   });
-  setTimeout(function(){(item.business?go:sel).focus();},0);
+  setTimeout(function(){((lastIngestBiz||item.business)?go:sel).focus();},0);
   return card;
 }
 function decideIngest(cand,business,action,card){

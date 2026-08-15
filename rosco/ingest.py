@@ -60,7 +60,7 @@ class Ingest:
                 conf = 0.0
             self.log.append(
                 "ingest.proposed",
-                {"cand": cand, "text": text[:500], "source": source,
+                {"cand": cand, "text": text[:20000], "source": source,
                  "business": biz, "confidence": conf,
                  "why": (it.get("why") or "")[:200],
                  "summary": (it.get("summary") or "")[:240]},

@@ -23,13 +23,13 @@ from dataclasses import dataclass
 # express command, advice, supply and technical specialism, and a longer one
 # would invite distinctions nobody would enforce.
 COMMANDER = "Commander"        # Ross. Not an agent. Grants everything.
-CHIEF = "Chief of Staff"       # Rosco. The only thing that sees across.
+ADMIRAL = "Admiral"            # Rosco. Ranks above every Captain; the only thing that sees across.
 CAPTAIN = "Captain"            # a business agent. Commands one business.
 LIEUTENANT = "Lieutenant"      # advises within a business: law, marketing.
 QUARTERMASTER = "Quartermaster"  # books. Supply and accounts, nothing else.
 WARRANT = "Warrant Officer"    # technical specialist. IT. Advises, does not command.
 
-CHAIN = [COMMANDER, CHIEF, CAPTAIN, LIEUTENANT, QUARTERMASTER, WARRANT]
+CHAIN = [COMMANDER, ADMIRAL, CAPTAIN, LIEUTENANT, QUARTERMASTER, WARRANT]
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class Agent:
 
     @property
     def commands(self) -> bool:
-        return self.rank in (CHIEF, CAPTAIN)
+        return self.rank in (ADMIRAL, CAPTAIN)
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ BUSINESSES = (
     # to make Rosco a code expert never muddies a real business's brain. Captained
     # by Rosco (no duplicate agent, see roster()), and Rosco-the-chief reads it via
     # business '*', so what lands here is exactly what grounds Rosco on its code.
-    Business("system", "Rosco System & Code", "Rosco", "rossfusz@gmail.com", False),
+    Business("system", "Rosco's Vault (code & system)", "Rosco", "rossfusz@gmail.com", False),
 )
 
 # name -> (rank, business, role, reports_to)
@@ -89,7 +89,7 @@ _ROLES = (("law", LIEUTENANT), ("marketing", LIEUTENANT),
 
 def roster() -> list[Agent]:
     """Everyone, in order of precedence."""
-    out = [Agent("Rosco", CHIEF, "*", "chief of staff", "ross")]
+    out = [Agent("Rosco", ADMIRAL, "*", "chief of staff", "ross")]
     for biz in BUSINESSES:
         # Rosco wears two hats: Chief of Staff, and Captain of Personal. That is
         # deliberate - the personal business is the one Ross is himself in - but

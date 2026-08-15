@@ -806,6 +806,7 @@ class ConsoleServer(ThreadingHTTPServer):
             "budgets": [{"scope": b.scope, "cap": b.monthly_usd}
                         for b in Meter(log).budgets().values()],
             "businesses": [b.slug for b in BUSINESSES],
+            "businessTitles": {b.slug: b.title for b in BUSINESSES},
             "capabilities": sorted({c.name for c in caps.CATALOGUE}),
             "tools": [{"name": t.name, "businesses": list(t.businesses)}
                       for t in Tools(log).all()],
@@ -1032,16 +1033,18 @@ class ConsoleServer(ThreadingHTTPServer):
     # ---- ingestion review: learn one item at a time ------------------------
 
     def _queue_text(self, s, text, source):
-        """Split text into items, have Rosco propose a home for each, queue them.
-        Shared by the paste box and the Drive pull - one routing path, one store."""
-        from .ingest import Ingest, chunk
-        chunks = chunk(text)[:40]          # bound the batch (and the routing bill)
-        if not chunks:
-            raise ValueError("no items found in that text")
+        """Queue a WHOLE document as ONE item — Rosco proposes a home + a summary,
+        Ross confirms or re-files. Shared by the paste box and the Drive/GitHub
+        pull. (Was: split into up to 40 chunks; Ross asked for the whole doc at
+        once so a file reviews as one lesson, not a drift of fragments.)"""
+        from .ingest import Ingest
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("no text to ingest")
         log = self.console.open(s.passphrase)
         models = Models(log, Vault(log, key=self.console._vault_key(s.passphrase)))
-        props = _route_ingest(models, Meter(log), chunks)
-        items = [dict(props[i], text=c) for i, c in enumerate(chunks)]
+        props = _route_ingest(models, Meter(log), [text])
+        items = [dict(props[0], text=text)]
         return Ingest(log).add(items, source=source)
 
     def ingest_add(self, s, body):
@@ -1324,6 +1327,7 @@ _INGEST_HINTS = {
     "spring-valley": "security, networking, low-voltage, electronics install work",
     "finance": "books, taxes, payroll, budgets, transfers, QuickBooks, invoices",
     "personal": "home, family, errands, health, anything not tied to a business",
+    "system": "Rosco's OWN source code & architecture — .py/.js/.html files, functions, how the app itself works",
 }
 
 
@@ -1351,16 +1355,17 @@ def _route_ingest(models, meter, chunks):
         for p in blank:
             p["why"] = "no model set — route it yourself"
         return blank
-    system = ("You file short notes into the right business. Businesses (answer "
+    system = ("You file documents into the right business. Businesses (answer "
               "with a slug from this list):\n" + _ingest_catalogue() +
-              "\n\nFor each numbered note give: the business it belongs to; how "
-              "sure you are (0.0-1.0); a 3-word reason; and a 'summary' — ONE plain "
-              "sentence saying what the note actually IS or says, so a person can "
-              "check you read it right. If it is unclear or fits none, use \"\" for "
-              "business with a low number. Reply with a JSON array ONLY, one object "
-              "per note, in order: [{\"i\":1,\"business\":\"slug or empty\","
+              "\n\nFor each numbered document give: the single BEST-FIT business — "
+              "ALWAYS pick one, never leave it empty; if you are unsure, still give "
+              "your best guess with a low confidence and the person will correct it. "
+              "Also give: how sure you are (0.0-1.0); a 3-word reason; and a "
+              "'summary' — ONE plain sentence saying what it actually IS or says, so "
+              "a person can check you read it right. Reply with a JSON array ONLY, "
+              "one object per document, in order: [{\"i\":1,\"business\":\"slug\","
               "\"confidence\":0.0,\"why\":\"...\",\"summary\":\"one sentence\"}]")
-    numbered = "\n".join(f"{i + 1}. {c[:300]}" for i, c in enumerate(chunks))
+    numbered = "\n".join(f"{i + 1}. {c[:3000]}" for i, c in enumerate(chunks))
     try:
         raw, pt, ct = _provider_call(choice.provider, choice.model, key,
                                      system, numbered, 1600, 0, timeout=40)
