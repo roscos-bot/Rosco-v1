@@ -817,7 +817,10 @@ function ingestCard(item){
   rd.innerHTML="<span class='rl'>Rosco reads this as</span> <span class='rv'>"+(item.summary?esc(item.summary):"reading…")+"</span>";
   card.appendChild(rd);
   if(!item.summary){post("/api/ingest/read",{text:item.text}).then(function(r){
-    var v=rd.querySelector(".rv");if(v)v.textContent=(r.ok&&r.j&&r.j.summary)||"(couldn't read it)";});}
+    var v=rd.querySelector(".rv");if(!v)return;
+    if(r.ok&&r.j&&r.j.summary){v.textContent=r.j.summary;}
+    else{v.textContent="(couldn't read — "+esc((r.j&&(r.j.why||r.j.error))||"no reason given")+")";}
+  }).catch(function(){var v=rd.querySelector(".rv");if(v)v.textContent="(couldn't read — server unreachable)";});}
   var prop=document.createElement("div");prop.className="ing-prop";
   if(item.business){var s1=document.createElement("span");s1.textContent="Rosco →";
     var b=document.createElement("b");b.textContent=bizTitle(item.business);

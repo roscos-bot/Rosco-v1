@@ -1336,6 +1336,34 @@ def _ingest_catalogue():
                      for b in BUSINESSES)
 
 
+def _extract_json_array(raw):
+    """Pull a JSON array out of a model reply that may be fenced or prose-wrapped.
+
+    Tries the whole (de-fenced) string, then the widest [..] span, then a span
+    from the LAST '[' - so an explanation that itself contains brackets before
+    the real array (which broke a single greedy match) can't sink the parse.
+    Returns the list, or None if nothing parses to a list."""
+    if not raw:
+        return None
+    s = re.sub(r"```[a-z]*", "", raw).replace("```", "").strip()
+    cands = [s]
+    m = re.search(r"\[.*\]", s, re.S)
+    if m:
+        cands.append(m.group(0))
+    lb = s.rfind("[")
+    rb = s.rfind("]")
+    if 0 <= lb < rb:
+        cands.append(s[lb:rb + 1])
+    for c in cands:
+        try:
+            v = json.loads(c)
+        except ValueError:
+            continue
+        if isinstance(v, list):
+            return v
+    return None
+
+
 def _route_ingest(models, meter, chunks):
     """Rosco's proposed home for each candidate item, in ONE batched model call.
     Returns a per-chunk [{business, confidence, why}]. Degrades to empty
@@ -1374,16 +1402,16 @@ def _route_ingest(models, meter, chunks):
                 meter.record(choice.provider, choice.model, WORKHORSE, pt, ct)
             except Exception:
                 pass
-    except Exception:
+    except Exception as e:
         for p in blank:
-            p["why"] = "routing call failed — pick a business"
+            p["why"] = "routing call failed: " + str(e)[:140]
         return blank
-    m = re.search(r"\[.*\]", raw, re.S)
-    if not m:
-        return blank
-    try:
-        arr = json.loads(m.group(0))
-    except ValueError:
+    arr = _extract_json_array(raw)
+    if arr is None:
+        detail = ("model returned nothing" if not (raw or "").strip()
+                  else "no JSON array in reply: " + raw.strip().replace(chr(10), " ")[:120])
+        for p in blank:
+            p["why"] = detail
         return blank
     valid = {b.slug for b in BUSINESSES}
     props = [dict(p) for p in blank]
