@@ -175,6 +175,31 @@ class ConsoleServer(ThreadingHTTPServer):
             for c in BUSINESSES:
                 if t.reachable_by(c.slug) or "*" in t.businesses:
                     edges.append({"a": "t:" + t.name, "b": c.captain, "kind": "tool"})
+        # ingested knowledge: one node per source file, linked to its business's
+        # captain, so the brain visibly fills as docs/code are ingested. Both
+        # LEARNED lessons and still-PENDING queue items show (the panel says which),
+        # so a freshly queued repo appears at once rather than only after review.
+        from .ingest import Ingest
+        learned = {}
+        for l in Vault(log).recall():
+            src = (l.source or "").strip()
+            if src.split(":")[0] in ("gh", "drive", "github", "url"):
+                learned[src] = l.business or "system"
+        pending = {}
+        try:
+            for it in Ingest(log).pending():
+                src = (it.get("source") or "").strip()
+                if src.split(":")[0] in ("gh", "drive", "github", "url") and src not in learned:
+                    pending[src] = it.get("business") or "system"
+        except Exception:
+            pass
+        caps = {b.slug: b.captain for b in BUSINESSES}
+        combined = {**pending, **learned}
+        for src in list(combined)[:120]:
+            biz = combined[src]
+            node("f:" + src, src.split("/")[-1] or src, "file",
+                 business=biz, source=src, learned=(src in learned))
+            edges.append({"a": "f:" + src, "b": caps.get(biz, "Rosco"), "kind": "knows"})
         return {"nodes": nodes, "edges": edges}
 
     # ---- live activity: what the agents are actually doing ----

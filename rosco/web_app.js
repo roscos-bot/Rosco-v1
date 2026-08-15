@@ -1,5 +1,5 @@
 "use strict";
-var CSRF="", TYPEC={agent:"#c9a227",person:"#5b8fb0",site:"#4ea86e",tool:"#37b0a0",core:"#e8efeb"};
+var CSRF="", TYPEC={agent:"#c9a227",person:"#5b8fb0",site:"#4ea86e",tool:"#37b0a0",file:"#9a86c4",core:"#e8efeb"};
 
 // The session lives only in the server's memory (the passphrase never touches
 // disk, by design), so every server restart - including the auto-reload on a
@@ -152,7 +152,7 @@ function loadMesh(retry){ api("/api/mesh").then(function(res){
   byId={};N=m.nodes.map(function(n,i){byId[n.id]=i;
     return {id:n.id,label:n.label,type:n.type,rank:n.rank,biz:n.business,reports:n.reports,
       x:(Math.random()-.5)*1.6,y:(Math.random()-.5)*1.6,z:(Math.random()-.5)*1.6,
-      vx:0,vy:0,vz:0,r:n.type==="agent"?(n.rank==="Admiral"?16:n.rank==="Commander"?14:n.rank==="Captain"?10:6.5):8,
+      vx:0,vy:0,vz:0,r:n.type==="agent"?(n.rank==="Admiral"?16:n.rank==="Commander"?14:n.rank==="Captain"?10:6.5):(n.type==="file"?4.5:8),
       core:(n.label==="Rosco"||n.label==="Ross"),links:0,pulse:0,tw:Math.random()*6.28};});
   E=m.edges.map(function(e){return[byId[e.a],byId[e.b],e.kind];}).filter(function(e){return e[0]!=null&&e[1]!=null;});
   E.forEach(function(e){N[e[0]].links++;N[e[1]].links++;});
@@ -244,6 +244,9 @@ function showNode(n){
     +"<div class='node-ctx'>"
     +"<div class='nm'>"+esc(n.label)+"</div>"
     +"<div class='rk' style='color:"+col+"'>"+esc(n.rank||n.type)+"</div>"
+    +(n.type==="file"?("<div class='kv'><div class='k'>Source</div><div class='v'>"+esc(n.source||"")+"</div></div>"
+       +"<div class='kv'><div class='k'>Status</div><div class='v'>"+(n.learned?"learned into "+esc(n.business||""):"queued — not learned yet")+"</div></div>"
+       +"<div class='kv'><div class='k'>Detail</div><div class='v'>full copy cached locally — read without the internet</div></div>"):"")
     +(n.biz?"<div class='kv'><div class='k'>Business</div><div class='v'>"+esc(n.biz)+"</div></div>":"")
     +(n.reports?"<div class='kv'><div class='k'>Reports to</div><div class='v'>"+esc(n.reports)+"</div></div>":"")
     +(links?"<div class='kv'><div class='k'>Linked</div><div class='v' style='display:flex;flex-wrap:wrap;gap:5px'>"+links+"</div></div>":"")
