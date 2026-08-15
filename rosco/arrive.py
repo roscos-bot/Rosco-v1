@@ -240,11 +240,15 @@ class Doorway:
                 "I've passed that to Ross - I wasn't sure what you needed.",
                 who, dec, proposal)
 
-        ev = self.asks.raise_(Request(
+        queued = Request(
             person=req.person, business=req.business, capability=req.capability,
-            verb=req.verb, channel=arrival.channel, detail=detail), dec)
+            verb=req.verb, channel=arrival.channel, detail=detail)
+        self.asks.raise_(queued, dec)
+        # The CANONICAL ask id, not the raw event's - a repeat returns its own
+        # event id, and anything later looking the ask up by that (notifying
+        # Ross) would find nothing.
         return Handling(ASK, "I've passed that to Ross.", who, dec, proposal,
-                        ask_id=ev.get("id", ""))
+                        ask_id=self.asks.open_id(queued))
 
 
 class Keywords:

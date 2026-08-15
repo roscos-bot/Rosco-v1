@@ -1,0 +1,215 @@
+"""Telegram: messages from a phone, in and out.
+
+The first real channel. It long-polls Telegram for messages, resolves each one
+through the Doorway, and replies. Pure urllib, no library - the same choice
+classify.py made, and for the same reason: one fewer dependency to keep current.
+
+WHAT MAKES TELEGRAM A STRONG CHANNEL. Every update carries the sender's numeric
+account id, assigned by Telegram and not settable by the sender. That id is what
+identity.resolve() keys on - never the display name, which anyone can set to
+"Ross Fusz". So a paired id is proof, and Telegram earns its place in
+grants.STRONG. The moment this stops being true - a new channel where the
+sender picks their own id - it must not be classed STRONG.
+
+WHAT THIS ADAPTER CANNOT DO. It raises asks (a node fact, anybody may ask) and
+it relays replies. It cannot answer an ask, grant anything, or enrol anyone off
+its own bat - those need Ross's signature, and a running service does not sign
+authority on the say-so of an inbound message. The single exception is the
+pairing handshake, and even that is not the adapter deciding: Ross ran
+`rosco pair` at the console, the console minted the code, and the message only
+carries it back. The authority came from the console; Telegram is the courier.
+
+DELIVERY IS HONEST ABOUT WHAT EXISTS. A cleared request (SELF/ANSWER) means the
+person is allowed - but the connector that would actually fetch a spray log or
+arm a house is the tools layer, not yet built. So the adapter says exactly that
+rather than pretending to have done something. Over-promising is how trust in an
+assistant dies.
+"""
+from __future__ import annotations
+
+import json
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+from ..arrive import Arrival
+from ..asks import Asks
+from ..grants import ANSWER, ASK, DECLINE, SELF
+from ..identity import People
+from ..models import SYSTEM
+from ..store import now
+
+CHANNEL = "telegram"
+TOKEN_SECRET = "telegram_bot_token"     # vault: system:telegram_bot_token
+POLL_TIMEOUT = 25                       # long-poll seconds
+CODE_TTL_HINT = "send it within 15 minutes"
+
+_REPLIES = {
+    SELF: ("You're cleared for that. I can't fetch it for you yet - that "
+           "connector is the next piece being built - but the permission is in "
+           "place."),
+    ANSWER: ("You're cleared for that. Composing the answer is the next piece "
+             "being built; the permission is in place."),
+    ASK: "Passed to Ross - he'll get back to you.",
+    DECLINE: "That's not something I can share.",
+}
+
+
+class TelegramBot:
+    """Long-polls Telegram, routes through the Doorway, replies.
+
+    Built with dependencies injected so it is testable without a network: `send`
+    is any callable(chat_id, text), defaulting to a real Telegram call, and
+    `handle_update` is the unit the tests drive with fake update dicts.
+    """
+
+    def __init__(self, console, doorway, passphrase, token, *, send=None) -> None:
+        self.console = console
+        self.doorway = doorway
+        self.people = People(doorway.log)
+        self.asks = Asks(doorway.log)
+        self._passphrase = passphrase     # entered at the console at startup
+        self.token = token
+        self._send = send or self._http_send
+        self.offset_path = Path(console.home) / "telegram.offset"
+
+    # ---- construction from the console ----------------------------------
+
+    @classmethod
+    def from_console(cls, console, passphrase, *, send=None) -> "TelegramBot":
+        """Read the bot token from the vault and assemble the live doorway.
+
+        The token is a system secret, so this needs the vault key - which is why
+        the service is started at the console with the passphrase, once.
+        """
+        from ..vault import Vault
+
+        vault = Vault(console.open(passphrase), key=console._vault_key(passphrase))
+        token = vault.get_secret(SYSTEM, TOKEN_SECRET)
+        if not token:
+            raise SystemExit(
+                "no Telegram bot token stored. Set it once, at the console:\n"
+                "  rosco secret set system telegram_bot_token")
+        doorway = console.doorway(passphrase)
+        return cls(console, doorway, passphrase, token, send=send)
+
+    # ---- the network edge (overridable for tests) -----------------------
+
+    def _api(self, method: str, params: dict, timeout: int = 30) -> dict:
+        url = f"https://api.telegram.org/bot{self.token}/{method}"
+        data = urllib.parse.urlencode(params).encode()
+        req = urllib.request.Request(url, data=data)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+
+    def _http_send(self, chat_id, text: str) -> None:
+        self._api("sendMessage", {"chat_id": chat_id, "text": text})
+
+    def send(self, chat_id, text: str) -> None:
+        try:
+            self._send(chat_id, text)
+        except Exception:
+            # A failed reply must not take the service down. The ask, if one was
+            # raised, is already on record; the person simply did not hear back.
+            pass
+
+    # ---- the loop -------------------------------------------------------
+
+    def _offset(self) -> int:
+        try:
+            return int(self.offset_path.read_text())
+        except (OSError, ValueError):
+            return 0
+
+    def _set_offset(self, value: int) -> None:
+        self.offset_path.write_text(str(value))
+
+    def poll_once(self, timeout: int = POLL_TIMEOUT) -> int:
+        """One long-poll cycle. Returns how many updates were handled."""
+        resp = self._api("getUpdates",
+                         {"offset": self._offset(), "timeout": timeout},
+                         timeout=timeout + 10)
+        updates = resp.get("result") or []
+        for u in updates:
+            try:
+                self.handle_update(u)
+            except Exception:
+                # One malformed or hostile update must not stop the rest, and
+                # must not crash the service. It is dropped; the sender can try
+                # again. Nothing was written on a path that raised.
+                pass
+            self._set_offset(int(u["update_id"]) + 1)
+        return len(updates)
+
+    def serve(self) -> None:
+        print(f"listening on Telegram as of {now()}. Ctrl-C to stop.")
+        print("authority stays at the console - this only carries messages.")
+        while True:
+            try:
+                self.poll_once()
+            except KeyboardInterrupt:
+                print("\nstopped.")
+                return
+            except Exception:
+                # Network blip, Telegram hiccup. Wait a moment and carry on -
+                # the service is meant to sit up for weeks.
+                time.sleep(5)
+
+    # ---- handling one message -------------------------------------------
+
+    def handle_update(self, update: dict) -> None:
+        msg = update.get("message") or update.get("edited_message")
+        if not isinstance(msg, dict):
+            return
+        sender = msg.get("from") or {}
+        sender_id = sender.get("id")
+        chat_id = (msg.get("chat") or {}).get("id", sender_id)
+        text = msg.get("text") or ""
+        if sender_id is None or not text.strip():
+            return
+        sender_id = str(sender_id)
+
+        # Pairing handshake. If Ross has a pairing open at the console and this
+        # message is just the code, complete it. The console did the deciding;
+        # this only carries the code back with the sender's real id attached.
+        if self._maybe_pair(sender_id, chat_id, text):
+            return
+
+        arrival = Arrival(CHANNEL, sender_id, text, at=now())
+        handling = self.doorway.handle(arrival)
+        self.send(chat_id, _REPLIES.get(handling.outcome, _REPLIES[ASK]))
+
+        # A heads-up to Ross when something lands in his queue - read-only. He
+        # still answers at the console; Telegram is not an approval surface, by
+        # the same rule that keeps it from changing anything.
+        if handling.outcome == ASK:
+            self._notify_ross(handling)
+
+    def _maybe_pair(self, sender_id: str, chat_id, text: str) -> bool:
+        code = text.strip()
+        if not (code.isdigit() and len(code) == 6):
+            return False
+        if not (Path(self.console.home) / "pair.json").exists():
+            return False
+        try:
+            self.console.pair_claim(self._passphrase, code, sender_id)
+        except SystemExit as e:
+            self.send(chat_id, f"Pairing didn't work: {e}")
+            return True
+        self.send(chat_id, "Paired. This account is now recognised as Ross.")
+        return True
+
+    def _notify_ross(self, handling) -> None:
+        ross = [h for h in self.people.handles(person="ross")
+                if h.channel == CHANNEL]
+        if not ross:
+            return
+        a = self.asks.get(handling.ask_id) if handling.ask_id else None
+        if a is None:
+            return
+        who = a.person
+        what = f"{a.business}:{a.capability} {a.verb.upper()}"
+        self.send(ross[0].address,
+                  f"\U0001f514 {who} is asking for {what}. It's in your queue - "
+                  f"answer it at the console.")

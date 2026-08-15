@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rosco.arrive import Arrival, Doorway, Keywords, Proposal  # noqa: E402
 from rosco.asks import (ALLOW_ALWAYS, ALLOW_ONCE, DENY_ALWAYS, Asks)  # noqa: E402
+from rosco.adapters.telegram import TelegramBot  # noqa: E402
 from rosco.classify import ModelClassifier, _parse  # noqa: E402
 from rosco.console import Console  # noqa: E402
 from rosco.grants import (ANSWER, ANY, ASK, DECLINE, DO, GET,  # noqa: E402
@@ -1018,6 +1019,74 @@ def main() -> int:
     fails += not refuses("a malformed billing row cannot be written",
                          lambda: ml2.append("model.billed", {"provider": "x"}),
                          Unauthorised)
+
+    print("\nTHE TELEGRAM ADAPTER")
+    thome = Path(tempfile.mkdtemp()) / "tg"
+    tc = Console(thome)
+    tc.init(PW)
+    tc.enrol(PW, "brent", "telegram", "8481123")
+    tc.give(PW, "brent", "sugar-creek", "spray-log", verb=GET)
+
+    class TScripted:
+        def classify(self, t):
+            low = t.lower()
+            if "spray log" in low:
+                return Proposal("sugar-creek", "spray-log", GET, 0.95, "clear")
+            if "bound book" in low:
+                return Proposal("rum", "bound-book", GET, 0.95, "named")
+            return None
+
+    sent = []
+    bot = TelegramBot(tc, Doorway(tc.open(), TScripted()), PW, "fake-token",
+                      send=lambda cid, txt: sent.append((str(cid), txt)))
+
+    def tg(uid, frm, text, name="x"):
+        bot.handle_update({"update_id": uid, "message": {
+            "from": {"id": frm, "first_name": name},
+            "chat": {"id": frm}, "text": text}})
+
+    tg(1, 8481123, "can I get last week's spray log?")
+    fails += not check("a granted request gets a cleared reply",
+                       "cleared" in sent[-1][1].lower(), True)
+    tg(2, 55555, "help me")
+    fails += not check("a stranger is turned away", "can't share" in sent[-1][1]
+                       or "not something" in sent[-1][1].lower(), True)
+    tg(3, 8481123, "send me the bound book")
+    fails += not check("a sensitive ask is passed to Ross",
+                       "Ross" in sent[-1][1], True)
+    fails += not check("and lands in the queue",
+                       len([a for a in Asks(tc.open()).pending()
+                            if a.capability == "bound-book"]), 1)
+    # The id is what resolves, never the display name.
+    tg(4, 8481123, "spray log", name="Ross Fusz THE OWNER")
+    fails += not check("a spoofed display name changes nothing",
+                       People(tc.open()).resolve("telegram", "8481123").person, "brent")
+
+    # Ross pairs his own phone through the bot - console minted the code.
+    code = tc.pair_start().split()[2]
+    tg(5, 70000, code)
+    fails += not check("Ross pairs his phone via the bot",
+                       People(tc.open()).resolve("telegram", "70000").person, "ross")
+    fails += not refuses("a wrong pairing code does not pair",
+                         lambda: tc.pair_claim(PW, "000000", "80000"), SystemExit)
+
+    # A fresh ask now notifies Ross, at HIS id, read-only.
+    sent.clear()
+    tg(6, 8481123, "the bound book for rum")
+    notes = [(cid, t) for cid, t in sent if "\U0001f514" in t]
+    fails += not check("Ross is notified when a request waits", bool(notes), True)
+    fails += not check("and the notice goes to Ross, not the requester",
+                       notes[0][0] if notes else "", "70000")
+
+    # The bell is a heads-up, not an approval surface - the bot cannot answer.
+    fails += not check("the adapter exposes no way to answer, grant or enrol",
+                       any(hasattr(bot, m) for m in ("answer", "give", "enrol",
+                                                     "deny", "revoke")), False)
+    # A malformed update is dropped, not fatal.
+    bot.handle_update({"update_id": 7})
+    bot.handle_update({"update_id": 8, "message": {"text": "no sender"}})
+    fails += not check("a malformed update does not crash the adapter",
+                       tc.verify().startswith("every"), True)
 
     print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}\n")
     return 1 if fails else 0

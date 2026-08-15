@@ -386,6 +386,18 @@ class Console:
     def vault_read(self, business: str) -> str:
         return Vault(self.open()).to_markdown(business)
 
+    def serve(self, passphrase: str) -> None:
+        """Run the Telegram service. Long-polls, routes, replies - forever.
+
+        Needs the passphrase because it reads the bot token and the model keys
+        from the vault, and because a paired-in code completes a pairing Ross
+        began at the console. The key stays in memory for the life of the
+        service; that is the price of an assistant that answers a phone.
+        """
+        from .adapters.telegram import TelegramBot
+        bot = TelegramBot.from_console(self, passphrase)
+        bot.serve()
+
     def verify(self) -> str:
         log = self.open()
         problems = log.verify()
@@ -488,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
     va = sub.add_parser("vault", help="what the agents have learned")
     va.add_argument("business")
 
+    sub.add_parser("serve", help="run the Telegram service (long-polls, routes, replies)")
     sub.add_parser("verify", help="walk every chain and signature")
 
     args = ap.parse_args(argv)
@@ -550,6 +563,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(c.budget_show())
         elif args.cmd == "vault":
             print(c.vault_read(args.business))
+        elif args.cmd == "serve":
+            c.serve(_ask_pass())
         elif args.cmd == "verify":
             print(c.verify())
         else:

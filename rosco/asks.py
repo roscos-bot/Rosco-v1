@@ -305,6 +305,16 @@ class Asks:
                 return a
         return None
 
+    def open_id(self, req: Request) -> str:
+        """The canonical open ask for this request, or ''.
+
+        An adapter needs this after raise_(): a repeat returns its own event id,
+        not the ask's, so anything that later looks the ask up by that id -
+        notifying Ross, say - would find nothing. This returns the ask itself.
+        """
+        a = self._open_for(_norm(req.person), req)
+        return a.id if a else ""
+
     def digest(self, limit: int = 12) -> str:
         """The queue, as Ross reads it at the console or on his phone."""
         rows = self.pending()
