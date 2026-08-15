@@ -876,6 +876,14 @@ document.getElementById("ingestClose").addEventListener("click",closeIngest);
 (function(){
   var right=document.getElementById("rightpane"),ctx=document.getElementById("ctx"),
       vh=document.getElementById("vhandle"),hh=document.getElementById("hhandle");
+  function save(k,v){try{localStorage.setItem(k,v);}catch(e){}}
+  function load(k){try{return parseFloat(localStorage.getItem(k));}catch(e){return NaN;}}
+  // Restore the split/width the way Ross last dragged them — persisted below, so
+  // the chat window keeps its size across reloads and new sessions.
+  var sh=load("rosco.ctxH");
+  if(ctx&&sh>=70){ctx.style.flex="none";ctx.style.height=sh+"px";}
+  var sw=load("rosco.rightW");
+  if(right&&sw>=280){right.style.width=Math.min(sw,window.innerWidth-340)+"px";}
   function onDrag(handle,move){
     if(!handle)return;
     handle.addEventListener("mousedown",function(e){e.preventDefault();
@@ -887,10 +895,10 @@ document.getElementById("ingestClose").addEventListener("click",closeIngest);
   }
   onDrag(vh,function(e){if(!right||!ctx)return;var r=right.getBoundingClientRect();
     var h=Math.max(70,Math.min(r.height-140,e.clientY-r.top));
-    ctx.style.flex="none";ctx.style.height=h+"px";});
+    ctx.style.flex="none";ctx.style.height=h+"px";save("rosco.ctxH",h);});
   onDrag(hh,function(e){if(!right)return;
     var w=Math.max(280,Math.min(window.innerWidth-340,window.innerWidth-e.clientX));
-    right.style.width=w+"px";
+    right.style.width=w+"px";save("rosco.rightW",w);
     if(typeof resize==="function")resize();});   // graph canvas re-measures on width change
 })();
 
