@@ -40,22 +40,55 @@ A global chain would require three sites to agree an order before any of them
 could write, which fails the moment the internet drops — and Ross specifically
 wants each site to keep working offline.
 
-### 2. Only Ross grants
+**What the hash does and does not do.** It proves *integrity* — a missing or
+altered row is detectable on replay. It proves nothing about *authorship*: it is
+unkeyed, so anyone who can write the table can rewrite a chain and recompute
+every hash forward in milliseconds. An earlier version of `nodes.py` claimed
+otherwise and was wrong. Authorship comes from the signatures, not the chain.
+
+### 2. Only Ross grants — and it is signed, not asserted
 
 `give()`, `deny()` and `revoke()` raise `PermissionError` if the author is not
-Ross. Not John for SteelHaven. Not Lucas for RUM. Not a person widening their
-own scope.
+Ross. **And that is not enough on its own**, which an audit of the first version
+established: a Python check holds inside one process and is worth nothing across
+three machines, because `Log.append()` was unauthenticated. Anything able to
+write an event could write one stamped `actor="ross"`, and every other node
+replayed it as fact. One compromised site could mint itself a CERTAIN handle on
+Ross's name and a grant to go with it.
+
+So authority is cryptographic now, in two layers (`keys.py`):
+
+- **Node signature, on every event.** Ed25519, from the node that wrote it. This
+  is what makes relaying safe — the cloud VM can pass the shop's events along
+  and cannot alter one, having no way to produce the shop's signature over the
+  change.
+- **Ross signature, on authority events.** Grants, enrolments, node
+  registrations, model choices, answers to the queue, secrets — and any lesson
+  claiming basis `told`, because "Ross said so" is a claim about Ross. His key
+  lives on the console and nowhere else. Events claiming authority without it
+  are dropped on replay and refused on sync.
+
+**The root of trust is a file Ross carries.** `trust.json` holds his public key
+and each node's, placed on every machine out of band — public keys can't be
+distributed by the log they authenticate. Being manual is the point: adding a
+node is something a human does deliberately, not something the network decides.
 
 **Why:** Ross's words — *"one hard rule, if you don't know what to allow or
 disallow you ask me and only me for approval."* Delegating the power to say yes
-is how a system ends up with more access than anyone remembers agreeing to. The
-check is in the write path, not in a UI, so there is no path around it.
+is how a system ends up with more access than anyone remembers agreeing to.
 
 ### 3. Unknown is never yes
 
 An untaught request returns `ASK` and waits. Indefinitely. There is no timeout
 that becomes an approval, and no inference from a neighbouring capability —
 "Brent may see the spray log" tells us nothing about the BOM.
+
+**An unidentified sender is also unknown.** `identity.resolve()` returns an empty
+person for a stranger, an ambiguous address and a lapsed enrolment alike. In the
+first version that empty string fell through the grant filter and matched *every*
+grant in the business — "unknown is never yes" had become "unknown is everyone".
+Both ends are now guarded, and `live()` distinguishes "no filter" from "the empty
+name" in its type so the two can't be conflated again.
 
 **Why:** this is the expensive rule and it is worth it. The failure mode it
 prevents is the system quietly generalising one grant into a class of grants
@@ -82,6 +115,11 @@ from silence, or a refused person waits forever for a no that already exists.
 
 - A weak channel carrying a `DO` → downgraded to `ASK`.
 - A weak channel carrying a `GET` that would be `SELF` → downgraded to `ANSWER`.
+- **A channel in neither list → `ASK`.** This is an allow-list. The first version
+  tested `channel in WEAK`, which meant every string that wasn't literally
+  "email" or "phone" — a typo, a new adapter, a value an attacker chose — was
+  handled as unforgeable. `Request.channel` no longer defaults to the strongest
+  tier either; callers must say.
 
 **Why:** a Telegram id was paired by Ross and cannot be forged. A `From:` header
 is a suggestion and caller ID is worse — both are trivially spoofed. Ross's
@@ -172,30 +210,66 @@ absorbing a peer's events never invalidates your own chain.
 
 ---
 
+## Decisions Ross has made
+
+- **First job: answer people.** Inbound on Telegram/Chat/email → identity →
+  grants → answer, act, or queue. It's the thing he described wanting, and it
+  exercises every part of the core, so it's how the design gets proven.
+- **Models: OpenRouter plus a direct workhorse key.** One key for reach and
+  trials, a direct provider for the volume. See `models.py`.
+- **Vault unseal: Telegram tap.** Chosen over BitLocker+DPAPI, a TPM seal, and a
+  YubiKey. It fights offline-first, so it is implemented to keep both — see
+  below.
+
+### How tap-to-unseal keeps offline-first
+
+A sealed node **still runs**: it reads its log, resolves identity, enforces
+grants, answers from learning, and queues work. What it cannot do while sealed is
+touch a credential — no QBO, no Google, no posting. That's a much smaller loss
+than "blind", and it means a node that reboots at 3am doesn't quietly resume
+acting until Ross says so.
+
+**The tap authorises; a peer transports.** Telegram never carries key material —
+sending a passphrase through Telegram hands it to Telegram. A booting node asks
+the network to be unsealed, Ross gets the push, and on his tap an already-unsealed
+peer sends the key over the VPN. The console passphrase is the bootstrap for the
+first node up, or a site that is genuinely alone.
+
+**Secrets are wrapped per entitled node,** not encrypted under one shared key and
+replicated everywhere. RUM's QBO token is wrapped for the shop; SteelHaven's
+Workspace credentials for the house; the cloud VM is entitled to none and
+therefore cannot open anything it relays.
+
 ## Still open
 
 Recorded here so they are not silently decided by whoever writes the code next:
 
 - **Budget ceiling** for LLM spend — not set.
-- **Which job first** once the core lands — not chosen.
 - **"Relevant" for Augie and Courtney** — Ross said family gets personal access
   "if they are relevant." Undefined, so it currently means `ASK`.
 - **Ranks for sub-sub-agents**, if the bench ever grows one.
+- **Enrolment data** — no real handles are in the book yet. This needs a console
+  command Ross runs locally, not data pasted into a chat.
+
+## Built
+
+`store.py` · `keys.py` · `vault.py` · `grants.py` · `roster.py` · `identity.py` ·
+`nodes.py` · `models.py` · `asks.py`, with 103 safety properties in
+`tests/test_core.py`. Everything marked HOSTILE there was live code once.
 
 ## Not yet built
 
-In the order the top-down instruction implies:
-
-1. `identity.py` — channel → person. A Telegram id is strong evidence; a
-   `From:` header is a claim. This module must express that difference.
-2. `nodes.py` — site registry, sync scheduling, offline behaviour.
-3. The interaction layer — **locally saved, changeable LLM choice** (Ross's
-   requirement), with agents trialling new models and asking for a key when they
-   find one worth having.
-4. Ingest — populate the vault from `.md` / `.ml` files.
-5. Deliverables — 3D models and files uploaded to the right Drive, organised,
-   and shared to the person who asked.
-6. Tools each org can call: shhops, shhsocial, accounting, QBO (including
+1. **The arrival pipeline** — channel adapter → `identity.resolve()` →
+   `Request` → `grants.decide()` → act / answer / `asks.raise_()`. This is the
+   first job, and the seam where an `Identity` must not be allowed to decay into
+   a bare string.
+2. **The console** — where Ross reads the queue and answers it. Only localhost
+   changes anything, so this is also where his signing key lives.
+3. **The unseal protocol** — sealed-node boot, Telegram authorisation, peer
+   transport, per-node secret wrapping.
+4. **Ingest** — populate the vault from `.md` / `.ml` files.
+5. **Deliverables** — 3D models and files to the right Drive, organised, shared.
+6. **Tools each org can call**: shhops, shhsocial, accounting, QBO (including
    browser control at the *business agent* level for transaction classification).
 
 ## Carried over from V6, deliberately
