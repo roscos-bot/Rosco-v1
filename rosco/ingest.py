@@ -177,21 +177,30 @@ class Ingest:
         or a manual placement with no proposal is not a hit or a miss. Confident
         means a solid recent streak on a decent sample; deliberately not a single
         lucky guess."""
-        total = 0
-        accepted = 0
-        recent = []
+        hits = []
         for ev in self.log.replay(kind="ingest.decided"):
             b = ev["body"]
             if b.get("action") != "ingest" or not b.get("proposed"):
                 continue
-            total += 1
-            hit = bool(b.get("accepted"))
-            accepted += 1 if hit else 0
-            recent.append(hit)
-        recent = recent[-10:]
+            hits.append(bool(b.get("accepted")))
+        total = len(hits)
+        accepted = sum(hits)
+        recent = hits[-10:]
         rate = accepted / total if total else 0.0
         recent_rate = sum(recent) / len(recent) if recent else 0.0
+        # The trust streak: consecutive right placements at the tail. It sets how
+        # many Rosco may place in one reviewed batch — start at 1, widen as it
+        # keeps getting them right, snap back the moment it's wrong (a miss zeroes
+        # the streak). Earn the bigger batches; never granted blind.
+        streak = 0
+        for h in reversed(hits):
+            if not h:
+                break
+            streak += 1
+        next_batch = (1 if streak < 1 else 2 if streak < 2 else 5 if streak < 5
+                      else 10 if streak < 10 else 20 if streak < 20 else 40)
         confident = total >= 8 and recent_rate >= 0.8
         return {"decided": total, "accepted": accepted,
                 "rate": round(rate, 2), "recentRate": round(recent_rate, 2),
-                "confident": confident, "pending": len(self.pending())}
+                "confident": confident, "streak": streak, "nextBatch": next_batch,
+                "pending": len(self.pending())}

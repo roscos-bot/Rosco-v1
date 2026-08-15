@@ -1259,6 +1259,62 @@ class ConsoleServer(ThreadingHTTPServer):
         from .ingest import Ingest
         return Ingest(self.console.open(s.passphrase)).readiness()
 
+    def ingest_autopreview(self, s, body):
+        """Read the next N pending items in ONE routing pass and report where each
+        would go + how sure — the 'I read the next N, ~X% confident' preview, so a
+        batch placement is never blind. Nothing is learned here; Ross ✓/✗s first."""
+        from .ingest import Ingest
+        try:
+            n = max(1, min(int(body.get("n") or 5), 40))
+        except (TypeError, ValueError):
+            n = 5
+        log = self.console.open(s.passphrase)
+        vault = Vault(log, key=self.console._vault_key(s.passphrase))
+        pend = Ingest(log).pending()[:n]
+        if not pend:
+            return {"items": [], "count": 0, "confidence": 0}
+        props = _route_ingest(Models(log, vault), Meter(log),
+                              [(p.get("text") or "")[:3000] for p in pend])
+        items, confs = [], []
+        for p, pr in zip(pend, props):
+            c = 0.0
+            try:
+                c = float(pr.get("confidence", 0) or 0)
+            except (TypeError, ValueError):
+                c = 0.0
+            confs.append(c)
+            items.append({"cand": p["cand"],
+                          "name": (p.get("source") or p.get("text", "")[:40]),
+                          "business": pr.get("business", ""),
+                          "confidence": round(c * 100),
+                          "summary": pr.get("summary", "")})
+        return {"items": items, "count": len(items),
+                "confidence": round(sum(confs) / len(confs) * 100) if confs else 0}
+
+    def ingest_autoplace(self, s, body):
+        """Commit a reviewed batch: each item into the business Ross OK'd (green ✓)
+        or corrected (red ✗ → a new business); learns the shown shorthand, not the
+        raw. A corrected one records as not-accepted — the honest signal the trust
+        ladder reads to widen or snap back the next batch."""
+        from .ingest import Ingest
+        log = self.console.open(s.passphrase)
+        ing = Ingest(log, Vault(log, key=self.console._vault_key(s.passphrase)))
+        placed = skipped = 0
+        for it in (body.get("items") or []):
+            cand = it.get("cand", "")
+            biz = (it.get("business") or "").strip()
+            sh = it.get("shorthand") or ""
+            try:
+                if not biz:
+                    ing.decide(cand, "", "skip")
+                    skipped += 1
+                else:
+                    ing.decide(cand, biz, "ingest", learn_text=sh or None)
+                    placed += 1
+            except Exception:
+                pass
+        return {"ok": True, "placed": placed, "skipped": skipped}
+
     def ingest_read(self, s, body):
         """On-demand: what does Rosco make of one item? Used for queued items that
         predate the stored summary, so every card can show its 'reads as' line."""
@@ -2003,6 +2059,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.server.ingest_read(s, body))
             if self.path == "/api/ingest/decide":
                 return self._send(200, self.server.ingest_decide(s, body))
+            if self.path == "/api/ingest/autopreview":
+                return self._send(200, self.server.ingest_autopreview(s, body))
+            if self.path == "/api/ingest/autoplace":
+                return self._send(200, self.server.ingest_autoplace(s, body))
             if self.path == "/api/ingest/clear":
                 return self._send(200, self.server.ingest_clear(s))
             if self.path.startswith("/api/cfg/"):

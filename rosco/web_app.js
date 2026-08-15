@@ -798,11 +798,13 @@ function loadIngest(){
     var q=(res[0].ok&&res[0].j&&res[0].j.items)||[];
     var rd=(res[1].ok&&res[1].j)||{};
     setIngestPip(q.length);
-    if(rd.confident&&q.length){
+    if(q.length){
+      var nb=Math.min(rd.nextBatch||1,q.length);
       var rb=document.createElement("div");rb.className="ing-ready";
-      var msg=document.createElement("span");msg.textContent="Rosco has been placing these well lately ("+Math.round((rd.recentRate||0)*100)+"% on target). Auto-route the rest?";
-      var ab=document.createElement("button");ab.className="ing-go";ab.textContent="Auto-route "+q.length;
-      ab.addEventListener("click",function(){ab.disabled=true;autoRoute(q);});
+      var msg=document.createElement("span");
+      msg.textContent="Batch review — Rosco reads the next "+nb+", tells you how sure it is, you ✓/✗ each. Get them right and the batch grows (1→2→5→10→20); a wrong one snaps it back.";
+      var ab=document.createElement("button");ab.className="ing-go";ab.textContent="Review next "+nb;
+      ab.addEventListener("click",function(){ab.disabled=true;ab.textContent="reading "+nb+"…";openReportCard(host,nb);});
       rb.appendChild(msg);rb.appendChild(ab);host.appendChild(rb);
     }
     var bar=document.createElement("div");bar.className="ing-bar";
@@ -878,9 +880,51 @@ function decideIngest(cand,business,action,card,shorthand){
     else{alert((r.j&&r.j.error)||"couldn't decide");if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=false;});}
   });
 }
-function autoRoute(items){var withBiz=items.filter(function(x){return x.business;});var i=0;
-  (function next(){if(i>=withBiz.length){loadIngest();return;}var it=withBiz[i++];
-    post("/api/ingest/decide",{cand:it.cand,business:it.business,action:"ingest"}).then(next,next);})();}
+// Batch review — a report card. Rosco reads the next N in one pass, shows where
+// each goes + how sure; you ✓ (right) or ✗ (wrong → pick the real home / skip),
+// then place all. Nothing is learned until you approve; a ✗ correction is the
+// honest signal that snaps the trust ladder back.
+function openReportCard(host,n){
+  post("/api/ingest/autopreview",{n:n}).then(function(r){
+    if(!(r.ok&&r.j)){alert((r.j&&r.j.error)||"couldn't read the batch");loadIngest();return;}
+    renderReportCard(host,r.j.items||[],r.j.confidence||0);
+  }).catch(function(){alert("server unreachable");loadIngest();});
+}
+function renderReportCard(host,items,confidence){
+  host.innerHTML="";
+  if(!items.length){host.innerHTML="<div class='ing-empty'>Nothing to review.</div>";return;}
+  var head=document.createElement("div");head.className="rc-head";
+  head.innerHTML="I read the next <b>"+items.length+"</b> — about <b>"+confidence+"%</b> confident where they go. Green ✓ if I'm right, red ✗ if I'm wrong (then pick the real home, or skip). That correction is how I learn.";
+  host.appendChild(head);
+  var rows=[];
+  items.forEach(function(it){
+    var st={cand:it.cand,shorthand:it.summary,business:it.business};rows.push(st);
+    var row=document.createElement("div");row.className="rc-row ok";
+    var top=document.createElement("div");top.className="rc-top";
+    top.innerHTML="<span class='rc-name'>"+esc((it.name||"").split("/").pop()||"item")+"</span><span class='rc-conf'>"+it.confidence+"%</span>";
+    var gist=document.createElement("div");gist.className="rc-gist";gist.textContent=it.summary||"(no shorthand)";
+    var line=document.createElement("div");line.className="rc-line";
+    var pick=document.createElement("span");pick.className="rc-pick";pick.innerHTML="→ <b>"+esc(bizTitle(it.business)||"unplaced")+"</b>";
+    var yes=document.createElement("button");yes.className="rc-yes on";yes.textContent="✓";yes.title="right";
+    var no=document.createElement("button");no.className="rc-no";no.textContent="✗";no.title="wrong";
+    var fix=document.createElement("select");fix.className="karole rc-fix";fix.style.display="none";
+    var sk=document.createElement("option");sk.value="";sk.textContent="— skip —";fix.appendChild(sk);
+    ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bizTitle(bz);if(bz===it.business)o.selected=true;fix.appendChild(o);});
+    yes.addEventListener("click",function(){st.business=it.business;fix.style.display="none";row.className="rc-row ok";yes.className="rc-yes on";no.className="rc-no";});
+    no.addEventListener("click",function(){st.business=fix.value;fix.style.display="";row.className="rc-row wrong";no.className="rc-no on";yes.className="rc-yes";});
+    fix.addEventListener("change",function(){st.business=fix.value;});
+    line.appendChild(pick);line.appendChild(yes);line.appendChild(no);line.appendChild(fix);
+    row.appendChild(top);row.appendChild(gist);row.appendChild(line);host.appendChild(row);
+  });
+  var foot=document.createElement("div");foot.className="rc-foot";
+  var place=document.createElement("button");place.className="ing-go";place.textContent="Place all "+items.length;
+  place.addEventListener("click",function(){place.disabled=true;place.textContent="placing…";
+    post("/api/ingest/autoplace",{items:rows.map(function(st){return {cand:st.cand,business:st.business,shorthand:st.shorthand};})})
+      .then(function(){loadIngest();}).catch(function(){place.disabled=false;place.textContent="Place all";alert("server unreachable");});});
+  var back=document.createElement("button");back.className="ing-skip";back.textContent="Cancel";
+  back.addEventListener("click",loadIngest);
+  foot.appendChild(place);foot.appendChild(back);host.appendChild(foot);
+}
 document.getElementById("ingestBtn").addEventListener("click",openIngest);
 document.getElementById("ingestClose").addEventListener("click",closeIngest);
 
