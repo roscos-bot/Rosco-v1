@@ -53,9 +53,11 @@ function stat(k,v){return "<div class='stat'><span class='k'>"+k+"</span><span c
 
 // ---- the queue ----
 var SENS={"bound-book":1,"books":1,"payroll":1,"taxes":1,"transfers":1,"budget":1};
-function loadQueue(){ api("/api/queue").then(function(res){var q=res.j||[];var el=document.getElementById("qwrap");
-  document.getElementById("rhead").textContent="Waiting on you · "+q.length;
-  markWaiting(q);
+function loadQueue(){ api("/api/queue").then(function(res){var q=res.j||[];
+  markWaiting(q);                       // ring captains even while a node is shown
+  var el=document.getElementById("qwrap"),rh=document.getElementById("rhead");
+  if(!el||!rh) return;                  // a node's context is showing; queue is hidden
+  rh.textContent="Waiting on you · "+q.length;
   if(!q.length){el.innerHTML="<div class='empty'>Nothing waiting. You're clear.</div>";return;}
   el.innerHTML=q.map(askCard).join("");
   q.forEach(function(a){ wireCard(a.id); });
@@ -181,8 +183,33 @@ cv.addEventListener("mousemove",function(e){var b=cv.getBoundingClientRect(),mx=
   else{tip.style.opacity=0;cv.style.cursor=drag?"grabbing":"grab";}});
 cv.addEventListener("mousedown",function(e){drag=true;auto=false;var b=cv.getBoundingClientRect();lx=e.clientX-b.left;ly=e.clientY-b.top;});
 window.addEventListener("mouseup",function(){drag=false;});
-cv.addEventListener("click",function(e){var b=cv.getBoundingClientRect(),p=pick(e.clientX-b.left,e.clientY-b.top);if(p>=0){selected=p;N[p].pulse=1;}});
+cv.addEventListener("click",function(e){var b=cv.getBoundingClientRect(),p=pick(e.clientX-b.left,e.clientY-b.top);
+  if(p>=0){selected=p;N[p].pulse=1;showNode(N[p]);}});
 cv.addEventListener("mouseleave",function(){tip.style.opacity=0;hover=-1;});
+
+// ---- context panel: click a node -> its details; "back" -> the queue ----
+function showNode(n){
+  var ctx=document.getElementById("ctx");
+  var col=(n.core?"#e8efeb":(TYPEC[n.type]||"#8aa"));
+  var neigh=[]; E.forEach(function(e){ if(e[0]===byId[n.id])neigh.push(N[e[1]]); if(e[1]===byId[n.id])neigh.push(N[e[0]]); });
+  var links=neigh.slice(0,12).map(function(m){ return "<span class='lchip' data-jump='"+esc(m.id)+"'>"+esc(m.label)+"</span>"; }).join(" ");
+  ctx.innerHTML="<div class='back' id='back'>&larr; back to the queue</div>"
+    +"<div class='node-ctx'>"
+    +"<div class='nm'>"+esc(n.label)+"</div>"
+    +"<div class='rk' style='color:"+col+"'>"+esc(n.rank||n.type)+"</div>"
+    +(n.biz?"<div class='kv'><div class='k'>Business</div><div class='v'>"+esc(n.biz)+"</div></div>":"")
+    +(n.reports?"<div class='kv'><div class='k'>Reports to</div><div class='v'>"+esc(n.reports)+"</div></div>":"")
+    +(links?"<div class='kv'><div class='k'>Linked</div><div class='v' style='display:flex;flex-wrap:wrap;gap:5px'>"+links+"</div></div>":"")
+    +"</div>";
+  document.getElementById("back").addEventListener("click",restoreQueue);
+  ctx.querySelectorAll("[data-jump]").forEach(function(el){el.addEventListener("click",function(){
+    var i=byId[el.getAttribute("data-jump")]; if(i!=null){selected=i;N[i].pulse=1;showNode(N[i]);}});});
+}
+function restoreQueue(){
+  document.getElementById("ctx").innerHTML=
+    "<div class='rhead' id='rhead'>Waiting on you</div><div class='qwrap' id='qwrap'></div>";
+  loadQueue();
+}
 
 // ---- tools rail (navigation stubs for now) ----
 var TOOLS=[["Mesh","M12 3v4M12 17v4M3 12h4M17 12h4M12 8a4 4 0 100 8 4 4 0 000-8z"],
@@ -193,6 +220,27 @@ TOOLS.forEach(function(t,i){var el=document.createElement("div");el.className="t
   el.innerHTML="<svg viewBox='0 0 24 24'><path d='"+t[1]+"'/></svg><span class='t'>"+t[0]+"</span>";
   el.addEventListener("click",function(){tel.querySelectorAll(".tool").forEach(function(x){x.classList.remove("on");});el.classList.add("on");});
   tel.appendChild(el);});
+
+// ---- chat with Rosco ----
+function bubble(cls,by,text){var m=document.createElement("div");m.className="msg "+cls;
+  var b=document.createElement("div");b.className="by";b.textContent=by;
+  var d=document.createElement("div");d.className="bub";d.textContent=text;
+  m.appendChild(b);m.appendChild(d);var s=document.getElementById("stream");
+  s.appendChild(m);s.scrollTop=s.scrollHeight;return m;}
+function sendChat(){
+  var inp=document.getElementById("chatin"),btn=document.getElementById("chatsend");
+  var msg=inp.value.trim(); if(!msg) return;
+  bubble("you","Ross",msg); inp.value=""; btn.disabled=true;
+  var waiting=bubble("wait","Rosco","thinking…");
+  post("/api/chat",{message:msg}).then(function(res){
+    waiting.remove(); btn.disabled=false; inp.focus();
+    if(res.ok){ bubble("ros","Rosco", res.j.reply||"…"); }
+    else{ bubble("ros","Rosco", (res.j&&res.j.error)||"couldn't reach the model."); }
+  }).catch(function(){ waiting.remove(); btn.disabled=false;
+    bubble("ros","Rosco","server unreachable."); });
+}
+document.getElementById("chatsend").addEventListener("click",sendChat);
+document.getElementById("chatin").addEventListener("keydown",function(e){if(e.key==="Enter")sendChat();});
 
 // Ambient pulses are just idle liveness now - real activity drives the graph
 // through loadActivity(), so keep the timer slow and let the log do the talking.

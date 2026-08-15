@@ -111,6 +111,22 @@ def main() -> int:
                        headers={"X-Rosco-CSRF": token})
         fails += not check("no cookie means no write", st, 401)
 
+        print("\nCHAT WITH ROSCO")
+        # Chat is a gated write (it spends on a model call), so it needs the
+        # session and the CSRF token like any other action.
+        st, j, _ = req(port, "POST", "/api/chat", {"message": "hi"},
+                       headers={"Cookie": sess})
+        fails += not check("chat without the CSRF token is refused", st, 403)
+        st, j, _ = req(port, "POST", "/api/chat", {"message": "hi"})
+        fails += not check("chat with no session is refused", st, 401)
+        # With the token it runs; no model key is set in this test, so Rosco
+        # replies that no chat model is set - proving the path works and degrades.
+        st, j, _ = req(port, "POST", "/api/chat", {"message": "what's waiting?"},
+                       headers={"Cookie": sess, "X-Rosco-CSRF": token})
+        fails += not check("chat with the token reaches Rosco", st, 200)
+        fails += not check("and degrades cleanly with no model key",
+                           "no chat model" in (j.get("reply") or ""), True)
+
         print("\nLIVE ACTIVITY FEED")
         st, act, _ = req(port, "GET", "/api/activity", headers={"Cookie": sess})
         fails += not check("activity reads with the session", st, 200)

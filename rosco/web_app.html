@@ -43,8 +43,37 @@
   .tip{position:absolute;pointer-events:none;z-index:9;background:var(--sunk);border:1px solid var(--amber-dim);padding:6px 9px;font:700 10px/1.3 var(--mono);color:var(--head);white-space:nowrap;transform:translate(-50%,-145%);opacity:0;transition:opacity .1s}
   .tip .r{color:var(--amber);font-size:8.5px;letter-spacing:.1em}
   .right{width:344px;flex:none;background:var(--surface);border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  .ctx{flex:1 1 55%;display:flex;flex-direction:column;min-height:0;border-bottom:1px solid var(--line)}
   .rhead{padding:11px 16px;border-bottom:1px solid var(--line);font:700 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--head);flex:none}
   .qwrap{flex:1;overflow-y:auto;padding:14px}
+  .node-ctx{padding:14px 16px;overflow-y:auto}
+  .node-ctx .nm{font:800 16px/1.1 var(--head);margin-bottom:2px}
+  .node-ctx .rk{font:700 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;margin-bottom:12px}
+  .kv{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+  .kv:last-child{border-bottom:0}
+  .kv .k{width:78px;flex:none;font:700 9px/1.3 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);padding-top:2px}
+  .kv .v{color:var(--text)} .kv .v b{color:var(--head)}
+  .lchip{display:inline-block;font:700 9px/1 var(--mono);letter-spacing:.04em;padding:4px 6px;border:1px solid var(--line-hot);color:var(--dim);cursor:pointer}
+  .lchip:hover{color:var(--head);border-color:var(--amber-dim)}
+  .back{font:700 9px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);cursor:pointer;padding:8px 16px;border-bottom:1px solid var(--line)}
+  .back:hover{color:var(--amber)}
+  /* chat */
+  .chat{flex:1 1 45%;display:flex;flex-direction:column;min-height:0}
+  .ch-head{padding:10px 16px;border-bottom:1px solid var(--line);flex:none;font:700 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--head);display:flex;align-items:center;gap:8px}
+  .cdot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+  .stream{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+  .msg{display:flex;flex-direction:column;gap:3px;max-width:92%}
+  .msg .by{font:700 8px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+  .msg .bub{padding:8px 10px;font-size:12.5px;line-height:1.45;white-space:pre-wrap}
+  .msg.you{align-self:flex-end;align-items:flex-end}
+  .msg.you .bub{background:var(--amber-bg);border:1px solid var(--amber-dim);color:var(--head)}
+  .msg.ros .bub{background:var(--sunk);border:1px solid var(--line);border-left:2px solid var(--green-dim)}
+  .msg.wait .bub{color:var(--dim);font-style:italic}
+  .compose{flex:none;border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:8px}
+  .compose input{flex:1;background:var(--sunk);border:1px solid var(--line-hot);color:var(--text);font:13px/1 var(--sans);padding:9px 10px;outline:none}
+  .compose input:focus{border-color:var(--amber-dim)}
+  .compose button{background:var(--amber-bg);border:1px solid var(--amber);color:var(--amber);font:700 10px/1 var(--mono);padding:0 12px;cursor:pointer}
+  .compose button:disabled{opacity:.4;cursor:default}
   .ask{background:var(--sunk);border:1px solid var(--line);border-left:3px solid var(--amber);padding:13px;margin-bottom:12px}
   .ask.sens{border-left-color:var(--red)}
   .ask .top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:9px}
@@ -98,8 +127,20 @@
       <div class="tip" id="tip"></div>
     </div>
     <aside class="right">
-      <div class="rhead" id="rhead">Waiting on you</div>
-      <div class="qwrap" id="qwrap"><div class="empty">Loading&hellip;</div></div>
+      <div class="ctx" id="ctx">
+        <div class="rhead" id="rhead">Waiting on you</div>
+        <div class="qwrap" id="qwrap"><div class="empty">Loading&hellip;</div></div>
+      </div>
+      <div class="chat">
+        <div class="ch-head"><span class="cdot"></span> Rosco &middot; chief of staff</div>
+        <div class="stream" id="stream">
+          <div class="msg ros"><span class="by">Rosco</span><div class="bub">At the console. Ask me anything - I read across all the businesses. I answer here; I don't ship.</div></div>
+        </div>
+        <div class="compose">
+          <input id="chatin" placeholder="Ask Rosco…" aria-label="message to Rosco" autocomplete="off">
+          <button id="chatsend">Send</button>
+        </div>
+      </div>
     </aside>
   </div>
 </div>

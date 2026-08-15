@@ -212,6 +212,31 @@ class ConsoleServer(ThreadingHTTPServer):
             raise ValueError("bad verdict")
         return self.console.answer(s.passphrase, aid, verdict, note)
 
+    def chat(self, s, body):
+        """Ross talking to Rosco at the console. Rosco answers across everything.
+
+        A read: Rosco composes an answer grounded in the whole vault. It does not
+        act - the same 'agents build, people ship' line holds here. Uses the CHAT
+        model (quality over cost) since this is the seat Ross sits in.
+        """
+        from .agent import Agent
+        from .llm import NoModel, complete
+        from .meter import Meter
+        msg = (body.get("message") or "").strip()[:2000]
+        if not msg:
+            return "..."
+        log = self.console.open(s.passphrase)
+        models = Models(log, Vault(log, key=self.console._vault_key(s.passphrase)))
+        meter = Meter(log)
+
+        def think(system, user):
+            return complete(models, "chat", system, user, meter=meter)
+        try:
+            return Agent("Rosco", log, think=think, meter=meter).answer(
+                msg, for_person="ross")
+        except NoModel as e:
+            return f"(no chat model set - {e})"
+
 
 LOCAL_HOSTS = None  # set per-server from its port
 
@@ -328,6 +353,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/answer":
                 return self._send(200, {"ok": True, "result": self.server.answer(s, body)})
+            if self.path == "/api/chat":
+                return self._send(200, {"reply": self.server.chat(s, body)})
             if self.path == "/api/lock":
                 self.server.session = None
                 return self._send(200, {"ok": True})

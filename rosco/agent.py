@@ -81,7 +81,15 @@ class Agent:
     # ---- grounding -------------------------------------------------------
 
     def knows(self):
-        """What this agent has learned about its business. Its grounding."""
+        """What this agent has learned about its business. Its grounding.
+
+        Rosco (business '*') is the one agent that reads across everything - the
+        chief-of-staff enrichment role from the design - so it grounds on the
+        whole vault rather than a single business's slice. Every other agent sees
+        only its own business, which is the silo.
+        """
+        if self.business == "*":
+            return self.vault.recall()
         return self.vault.recall(business=self.business, agent=self.name)
 
     def _system(self, lessons) -> str:
