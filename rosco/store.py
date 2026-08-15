@@ -283,6 +283,16 @@ class Log:
         every sync.
         """
         problems: list[str] = []
+        if self.trust.bootstrapping:
+            # Fail-closed but silent is still a trap. With no public key for
+            # Ross, ross_signed() returns False for everything, so every
+            # authority event is dropped and the system is merely useless rather
+            # than unsafe - but it looks identical to a node that has simply
+            # never been granted anything. Say so.
+            problems.append(
+                "no public key for Ross in trust.json - every authority event on "
+                "this node is being discarded, so grants, enrolments and answers "
+                "will all read as absent")
         nodes = [r["node"] for r in self.db.execute("SELECT DISTINCT node FROM events")]
         for node in nodes:
             prev = ""

@@ -15,6 +15,9 @@ config.json
 *.key
 *.pem
 
+# Throwaway probes - audits write reproduction scripts here rather than the root.
+scratch/
+
 # Python
 __pycache__/
 *.py[cod]
