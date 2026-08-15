@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rosco.grants import (ANSWER, ASK, DECLINE, DO, GET, SELF, Grants,  # noqa: E402
                           Request)
 from rosco.identity import CERTAIN, CLAIMED, UNKNOWN, People  # noqa: E402
+from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, Models,  # noqa: E402
+                          secret_name)
 from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
 from rosco.store import Log  # noqa: E402
 from rosco.vault import INFERRED, OBSERVED, TOLD, Vault, derive_key  # noqa: E402
@@ -269,6 +271,34 @@ def main() -> int:
 
     fails += not check("the honest event still absorbs", hl.absorb(rows), 1)
     fails += not check("chain sound after absorbing", hl.verify(), [])
+
+    print("\nMODELS")
+    ml = fresh("home")
+    mk = derive_key("pw", b"s")
+    mv = Vault(ml, key=mk)
+    m = Models(ml, mv)
+    fails += not check("a role always resolves, even unset",
+                       bool(m.pick(CHAT).model), True)
+    try:
+        m.choose(CHAT, "evil/model", OPENROUTER, by="rosco")
+        fails += not check("an agent cannot pick its own model", "allowed", "refused")
+    except PermissionError:
+        fails += not check("an agent cannot pick its own model", "refused", "refused")
+
+    m.choose(CHAT, "x-ai/grok-4.6", OPENROUTER)
+    fails += not check("Ross's choice takes effect", m.pick(CHAT).model, "x-ai/grok-4.6")
+    m.choose(CHEAP, "tiny/model", OPENROUTER, node="cloud")
+    fails += not check("a node pin does not leak to other nodes",
+                       m.pick(CHEAP, node="home").model != "tiny/model", True)
+    fails += not check("but it applies on that node",
+                       m.pick(CHEAP, node="cloud").model, "tiny/model")
+    fails += not check("a missing key is reported, not worked around",
+                       OPENROUTER in m.missing(), True)
+    mv.put_secret(SYSTEM, secret_name(OPENROUTER), "sk-or-x")
+    fails += not check("and stops being reported once held",
+                       OPENROUTER in m.missing(), False)
+    fails += not check("the local model needs no key",
+                       m.key_for(m.pick(LOCAL)), "")
 
     print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}\n")
     return 1 if fails else 0
