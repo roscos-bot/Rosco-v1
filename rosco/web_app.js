@@ -30,7 +30,8 @@ function boot(){ refreshHud(); loadQueue(); loadMesh();
 
 // Fire a light into every node that just DID something. On the first poll we
 // only mark events seen (no burst of history); after that each new one flares.
-function loadActivity(){ api("/api/activity").then(function(res){var a=res.j||[];
+function loadActivity(){ api("/api/activity").then(function(res){
+  var a=(res.ok&&Array.isArray(res.j))?res.j:[];   // locked/old server -> skip
   var rosco=byId["Rosco"];
   a.forEach(function(ev){ if(seenAct[ev.id]) return; seenAct[ev.id]=1;
     if(actFirst) return;
@@ -43,7 +44,7 @@ function loadActivity(){ api("/api/activity").then(function(res){var a=res.j||[]
   actFirst=false;
 });}
 
-function refreshHud(){ api("/api/overview").then(function(res){var o=res.j;if(!o)return;
+function refreshHud(){ api("/api/overview").then(function(res){var o=res.j;if(!res.ok||!o||!o.unlocked)return;
   document.getElementById("hud").innerHTML=
     stat("Waiting","<span class='dot "+(o.waiting?"a":"g")+"'></span>"+o.waiting)+
     stat("Spend","$"+o.spend.toFixed(2))+
@@ -53,7 +54,8 @@ function stat(k,v){return "<div class='stat'><span class='k'>"+k+"</span><span c
 
 // ---- the queue ----
 var SENS={"bound-book":1,"books":1,"payroll":1,"taxes":1,"transfers":1,"budget":1};
-function loadQueue(){ api("/api/queue").then(function(res){var q=res.j||[];
+function loadQueue(){ api("/api/queue").then(function(res){
+  var q=(res.ok&&Array.isArray(res.j))?res.j:[];
   markWaiting(q);                       // ring captains even while a node is shown
   var el=document.getElementById("qwrap"),rh=document.getElementById("rhead");
   if(!el||!rh) return;                  // a node's context is showing; queue is hidden
@@ -111,7 +113,8 @@ function makeSprite(col){var s=64,c=document.createElement("canvas");c.width=c.h
   g.fillStyle=rg;g.fillRect(0,0,s,s);return c;}
 Object.keys(TYPEC).forEach(function(k){sprite[k]=makeSprite(TYPEC[k]);});
 
-function loadMesh(){ api("/api/mesh").then(function(res){var m=res.j||{nodes:[],edges:[]};
+function loadMesh(){ api("/api/mesh").then(function(res){
+  var m=(res.ok&&res.j&&res.j.nodes)?res.j:{nodes:[],edges:[]};
   byId={};N=m.nodes.map(function(n,i){byId[n.id]=i;
     return {id:n.id,label:n.label,type:n.type,rank:n.rank,biz:n.business,reports:n.reports,
       x:(Math.random()-.5)*1.6,y:(Math.random()-.5)*1.6,z:(Math.random()-.5)*1.6,
