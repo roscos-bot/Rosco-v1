@@ -399,6 +399,10 @@ function sendChat(){
     bubble("ros","Rosco","server unreachable."); });
 }
 document.getElementById("chatsend").addEventListener("click",sendChat);
+// Starts readonly so Chrome's password manager won't pair it with the unlock
+// passphrase field and offer to autofill a password into the chat box; drop that
+// the moment it's focused so typing works normally.
+document.getElementById("chatin").addEventListener("focus",function(){this.removeAttribute("readonly");});
 document.getElementById("chatin").addEventListener("keydown",function(e){if(e.key==="Enter")sendChat();});
 
 // ---- settings: the CLI's config commands, as forms ----
