@@ -268,6 +268,12 @@ class Grants:
             if ev["kind"] == "grant.revoked":
                 revoked.add(b["grant"])
                 continue
+            # Exact kinds only. replay()'s filter is SQL LIKE - suffix-matching
+            # and case-insensitive - so "grant.*" also returns 'grant.suggested'
+            # and 'GRANT.GIVEN'. Treating everything that was not a revoke as a
+            # live allow is precisely how an unsigned event became a permission.
+            if ev["kind"] not in ("grant.given", "grant.denied"):
+                continue
             out[ev["id"]] = Grant(
                 id=ev["id"], person=_norm(b["person"]), business=_norm(b["business"]),
                 capability=_norm(b["capability"]), verb=b.get("verb", GET),
@@ -297,6 +303,14 @@ class Grants:
         therefore means granting the same exact capability again, not casting a
         wider net around it.
 
+        WITH ONE OVERRIDE: the newest statement wins outright if it is a deny.
+        Specificity-only had a mirror hole. Ross grants 'brent:bound-book' and
+        later, wanting him off everything, denies 'brent:*'. Under specificity
+        alone the exact allow still governs - so the blanket cut-off leaves
+        precisely the capability that matters still granted, silently. A deny
+        written last is unambiguous and beats everything older whatever its
+        shape; an allow written last still has to be specific enough to win.
+
         "Newest" means position in the log's total order, NOT the timestamp.
         Timestamps have one-second resolution, so a deny and the allow that
         overturns it can share one - and the first version then tie-broke on a
@@ -308,6 +322,9 @@ class Grants:
                  if g.verb == verb and g.capability in (capability, "*")]
         if not cands:
             return None
+        newest = max(cands, key=lambda g: g.order)
+        if not newest.allow:
+            return newest
         cands.sort(key=lambda g: (0 if g.capability == "*" else 1, g.order))
         return cands[-1]
 

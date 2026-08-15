@@ -40,13 +40,16 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from .keys import AUTHORITY, Signer, Trust
+from .keys import Signer, Trust, known, needs_ross
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS events (
-    id          TEXT PRIMARY KEY,       -- uuid4, generated at the writing node
+    -- NOT NULL is explicit: SQLite's legacy exemption lets a non-INTEGER
+    -- PRIMARY KEY hold NULL, and absorb() dedupes on `WHERE id=?`, which never
+    -- matches NULL. A peer could otherwise hand us the same row twice.
+    id          TEXT PRIMARY KEY NOT NULL,  -- uuid4, generated at the writing node
     seq         INTEGER NOT NULL,       -- per-node monotonic
     node        TEXT NOT NULL,          -- which site wrote it
     ts          TEXT NOT NULL,          -- RFC3339 UTC, when the node believed it happened
@@ -107,23 +110,6 @@ def signable(ev: dict) -> bytes:
     }).encode()
 
 
-def needs_ross(kind: str, body: dict) -> bool:
-    """Does this event require Ross's signature to be believed?
-
-    The authority kinds always do - they decide who may do what. On top of
-    those, a lesson claiming basis 'told' does too, because 'told' means Ross
-    said it, and an unsigned claim that Ross said something is exactly how an
-    agent would come to argue with him using his own words. Lessons that are
-    merely observed or inferred need no signature; there are hundreds of them
-    and they grant nothing.
-    """
-    if kind in AUTHORITY:
-        return True
-    if kind in ("vault.learned", "vault.corrected") and body.get("basis") == "told":
-        return True
-    return False
-
-
 class Unauthorised(ValueError):
     """An event that could not prove it was allowed to say what it says."""
 
@@ -181,6 +167,15 @@ class Log:
         rather than written unsigned - a node that cannot prove Ross said
         something must not record that he did.
         """
+        if not known(kind):
+            raise Unauthorised(
+                f"{kind!r} is not a declared event kind. Add it to keys.KINDS with "
+                f"the proof it must carry. Undeclared kinds are how an unsigned "
+                f"event gets projected as a signed one.")
+        if not isinstance(body, dict):
+            raise Unauthorised(
+                f"an event body must be an object; {kind!r} was given {type(body).__name__}")
+
         prev_row = self.db.execute(
             "SELECT hash, seq FROM events WHERE node=? ORDER BY seq DESC LIMIT 1",
             (self.node,),
@@ -224,12 +219,22 @@ class Log:
         table holds another site's events interleaved, and insertion order would
         make the same log replay differently on different nodes.
 
-        Authority events are signature-checked here as well as on the way in.
-        That is not redundant - absorb() guards the network, and this guards
-        anything that reached the table another way, including somebody editing
-        the SQLite file by hand. The check runs only on events that claim
-        authority, which are rare; the bulk of the log is not re-verified on
-        every read.
+        Two filters run here, and it is worth being exact about their reach.
+
+        UNDECLARED KINDS ARE DROPPED. `kind` is matched with SQL LIKE, which is
+        suffix-matching and case-insensitive, so a caller asking for "grant.*"
+        gets 'grant.suggested' and 'GRANT.GIVEN' too. That mismatch - wildcard
+        projection against an exact authority set - was a critical hole. Every
+        row is now checked against the declared vocabulary before it is served.
+
+        AUTHORITY EVENTS ARE SIGNATURE-CHECKED, and only those. It guards
+        against a row that reached the table some way other than absorb() -
+        including a hand-edited SQLite file - but only for events that claim
+        authority. The node signature on ordinary events is NOT re-checked here:
+        Ed25519 verification is tens of microseconds, which is nothing on the
+        rare authority row and minutes on a replay of a large log. Ordinary rows
+        are guarded by absorb() on the way in and by verify() on a schedule.
+        A hand-edited lesson will be served until verify() next runs.
         """
         sql = "SELECT * FROM events"
         where, args = [], []
@@ -244,9 +249,14 @@ class Log:
         sql += " ORDER BY ts, node, seq"
         for r in self.db.execute(sql, args):
             ev = {**dict(r), "body": json.loads(r["body"])}
-            if not unchecked and needs_ross(ev["kind"], ev["body"]):
-                if not self.trust.ross_signed(ev["rsig"] or "", signable(ev)):
-                    continue
+            if unchecked:
+                yield ev
+                continue
+            if not known(ev["kind"]):
+                continue
+            if needs_ross(ev["kind"], ev["body"]) and \
+                    not self.trust.ross_signed(ev["rsig"] or "", signable(ev)):
+                continue
             yield ev
 
     def rejected(self) -> list[dict]:
@@ -259,9 +269,11 @@ class Log:
         out = []
         for r in self.db.execute("SELECT * FROM events ORDER BY ts, node, seq"):
             ev = {**dict(r), "body": json.loads(r["body"])}
-            if needs_ross(ev["kind"], ev["body"]) and \
+            if not known(ev["kind"]):
+                out.append({**ev, "problem": "undeclared kind"})
+            elif needs_ross(ev["kind"], ev["body"]) and \
                     not self.trust.ross_signed(ev["rsig"] or "", signable(ev)):
-                out.append(ev)
+                out.append({**ev, "problem": "no signature from Ross"})
         return out
 
     def verify(self) -> list[str]:
@@ -290,7 +302,10 @@ class Log:
                     problems.append(
                         f"{node}: seq {r['seq']} is not signed by {node} "
                         f"({'unknown node' if not self.trust.knows(node) else 'bad signature'})")
-                if needs_ross(ev["kind"], ev["body"]) and \
+                if not known(ev["kind"]):
+                    problems.append(
+                        f"{node}: seq {r['seq']} is an undeclared kind ({ev['kind']!r})")
+                elif needs_ross(ev["kind"], ev["body"]) and \
                         not self.trust.ross_signed(r["rsig"] or "", msg):
                     problems.append(
                         f"{node}: seq {r['seq']} claims authority ({ev['kind']}) "
@@ -359,6 +374,8 @@ class Log:
                 raise Unauthorised(
                     f"refusing an event claiming to be from this node ({self.node}); "
                     f"nothing writes our chain but us")
+            if not ev.get("id"):
+                raise Unauthorised("an event with no id cannot be deduplicated; refusing")
             cur = self.db.execute("SELECT 1 FROM events WHERE id=?", (ev["id"],))
             if cur.fetchone():
                 continue
@@ -367,6 +384,15 @@ class Log:
             parsed = json.loads(body) if isinstance(body, str) else body
             msg = signable(ev)
 
+            if not known(ev["kind"]):
+                raise Unauthorised(
+                    f"{ev['kind']!r} from {ev.get('node')!r} is not a declared kind; "
+                    f"an undeclared kind is how an unsigned event gets projected "
+                    f"as a signed one")
+            if not isinstance(parsed, dict):
+                raise Unauthorised(
+                    f"event {ev['id']} from {ev.get('node')!r} has a "
+                    f"{type(parsed).__name__} body, not an object")
             if hashlib.sha256(msg).hexdigest() != ev["hash"]:
                 raise Unauthorised(
                     f"event {ev['id']} from {ev.get('node')!r} does not match its own hash")
@@ -390,11 +416,25 @@ class Log:
                     f"{ev['node']} seq {ev['seq']} is already held by a different event "
                     f"({clash['id']}); the peer's chain has forked")
 
-            prior = self.db.execute(
-                "SELECT hash FROM events WHERE node=? AND seq=?",
-                (ev["node"], ev["seq"] - 1)).fetchone()
-            expect = prior["hash"] if prior else ("" if ev["seq"] == 1 else None)
-            if expect is not None and (ev.get("prev", "") or "") != expect:
+            # The row must chain onto what we already hold. A MISSING predecessor
+            # is refused, not waved through - the first version skipped the check
+            # in that case, so a peer could hand us a signed row at seq 900 with
+            # a made-up prev and we would take it, leaving a permanent gap that
+            # only verify() ever complained about. since() always returns a
+            # contiguous run from our own mark, so a legitimate sync never lands
+            # here out of order.
+            if ev["seq"] == 1:
+                expect = ""
+            else:
+                prior = self.db.execute(
+                    "SELECT hash FROM events WHERE node=? AND seq=?",
+                    (ev["node"], ev["seq"] - 1)).fetchone()
+                if prior is None:
+                    raise Unauthorised(
+                        f"{ev['node']} seq {ev['seq']} arrived before seq "
+                        f"{ev['seq'] - 1}; refusing to leave a hole in the chain")
+                expect = prior["hash"]
+            if (ev.get("prev", "") or "") != expect:
                 raise Unauthorised(
                     f"{ev['node']} seq {ev['seq']} does not chain onto the row we hold")
 

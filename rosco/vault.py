@@ -114,8 +114,18 @@ class Vault:
             subject=lesson_id, actor=by,
         )
 
-    def forget(self, lesson_id: str, *, by: str = "ross", why: str = "") -> dict:
-        """Retire a lesson with nothing in its place."""
+    def forget(self, lesson_id: str, *, by: str = ROSS, why: str = "") -> dict:
+        """Retire a lesson with nothing in its place. Only Ross.
+
+        Erasure is authority, always - unlike a correction, which an agent may
+        make against its own inference. An audit found that a compromised node
+        could append vault.forgot with only its own signature and delete a
+        Ross-signed 'never wire money on an emailed request' from every node's
+        projection. Deleting a warning is as good as reversing it.
+        """
+        if by != ROSS:
+            raise PermissionError(
+                f"only Ross forgets a lesson; {by!r} tried to erase {lesson_id[:8]}")
         return self.log.append(
             "vault.forgot", {"lesson": lesson_id, "why": why},
             subject=lesson_id, actor=by,
@@ -152,27 +162,38 @@ class Vault:
                 tags=tuple(b.get("tags", ())),
             )
 
-        # Corrections resolve against the full set, and chain: a correction of a
-        # correction inherits from whichever link is already known.
-        for ev in events:
-            b = ev["body"]
-            if ev["kind"] == "vault.corrected":
-                old = b["replaces"]
-                src = lessons.get(old)
+        # Corrections resolve to a fixpoint, not in one sweep. A correction of a
+        # correction can sort before the correction it replaces - three nodes,
+        # one second, and the (ts, node, seq) order interleaves them - and a
+        # single pass would drop it and lose the newest text outright. Looping
+        # until nothing more resolves costs a few passes over a small list and
+        # makes the result independent of arrival order, which is the property
+        # that actually matters across three machines.
+        pending = [ev for ev in events if ev["kind"] == "vault.corrected"]
+        while pending:
+            progressed = []
+            for ev in pending:
+                b = ev["body"]
+                src = lessons.get(b["replaces"])
                 if src is None:
-                    # Nothing to replace. Refusing to mark anything superseded
-                    # is the honest handling - a correction of a lesson we have
-                    # never seen is a message from a node whose history we are
-                    # missing, not a licence to delete.
                     continue
-                replaced[old] = ev["id"]
+                replaced[b["replaces"]] = ev["id"]
                 lessons[ev["id"]] = Lesson(
                     id=ev["id"], agent=src.agent, business=src.business,
                     text=b["text"], basis=b.get("basis", TOLD),
                     source=ev["actor"], learned=ev["ts"], tags=src.tags,
                 )
-            elif ev["kind"] == "vault.forgot":
-                dropped.add(b["lesson"])
+                progressed.append(ev)
+            if not progressed:
+                # What is left corrects something we have never seen - a node
+                # whose history we are missing, not a licence to delete. Nothing
+                # is marked superseded on their account.
+                break
+            pending = [ev for ev in pending if ev not in progressed]
+
+        for ev in events:
+            if ev["kind"] == "vault.forgot":
+                dropped.add(ev["body"]["lesson"])
 
         out = []
         for lid, les in lessons.items():

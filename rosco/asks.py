@@ -26,8 +26,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .grants import ASK, DO, GET, ROSS, Decision, Grants, Request
+from .grants import ASK, DO, GET, ROSS, Decision, Grants, Request, _norm
 from .store import Log
+
+# The shortest id prefix answer() will accept. Long enough that two open asks
+# colliding is not something an attacker can arrange cheaply, and get() refuses
+# an ambiguous prefix outright anyway.
+MIN_PREFIX = 8
 
 # What Ross can say. The 'always' forms write a grant; the 'once' forms do not.
 ALLOW_ONCE = "allow-once"
@@ -53,7 +58,10 @@ class Ask:
     answer: str = ""
     answered: str = ""
     note: str = ""              # Ross's reason, if he gave one
+    spent: bool = False         # a one-off permission that has been used
+    order: int = 0              # position in the log's total order
     seen: list = field(default_factory=list)   # every channel it arrived on
+    also: list = field(default_factory=list)   # how repeats worded it
 
     @property
     def open(self) -> bool:
@@ -61,7 +69,14 @@ class Ask:
 
     @property
     def allowed(self) -> bool:
-        return self.answer in (ALLOW_ONCE, ALLOW_ALWAYS)
+        """Still good for something.
+
+        A spent ALLOW_ONCE is not. Without that check 'just this time' reads as
+        permission forever, which is the one thing ALLOW_ONCE exists to prevent.
+        """
+        if self.answer == ALLOW_ONCE:
+            return not self.spent
+        return self.answer == ALLOW_ALWAYS
 
     def line(self) -> str:
         """One row, for the console list and the Telegram digest."""
@@ -90,20 +105,36 @@ class Asks:
             raise ValueError(
                 f"only an ASK belongs in the queue; this decided {decision.outcome!r}")
 
-        existing = self._open_for(req)
+        person = _norm(req.person)
+        if not person:
+            # An unidentified sender has no business in this queue. Every
+            # stranger would otherwise collapse onto one shared ask - identity
+            # returns the same empty person for all of them - and answering it
+            # would grant to nobody, or to everybody, depending on how the
+            # answer was later read. Strangers are recorded by
+            # People.saw_stranger() and enrolled by Ross, deliberately.
+            raise ValueError(
+                "cannot queue an ask with no identified person; record the "
+                "arrival with People.saw_stranger() instead")
+
+        existing = self._open_for(person, req)
         if existing:
             return self.log.append(
                 "ask.repeated",
-                {"ask": existing.id, "channel": req.channel, "detail": req.detail[:600]},
-                subject=existing.id, actor=req.person,
+                # The original wording is kept. Letting a repeat overwrite it
+                # means somebody who can forge an email can rewrite what Ross
+                # reads before he answers - the question he sees would not be
+                # the question that was asked.
+                {"ask": existing.id, "channel": req.channel, "also": req.detail[:300]},
+                subject=existing.id, actor=person,
             )
         return self.log.append(
             "ask.raised",
-            {"person": req.person, "business": req.business,
-             "capability": req.capability, "verb": req.verb,
+            {"person": person, "business": _norm(req.business),
+             "capability": _norm(req.capability), "verb": req.verb,
              "channel": req.channel, "detail": req.detail[:600], "why": decision.why},
-            subject=f"{req.person}@{req.business}:{req.capability}:{req.verb}",
-            actor=req.person,
+            subject=f"{person}@{_norm(req.business)}:{_norm(req.capability)}:{req.verb}",
+            actor=person,
         )
 
     def answer(self, ask_id: str, answer: str, *, note: str = "",
@@ -125,33 +156,53 @@ class Asks:
         if a is None:
             raise KeyError(f"no such ask {ask_id}")
         if not a.open:
-            raise ValueError(f"{ask_id[:8]} was already answered {a.answer!r}")
+            raise ValueError(f"{a.id[:8]} was already answered {a.answer!r}")
 
-        ev = self.log.append(
-            "ask.answered",
-            {"ask": ask_id, "answer": answer, "note": note},
-            subject=ask_id, actor=ROSS,
-        )
+        # The grant is written FIRST. If it fails, the ask stays open and Ross
+        # sees it again; the other order closes the question and silently leaves
+        # the permission unwritten, which reads as "handled" and is not.
         if answer == ALLOW_ALWAYS:
             self.grants.give(a.person, a.business, a.capability, verb=a.verb,
                              reason=note or f"answered on {a.raised[:10]}")
         elif answer == DENY_ALWAYS:
             self.grants.deny(a.person, a.business, a.capability, verb=a.verb,
                              reason=note or f"answered on {a.raised[:10]}")
-        return ev
+
+        # a.id, NOT ask_id. all() keys its rows on the full event id, so logging
+        # the prefix Ross actually typed - the 8 characters digest() itself
+        # prints - meant the lookup missed, the ask never closed, and answering
+        # it again wrote the grant a second time. Every time.
+        return self.log.append(
+            "ask.answered",
+            {"ask": a.id, "answer": answer, "note": note, "typed": ask_id},
+            subject=a.id, actor=ROSS,
+        )
+
+    def spend(self, ask_id: str, *, by: str = "rosco") -> dict:
+        """Mark a one-off permission used.
+
+        ALLOW_ONCE means once. Without this the ask simply reads 'allowed'
+        forever and nothing distinguishes a permission that has been used from
+        one still standing - so 'just this time' quietly becomes standing
+        permission, which is the thing ALLOW_ONCE exists to avoid.
+        """
+        a = self.get(ask_id)
+        if a is None:
+            raise KeyError(f"no such ask {ask_id}")
+        return self.log.append("ask.spent", {"ask": a.id}, subject=a.id, actor=by)
 
     # ---- reading ---------------------------------------------------------
 
     def all(self) -> list[Ask]:
         rows: dict[str, Ask] = {}
-        for ev in self.log.replay(kind="ask.*"):
+        for n, ev in enumerate(self.log.replay(kind="ask.*")):
             b = ev["body"]
             if ev["kind"] == "ask.raised":
                 rows[ev["id"]] = Ask(
                     id=ev["id"], person=b["person"], business=b["business"],
                     capability=b["capability"], verb=b.get("verb", GET),
                     channel=b.get("channel", ""), detail=b.get("detail", ""),
-                    why=b.get("why", ""), raised=ev["ts"], last=ev["ts"],
+                    why=b.get("why", ""), raised=ev["ts"], last=ev["ts"], order=n,
                     seen=[b.get("channel", "")],
                 )
             elif ev["kind"] == "ask.repeated":
@@ -159,8 +210,9 @@ class Asks:
                 if a:
                     a.times += 1
                     a.last = ev["ts"]
-                    if b.get("detail"):
-                        a.detail = b["detail"]
+                    # Appended, never overwriting a.detail - see raise_().
+                    if b.get("also"):
+                        a.also.append(b["also"])
                     if b.get("channel") and b["channel"] not in a.seen:
                         a.seen.append(b["channel"])
             elif ev["kind"] == "ask.answered":
@@ -169,25 +221,54 @@ class Asks:
                     a.answer = b["answer"]
                     a.answered = ev["ts"]
                     a.note = b.get("note", "")
+            elif ev["kind"] == "ask.spent":
+                a = rows.get(b["ask"])
+                if a:
+                    a.spent = True
         out = list(rows.values())
         # Oldest first: the queue is a debt, and the oldest question is the one
-        # somebody has been waiting on longest.
-        out.sort(key=lambda a: a.raised)
+        # somebody has been waiting on longest. Sorted on the log's own total
+        # order rather than the body's timestamp, which a node that raised the
+        # ask chose for itself and could back-date to jump the queue.
+        out.sort(key=lambda a: a.order)
         return out
 
     def pending(self) -> list[Ask]:
         return [a for a in self.all() if a.open]
 
     def get(self, ask_id: str) -> Ask | None:
-        for a in self.all():
-            if a.id == ask_id or a.id.startswith(ask_id):
-                return a
-        return None
+        """Resolve an id, or an unambiguous prefix of one.
 
-    def _open_for(self, req: Request) -> Ask | None:
+        The first version returned the first row whose id started with the
+        given string, in list order. Two problems, and the second is an attack:
+        a one-character prefix matched something, and `ask.raised` is not an
+        authority kind - so a compromised node could plant an ask with a
+        back-dated timestamp and an id sharing its first characters with a real
+        one, and Ross answering the real question would grant the planted one.
+        An ambiguous prefix now refuses rather than picks.
+        """
+        want = (ask_id or "").strip()
+        if not want:
+            return None
+        rows = self.all()
+        for a in rows:
+            if a.id == want:
+                return a
+        if len(want) < MIN_PREFIX:
+            raise ValueError(
+                f"{want!r} is too short to name an ask; give at least "
+                f"{MIN_PREFIX} characters")
+        hits = [a for a in rows if a.id.startswith(want)]
+        if len(hits) > 1:
+            raise ValueError(
+                f"{want!r} matches {len(hits)} asks ({', '.join(h.id[:12] for h in hits)}); "
+                f"give the full id")
+        return hits[0] if hits else None
+
+    def _open_for(self, person: str, req: Request) -> Ask | None:
         for a in self.pending():
-            if (a.person == req.person and a.business == req.business
-                    and a.capability == req.capability and a.verb == req.verb):
+            if (a.person == person and a.business == _norm(req.business)
+                    and a.capability == _norm(req.capability) and a.verb == req.verb):
                 return a
         return None
 

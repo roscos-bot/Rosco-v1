@@ -96,6 +96,7 @@ class Handle:
     note: str
     enrolled: str
     until: str = ""        # RFC3339; "" means no expiry
+    order: int = 0         # position in the log's total order - see resolve()
     retired: bool = False
 
 
@@ -182,7 +183,7 @@ class People:
     def handles(self, *, person: str = "", include_retired: bool = False) -> list[Handle]:
         rows: dict[str, Handle] = {}
         retired: set[str] = set()
-        for ev in self.log.replay(kind="identity.*"):
+        for n, ev in enumerate(self.log.replay(kind="identity.*")):
             b = ev["body"]
             if ev["kind"] == "identity.retired":
                 retired.add(b["handle"])
@@ -190,7 +191,13 @@ class People:
                 rows[ev["id"]] = Handle(
                     id=ev["id"], person=b["person"], channel=b["channel"],
                     address=b["address"], raw=b.get("raw", b["address"]),
-                    note=b.get("note", ""), enrolled=ev["ts"], until=b.get("until", ""),
+                    note=b.get("note", ""), enrolled=ev["ts"], order=n,
+                    # Re-parsed on READ as well as on write. Normalising only in
+                    # enrol() left the raw string comparison live for any
+                    # identity.enrolled event assembled another way - a Ross-signed
+                    # body from a script, a future importer - and that is exactly
+                    # the comparison that let an offset time expire two hours late.
+                    until=_utc(b.get("until", "")),
                 )
         out = []
         for hid, h in rows.items():
@@ -219,8 +226,13 @@ class People:
         # is how Ross adds an expiry or a note to one, and the first version
         # kept both rows live - so the older, unexpiring handle went on
         # resolving and the new expiry did nothing at all.
+        #
+        # "Newest" is position in the log's total order, not the timestamp. The
+        # first attempt at this fix sorted on (enrolled, id) - one-second
+        # timestamps and then a random uuid - so re-enrolling within the same
+        # second picked a winner at random, and the audit caught it still open.
         newest: dict[str, Handle] = {}
-        for h in sorted(matches, key=lambda h: (h.enrolled, h.id)):
+        for h in sorted(matches, key=lambda h: h.order):
             newest[h.person] = h
         matches = list(newest.values())
 
@@ -250,8 +262,18 @@ class People:
         if channel in STRONG:
             return Identity(h.person, CERTAIN,
                             f"paired on {channel}, which cannot be forged", h.id)
-        return Identity(h.person, CLAIMED,
-                        f"{channel} matches {h.person}, but {channel} is spoofable", h.id)
+        if channel in WEAK:
+            return Identity(h.person, CLAIMED,
+                            f"{channel} matches {h.person}, but {channel} is spoofable",
+                            h.id)
+        # An allow-list here too, matching grants.py. enrol() gates the write
+        # side today, so this is currently unreachable - but an enrolment on an
+        # unclassified channel arriving another way (a Ross-signed body built by
+        # a script, a future adapter) would otherwise have a real person's name
+        # attached to it on the strength of nothing.
+        return Identity("", UNKNOWN,
+                        f"{channel!r} has no trust tier; classify it in "
+                        f"grants.STRONG or grants.WEAK before believing it")
 
     def whois(self, person: str) -> str:
         """Every way a person can reach the system. For Ross to read."""

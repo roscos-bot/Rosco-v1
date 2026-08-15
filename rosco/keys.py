@@ -45,22 +45,91 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (Encoding, NoEncryption,
                                                           PrivateFormat, PublicFormat)
 
-# Events that decide who may do what. These require Ross's signature; anything
-# else needs only the node's.
-#
-# The list is deliberately explicit rather than a pattern. A wildcard like
-# "grant.*" would silently pull in a future 'grant.suggested' that was never
-# meant to carry authority, and the failure would be invisible.
-AUTHORITY = frozenset({
-    "grant.given", "grant.denied", "grant.revoked",
-    "identity.enrolled", "identity.retired",
-    "node.registered", "node.retired",
-    "model.chosen",
-    "ask.answered",
-    "vault.secret",
-})
-
 ROSS = "ross"
+
+# What an event must prove to be believed.
+NODE = "node"      # the writing node's signature is enough
+AUTHORED = "ross"  # Ross's signature too - this decides who may do what
+BASIS = "basis"    # Ross's, unless the body carries an explicitly weak basis
+
+# EVERY kind that may exist, declared. Nothing else is accepted, written, or
+# replayed - and that closure is the point, not tidiness.
+#
+# A second audit found the reason. Authority was an exact-match set while the
+# projections read by wildcard: Grants.live() consumed replay(kind="grant.*"),
+# which becomes SQL `LIKE 'grant.%'` - suffix-matching AND case-insensitive.
+# So a kind the authority set had never heard of walked straight through.
+# A compromised node could append 'grant.suggested' (or 'GRANT.GIVEN', or
+# 'grant.given2', or 'grant.given ') with its own signature and no signature
+# from Ross, and every node projected it as a live grant while verify() and
+# rejected() both reported clean. It handed a stranger unlimited DO on RUM's
+# bound book.
+#
+# Widening the authority set would not have fixed it - the next undeclared kind
+# would do the same thing. Declaring the whole vocabulary does, because an
+# undeclared kind now has nowhere to land.
+KINDS: dict[str, str] = {
+    "grant.given": AUTHORED,
+    "grant.denied": AUTHORED,
+    "grant.revoked": AUTHORED,
+
+    "identity.enrolled": AUTHORED,
+    "identity.retired": AUTHORED,
+    "identity.stranger": NODE,        # "somebody we could not place turned up"
+
+    "node.registered": AUTHORED,
+    "node.retired": AUTHORED,
+    "node.seen": NODE,
+
+    "model.chosen": AUTHORED,
+    "model.trialled": NODE,           # agents may judge a model
+    "model.spotted": NODE,            # ...and ask for one
+
+    "ask.raised": NODE,               # anybody may ask
+    "ask.repeated": NODE,
+    "ask.answered": AUTHORED,         # only Ross may answer
+    "ask.spent": NODE,                # a one-off permission has been used up
+
+    "vault.secret": AUTHORED,
+    "vault.learned": BASIS,           # 'Ross told me' needs Ross
+    "vault.corrected": BASIS,         # an agent may retract its own inference
+    "vault.forgot": AUTHORED,         # erasure is authority, always
+}
+
+# Bases that an agent may claim on its own signature. Anything else - missing,
+# miscased, unrecognised, or 'told' - needs Ross.
+WEAK_BASIS = frozenset({"observed", "inferred"})
+
+# Kept as a name because other modules read it, but derived rather than written
+# twice - two lists of the same thing drift.
+AUTHORITY = frozenset(k for k, v in KINDS.items() if v == AUTHORED)
+
+
+def known(kind: str) -> bool:
+    """Is this a kind the system has declared? Undeclared is never accepted."""
+    return kind in KINDS
+
+
+def needs_ross(kind: str, body) -> bool:
+    """Does this event require Ross's signature to be believed?
+
+    Fails closed everywhere. An undeclared kind needs it (though it should have
+    been refused before reaching here), and so does an event whose body is not
+    even an object - a peer can put a list or a string there, and something that
+    cannot be inspected cannot be trusted. The first version called .get() on it
+    and raised AttributeError deep inside sync, which sync_from did not catch.
+    """
+    rule = KINDS.get(kind)
+    if rule is None:
+        return True
+    if rule == NODE:
+        return False
+    if rule == AUTHORED:
+        return True
+    # BASIS: only an explicitly weak, recognised basis escapes.
+    if not isinstance(body, dict):
+        return True
+    return str(body.get("basis", "")).strip().lower() not in WEAK_BASIS
 
 
 class Signer:
