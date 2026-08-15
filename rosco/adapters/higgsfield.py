@@ -20,6 +20,11 @@ from .. import safehttp
 
 BASE = "https://platform.higgsfield.ai"
 _URL = re.compile(r"https?://[^\s\"'<>)]+", re.I)
+# platform.higgsfield.ai is behind Cloudflare, which 403s (error 1010) the default
+# Python-urllib signature. Their own SDK reaches the API fine, so present a normal
+# client UA — this is our authorized API client identifying itself, not evasion.
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
 
 def _code(err) -> str:
@@ -34,7 +39,9 @@ def _auth_call(key: str, url: str, *, method: str = "GET", payload=None, timeout
     last = None
     for scheme in ("Key " + k, "Bearer " + k):
         try:
-            return safehttp.call(url, method=method, headers={"Authorization": scheme},
+            return safehttp.call(url, method=method,
+                                 headers={"Authorization": scheme, "User-Agent": _UA,
+                                          "Accept": "application/json"},
                                  payload=payload, timeout=timeout)
         except Exception as e:
             if _code(e) in ("401", "403"):

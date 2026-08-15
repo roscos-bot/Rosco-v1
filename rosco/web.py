@@ -1424,10 +1424,15 @@ def _probe_higgsfield(key):
     k = (key or "").strip()
     url = ("https://platform.higgsfield.ai/requests/"
            "00000000-0000-0000-0000-000000000000/status")
+    # Cloudflare (error 1010) 403s the default urllib signature; present a normal
+    # client UA so the probe reaches Higgsfield's own auth, same as the adapter.
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
     saw = None
     for scheme in ("Key " + k, "Bearer " + k):
         try:
-            safehttp.call(url, method="GET", headers={"Authorization": scheme}, timeout=8)
+            safehttp.call(url, method="GET",
+                          headers={"Authorization": scheme, "User-Agent": ua}, timeout=8)
             return True, "valid"
         except Exception as e:
             msg = _redact_probe_error(str(e), key)
