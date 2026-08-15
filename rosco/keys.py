@@ -105,9 +105,89 @@ WEAK_BASIS = frozenset({"observed", "inferred"})
 AUTHORITY = frozenset(k for k, v in KINDS.items() if v == AUTHORED)
 
 
+# What each kind's body must contain. Declared for the same reason the kinds are.
+#
+# A fourth audit found that declaring the vocabulary was not enough. Anything a
+# compromised node can write with only its own signature - every NODE kind, and
+# a BASIS kind with a weak basis - is attacker-controlled input, and the
+# projections read it by subscript. ONE `ask.repeated` with an empty body, from
+# any registered node, permanently killed the ask queue on every node: pending(),
+# digest(), get() and raise_() all raised KeyError, so Ross could neither see the
+# questions waiting on him nor receive new ones. verify() reported clean and
+# rejected() reported nothing, the rows survived restart, and they re-arrived on
+# the next sync. That is the queue that implements his cardinal rule.
+#
+# store.replay() already refuses to raise on a body that will not PARSE, for
+# exactly this reason. The guard stopped at JSON validity; shape is the next door.
+REQUIRED: dict[str, tuple[str, ...]] = {
+    "grant.given": ("person", "business", "capability"),
+    "grant.denied": ("person", "business", "capability"),
+    "grant.revoked": ("grant",),
+
+    "identity.enrolled": ("person", "channel", "address"),
+    "identity.retired": ("handle",),
+    "identity.stranger": ("channel", "address"),
+
+    "node.registered": ("name", "site", "role"),
+    "node.retired": ("node",),
+    "node.seen": ("name",),
+
+    "model.chosen": ("role", "model", "provider"),
+    "model.trialled": ("model", "role", "verdict"),
+    "model.spotted": ("model", "provider"),
+
+    "ask.raised": ("person", "business", "capability", "verb"),
+    "ask.repeated": ("ask",),
+    "ask.answered": ("ask", "answer"),
+    "ask.spent": ("ask",),
+
+    "vault.secret": ("business", "name", "nonce", "blob", "tag"),
+    "vault.learned": ("agent", "business", "text"),
+    "vault.corrected": ("replaces", "text"),
+    "vault.forgot": ("lesson",),
+}
+
+# Fields whose value must come from a closed set. An unexpected one used as a
+# dict key - models.leaderboard did `row[b["verdict"]]` - is the same crash.
+ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("model.trialled", "verdict"): ("better", "same", "worse", "failed"),
+    ("ask.answered", "answer"): ("allow-once", "allow-always", "deny-once", "deny-always"),
+    ("vault.learned", "basis"): ("told", "observed", "inferred"),
+    ("vault.corrected", "basis"): ("told", "observed", "inferred"),
+    ("node.registered", "role"): ("site", "rendezvous"),
+}
+
+
 def known(kind: str) -> bool:
     """Is this a kind the system has declared? Undeclared is never accepted."""
     return kind in KINDS
+
+
+def malformed(kind: str, body) -> str | None:
+    """Why this body is unusable, or None if it is fine.
+
+    Checked on the way in at append() AND absorb(), so a malformed event never
+    lands in any log. The projections are defensive as well - belt and braces,
+    because a row could reach the table by other means - but the real guarantee
+    is that nothing gets to write one.
+    """
+    if not isinstance(body, dict):
+        return f"body is {type(body).__name__}, not an object"
+    for field in REQUIRED.get(kind, ()):
+        value = body.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return f"missing {field!r}"
+        if not isinstance(value, (str, int, float, bool, list, dict)):
+            return f"{field!r} is not a JSON scalar"
+    for (k, field), allowed in ENUMS.items():
+        if k != kind:
+            continue
+        value = body.get(field)
+        if value is None and field == "basis":
+            continue           # absent basis is handled by needs_ross, fail-closed
+        if value is not None and str(value).strip().lower() not in allowed:
+            return f"{field}={value!r} is not one of {', '.join(allowed)}"
+    return None
 
 
 def needs_ross(kind: str, body) -> bool:

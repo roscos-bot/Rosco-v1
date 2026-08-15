@@ -154,6 +154,13 @@ class Grants:
             raise ValueError(f"an allow resolves to {SELF!r} or {ANSWER!r}")
         if not _norm(person) or not _norm(business) or not _norm(capability):
             raise ValueError("a grant needs a person, a business and a capability")
+        if _norm(person) == ANY or _norm(business) == ANY:
+            # Same asymmetry as the verb. A deny may span people and businesses;
+            # an allow may not. "Everyone, everywhere" is not a concession
+            # anybody should be able to write in one line.
+            raise ValueError(
+                "an allow cannot span every person or every business; "
+                "name them. Only a deny may be that broad")
         return self.log.append(
             "grant.given",
             {"person": _norm(person), "business": _norm(business),
@@ -226,8 +233,12 @@ class Grants:
                 f"arrived on {req.channel or 'no channel'}, which has no trust tier; "
                 f"classify it in grants.STRONG or grants.WEAK")
 
-        if req.verb not in (GET, DO):
-            return Decision(DECLINE, f"unknown verb {req.verb!r}")
+        if _norm(req.verb) not in (GET, DO):
+            # ASK, not DECLINE. An unrecognised verb means we do not know what
+            # is being asked for, and "unknown is never yes" cuts both ways -
+            # a flat refusal for a miscased or empty verb hides a routing bug
+            # behind what looks like a policy decision.
+            return Decision(ASK, f"cannot tell what {req.verb!r} means")
 
         if person == ROSS:
             # Ross is ungated - but only where the channel proves it is him.
@@ -247,7 +258,7 @@ class Grants:
                 f"claims to be Ross over {req.channel}, which is spoofable; "
                 f"confirm at the console")
 
-        g = self._match(person, business, capability, req.verb)
+        g = self._match(person, business, capability, _norm(req.verb))
 
         if g is None:
             # Never taught. This is the common case early on, and the rule is
@@ -343,14 +354,43 @@ class Grants:
         on two machines. `order` comes from replay(), which is sorted
         (ts, node, seq) and is therefore identical on every node.
         """
-        cands = [g for g in self.live(person=person, business=business)
-                 if g.verb in (verb, ANY) and g.capability in (capability, "*")]
+        # Denies may span person and business as well as verb; allows may not,
+        # and give() refuses to write one that does. Fetching unfiltered and
+        # matching here is what makes `deny(person, "*", "*")` mean what it
+        # plainly says - it was silently inert before, which is the third
+        # variant of this bug to be found and the reason the rule is now stated
+        # once, for all four fields, in one place.
+        cands = [g for g in self.live()
+                 if g.person in (person, ANY)
+                 and g.business in (business, ANY)
+                 and g.verb in (verb, ANY)
+                 and g.capability in (capability, ANY)
+                 # A wildcard person or business is only ever legitimate on a
+                 # deny. If one somehow exists as an allow, it is ignored rather
+                 # than honoured.
+                 and (g.allow is False
+                      or (g.person == person and g.business == business))]
         if not cands:
             return None
         newest = max(cands, key=lambda g: g.order)
         if not newest.allow:
             return newest
-        cands.sort(key=lambda g: (0 if g.capability == "*" else 1, g.order))
+        def specificity(g):
+            """Ranked, not summed.
+
+            A flat count made "exact capability, both verbs" tie with "any
+            capability, one verb", and the tie then broke on recency - so a
+            wildcard allow written later beat an exact deny all over again.
+            Capability is the thing actually being asked for, so it outranks
+            the rest; person and business scope who and where; verb is the
+            coarsest of the four and comes last.
+            """
+            return (0 if g.capability == ANY else 1,
+                    0 if g.person == ANY else 1,
+                    0 if g.business == ANY else 1,
+                    0 if g.verb == ANY else 1)
+
+        cands.sort(key=lambda g: (specificity(g), g.order))
         return cands[-1]
 
     @staticmethod

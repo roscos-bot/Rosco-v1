@@ -153,6 +153,24 @@ def main() -> int:
                                         channel=TG)).outcome, DECLINE)
     fails += not refuses("an allow cannot cover both verbs",
                          lambda: g.give("lucas", "rum", "x", verb=ANY))
+    # Third variant again, one field over: deny(person, "*", "*") was silently
+    # inert, so "off everything, everywhere" did nothing at all.
+    g.give("kyle", "steelhaven", "invoices", verb=DO)
+    g.give("kyle", "rum", "stock", verb=DO)
+    g.deny("kyle", ANY, ANY, reason="off everything, everywhere")
+    for biz, cap in (("steelhaven", "invoices"), ("rum", "stock"), ("rum", "bound-book")):
+        fails += not check(f"blanket deny reaches {biz}/{cap}",
+                           g.decide(Request("kyle", biz, cap, verb=DO,
+                                            channel=TG)).outcome, DECLINE)
+    fails += not refuses("an allow cannot span every business",
+                         lambda: g.give("kyle", ANY, "x"))
+    fails += not refuses("nor every person",
+                         lambda: g.give(ANY, "rum", "x"))
+    # An unrecognised verb means we do not know what is being asked - which is
+    # ASK, not a flat refusal that hides a routing bug as a policy decision.
+    fails += not check("an unrecognised verb asks rather than declining",
+                       g.decide(Request("lucas", "rum", "stock", verb="frobnicate",
+                                        channel=TG)).outcome, ASK)
     fails += not refuses("a typo'd deny verb is refused, not stored inert",
                          lambda: g.deny("lucas", "rum", "y", verb="DO"))
     fails += not refuses("and an empty deny is refused too",
@@ -217,6 +235,45 @@ def main() -> int:
     log.append("node.seen", {"name": "shop", "high_water": {}})
     fails += not check("append grows the log", len(list(log.replay())), n_before + 1)
     fails += not check("chain still sound after append", log.verify(), [])
+
+    print("\nHOSTILE / A SHORT BODY")
+    # Audit 4's critical. Declaring the vocabulary was not enough: the bodies of
+    # NODE kinds are attacker-controlled, and the projections read them by
+    # subscript. ONE `ask.repeated` with an empty body, from any registered node,
+    # permanently killed the ask queue on EVERY node - pending(), digest(), get()
+    # and raise_() all raised KeyError, so Ross could neither see the questions
+    # waiting on him nor receive new ones. verify() clean, rejected() empty, the
+    # rows survived restart and re-arrived on the next sync.
+    for kind, body in (("ask.repeated", {}), ("ask.raised", {}),
+                       ("ask.answered", {"ask": "x"}),
+                       ("vault.learned", {"basis": "observed"}),
+                       ("vault.corrected", {"basis": "observed"}),
+                       ("model.spotted", {}),
+                       ("model.trialled", {"model": "m", "role": "chat",
+                                           "verdict": "pwned"})):
+        fails += not refuses(f"{kind} with a short body is refused",
+                             lambda k=kind, b=body: log.append(k, b), Unauthorised)
+    fails += not check("so the queue still reads", isinstance(Asks(log).pending(), list),
+                       True)
+
+    print("\nHOSTILE / SQUATTING AN ID")
+    # Event ids are chosen by whoever writes the event. Two criticals came from
+    # that: a planted ask whose WHOLE id was a real ask's printed 8-char prefix
+    # hijacked Ross's answer and minted an arbitrary grant, and an id squatted
+    # from another chain made absorb() skip a real grant.revoked as a duplicate,
+    # censoring the revocation forever.
+    sq = Trust(ross=ROSS_KEY.public)
+    home2 = fresh("home", trust=sq)
+    peer2 = fresh("shop", trust=sq)
+    ok = peer2.append("node.seen", {"name": "shop"})
+    fails += not refuses("an id that is not a uuid is refused",
+                         lambda: home2.absorb([dict(ok, id="a10bf3c9")]), Unauthorised)
+    home2.absorb([ok])
+    other = peer2.append("node.seen", {"name": "shop", "high_water": {}})
+    fails += not refuses("an id already held on another chain is refused",
+                         lambda: home2.absorb([dict(other, id=ok["id"])]), Unauthorised)
+    fails += not check("re-absorbing the identical row is still idempotent",
+                       home2.absorb([ok]), 0)
 
     print("\nHOSTILE / KIND SHADOWING")
     # The critical finding of the second audit. Grants.live() read
@@ -333,6 +390,12 @@ def main() -> int:
     fails += not check("strongest basis sorts first", rum[0].basis, TOLD)
     fails += not check("other business is not visible",
                        [l.business for l in v.recall(business="steelhaven")], ["steelhaven"])
+    # The same empty-vs-None conflation that let an unidentified sender match
+    # every grant. I fixed it in grants.live() and left it here - the adjacent
+    # door again. None is no filter; "" is the empty name and matches nothing.
+    fails += not check("no filter still reads across", len(v.recall()) >= 3, True)
+    fails += not check("the empty business name matches nothing",
+                       v.recall(business=""), [])
     v.correct(l1["id"], "Dix wants 90 days notice, not 60")
     live = [l.text for l in v.recall(business="rum")]
     fails += not check("correction replaces the belief",

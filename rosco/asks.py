@@ -205,16 +205,25 @@ class Asks:
         rows: dict[str, Ask] = {}
         for n, ev in enumerate(self.log.replay(kind="ask.*")):
             b = ev["body"]
+            # Belt and braces. keys.malformed() now refuses a short body at both
+            # write paths, so nothing should reach here missing a field - but a
+            # projection that CRASHES on a bad row takes the whole queue down on
+            # every node, permanently, and the queue is what implements "ask me
+            # and only me". It skips instead.
+            if not isinstance(b, dict):
+                continue
             if ev["kind"] == "ask.raised":
+                if not (b.get("person") and b.get("business") and b.get("capability")):
+                    continue
                 rows[ev["id"]] = Ask(
                     id=ev["id"], person=b["person"], business=b["business"],
-                    capability=b["capability"], verb=b.get("verb", GET),
+                    capability=b["capability"], verb=b.get("verb") or GET,
                     channel=b.get("channel", ""), detail=b.get("detail", ""),
                     why=b.get("why", ""), raised=ev["ts"], last=ev["ts"], order=n,
                     seen=[b.get("channel", "")],
                 )
             elif ev["kind"] == "ask.repeated":
-                a = rows.get(b["ask"])
+                a = rows.get(b.get("ask") or "")
                 if a:
                     # "They have asked three times" is a real signal Ross acts
                     # on, so it must not be forgeable. A repeat arriving on a
@@ -232,13 +241,13 @@ class Asks:
                     if b.get("channel") and b["channel"] not in a.seen:
                         a.seen.append(b["channel"])
             elif ev["kind"] == "ask.answered":
-                a = rows.get(b["ask"])
+                a = rows.get(b.get("ask") or "")
                 if a:
-                    a.answer = b["answer"]
+                    a.answer = b.get("answer", "")
                     a.answered = ev["ts"]
                     a.note = b.get("note", "")
             elif ev["kind"] == "ask.spent":
-                a = rows.get(b["ask"])
+                a = rows.get(b.get("ask") or "")
                 if a:
                     a.spent = True
         out = list(rows.values())
@@ -266,18 +275,25 @@ class Asks:
         want = (ask_id or "").strip()
         if not want:
             return None
-        rows = self.all()
-        for a in rows:
-            if a.id == want:
-                return a
         if len(want) < MIN_PREFIX:
             raise ValueError(
                 f"{want!r} is too short to name an ask; give at least "
                 f"{MIN_PREFIX} characters")
-        hits = [a for a in rows if a.id.startswith(want)]
+        # Exact and prefix matches are resolved in ONE namespace, deliberately.
+        #
+        # Trying exact-first was itself the hole. Event ids are chosen by
+        # whoever writes the event, so a compromised node could plant an ask
+        # whose entire id was the 8-character prefix the digest prints for a
+        # real one. Ross read the digest, typed what it showed him, and the
+        # exact-match branch handed him the planted ask - minting a Ross-signed
+        # grant for whatever the attacker had put in it. store.absorb() now
+        # requires ids to be uuids, which closes it at the source; resolving in
+        # one namespace means an ambiguity refuses rather than silently
+        # preferring one, whichever way such a row arrived.
+        hits = [a for a in self.all() if a.id == want or a.id.startswith(want)]
         if len(hits) > 1:
             raise ValueError(
-                f"{want!r} matches {len(hits)} asks ({', '.join(h.id[:12] for h in hits)}); "
+                f"{want!r} matches {len(hits)} asks ({', '.join(h.id for h in hits)}); "
                 f"give the full id")
         return hits[0] if hits else None
 

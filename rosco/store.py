@@ -40,7 +40,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from .keys import Signer, Trust, known, needs_ross
+from .keys import Signer, Trust, known, malformed, needs_ross
 
 SCHEMA_VERSION = 3
 
@@ -179,9 +179,9 @@ class Log:
                 f"{kind!r} is not a declared event kind. Add it to keys.KINDS with "
                 f"the proof it must carry. Undeclared kinds are how an unsigned "
                 f"event gets projected as a signed one.")
-        if not isinstance(body, dict):
-            raise Unauthorised(
-                f"an event body must be an object; {kind!r} was given {type(body).__name__}")
+        problem = malformed(kind, body)
+        if problem:
+            raise Unauthorised(f"{kind!r} body is unusable: {problem}")
 
         prev_row = self.db.execute(
             "SELECT hash, seq FROM events WHERE node=? ORDER BY seq DESC LIMIT 1",
@@ -416,11 +416,34 @@ class Log:
                 raise Unauthorised(
                     f"refusing an event claiming to be from this node ({self.node}); "
                     f"nothing writes our chain but us")
-            if not ev.get("id"):
-                raise Unauthorised("an event with no id cannot be deduplicated; refusing")
-            cur = self.db.execute("SELECT 1 FROM events WHERE id=?", (ev["id"],))
-            if cur.fetchone():
-                continue
+            # Event ids are chosen by whoever wrote the event, so they are
+            # attacker-controlled. Two separate criticals came out of that: a
+            # planted ask whose whole id WAS a real ask's printed 8-character
+            # prefix hijacked Ross's answer and minted an arbitrary grant, and
+            # an id squatted from another chain made absorb() skip a real
+            # grant.revoked as a "duplicate", censoring it forever.
+            #
+            # Requiring the shape append() already produces costs nothing
+            # legitimate and removes both.
+            try:
+                uuid.UUID(str(ev.get("id", "")))
+            except (ValueError, AttributeError, TypeError):
+                raise Unauthorised(
+                    f"event id {ev.get('id')!r} is not a uuid; ids are chosen by "
+                    f"the writer and an arbitrary one can squat a real event") from None
+
+            held = self.db.execute(
+                "SELECT node, seq, hash FROM events WHERE id=?", (ev["id"],)).fetchone()
+            if held is not None:
+                # A genuine re-sync repeats the SAME row. Anything else is one
+                # chain claiming another's id, and skipping it silently is what
+                # let a revocation be suppressed.
+                if (held["node"], held["seq"], held["hash"]) == (
+                        ev.get("node"), ev.get("seq"), ev.get("hash")):
+                    continue
+                raise Unauthorised(
+                    f"id {ev['id']} is already held at {held['node']} seq {held['seq']}; "
+                    f"refusing an id squat from {ev.get('node')!r} seq {ev.get('seq')}")
 
             body = ev["body"]
             parsed = json.loads(body) if isinstance(body, str) else body
@@ -431,10 +454,12 @@ class Log:
                     f"{ev['kind']!r} from {ev.get('node')!r} is not a declared kind; "
                     f"an undeclared kind is how an unsigned event gets projected "
                     f"as a signed one")
-            if not isinstance(parsed, dict):
+            problem = malformed(ev["kind"], parsed)
+            if problem:
                 raise Unauthorised(
-                    f"event {ev['id']} from {ev.get('node')!r} has a "
-                    f"{type(parsed).__name__} body, not an object")
+                    f"{ev['kind']} from {ev.get('node')!r} is unusable: {problem}. "
+                    f"A body whose shape nobody checked is how one unsigned row "
+                    f"permanently kills a projection on every node.")
             if hashlib.sha256(msg).hexdigest() != ev["hash"]:
                 raise Unauthorised(
                     f"event {ev['id']} from {ev.get('node')!r} does not match its own hash")

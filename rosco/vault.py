@@ -169,7 +169,7 @@ class Vault:
             subject=lesson_id, actor=by,
         )
 
-    def recall(self, *, business: str = "", agent: str = "",
+    def recall(self, *, business: str | None = None, agent: str | None = None,
                contains: str = "", include_dead: bool = False) -> list[Lesson]:
         """What is believed now, strongest basis first.
 
@@ -193,9 +193,14 @@ class Vault:
             if ev["kind"] != "vault.learned":
                 continue
             b = ev["body"]
+            # Fail-soft, like asks.all(). A crash here takes every lesson on
+            # every node with it - including the safety ones.
+            if not isinstance(b, dict) or not (b.get("agent") and b.get("business")
+                                               and b.get("text") is not None):
+                continue
             lessons[ev["id"]] = Lesson(
                 id=ev["id"], agent=b["agent"], business=b["business"],
-                text=b["text"], basis=b.get("basis", INFERRED),
+                text=b["text"], basis=b.get("basis") or INFERRED,
                 source=b.get("source", ""), learned=ev["ts"],
                 tags=tuple(b.get("tags", ())),
             )
@@ -217,6 +222,9 @@ class Vault:
             progressed = []
             for ev in pending:
                 b = ev["body"]
+                if not isinstance(b, dict) or not b.get("replaces"):
+                    progressed.append(ev)
+                    continue
                 target = b["replaces"]
                 # Follow the chain. Two corrections naming the SAME lesson used
                 # to leave both live, so the agent believed two contradictory
@@ -245,7 +253,7 @@ class Vault:
                 replaced[target] = ev["id"]
                 lessons[ev["id"]] = Lesson(
                     id=ev["id"], agent=src.agent, business=src.business,
-                    text=b["text"], basis=basis,
+                    text=b.get("text", ""), basis=basis,
                     source=ev["actor"], learned=ev["ts"], tags=src.tags,
                 )
                 progressed.append(ev)
@@ -258,7 +266,9 @@ class Vault:
 
         for ev in events:
             if ev["kind"] == "vault.forgot":
-                dropped.add(ev["body"]["lesson"])
+                lid = ev["body"].get("lesson") if isinstance(ev["body"], dict) else None
+                if lid:
+                    dropped.add(lid)
 
         out = []
         for lid, les in lessons.items():
@@ -266,9 +276,14 @@ class Vault:
             dead = bool(les.superseded_by) or lid in dropped
             if dead and not include_dead:
                 continue
-            if business and les.business != business:
+            # None means no filter; "" means the empty name and matches
+            # nothing. The same conflation in grants.live() let an
+            # unidentified sender match every grant in the business, and
+            # fixing it there and not here is exactly the adjacent-door
+            # mistake this codebase keeps making.
+            if business is not None and les.business != business:
                 continue
-            if agent and les.agent != agent:
+            if agent is not None and les.agent != agent:
                 continue
             if contains and contains.lower() not in les.text.lower():
                 continue

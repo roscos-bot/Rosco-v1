@@ -226,6 +226,8 @@ class Models:
         tally: dict[tuple, dict] = {}
         for ev in self.log.replay(kind="model.spotted"):
             b = ev["body"]
+            if not (b.get("provider") and b.get("model")):
+                continue
             k = (b["provider"], b["model"])
             row = tally.setdefault(k, {"provider": b["provider"], "model": b["model"],
                                        "asks": 0, "notes": []})
@@ -241,9 +243,15 @@ class Models:
             b = ev["body"]
             if role and b["role"] != role:
                 continue
+            # b["verdict"] used to index the row directly, so an unexpected
+            # value from a compromised node was a KeyError that killed the whole
+            # leaderboard on every node.
+            verdict = str(b.get("verdict", "")).strip().lower()
+            if not b.get("model") or verdict not in ("better", "same", "worse", "failed"):
+                continue
             row = tally.setdefault(b["model"], {
                 "model": b["model"], "better": 0, "same": 0, "worse": 0, "failed": 0})
-            row[b["verdict"]] += 1
+            row[verdict] += 1
         rows = list(tally.values())
         rows.sort(key=lambda r: (-(r["better"] - r["worse"] - 2 * r["failed"]), r["model"]))
         return rows
