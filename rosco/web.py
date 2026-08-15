@@ -766,6 +766,11 @@ class ConsoleServer(ThreadingHTTPServer):
                 term = ""                    # they named the repo, not a file
             hit = _best_path(tree, term) if term else None
             if hit:
+                from . import sources
+                cached = sources.load(self.console.home, f"gh:{name}/{hit}")
+                if cached is not None:               # ingested -> read the local copy, no re-download
+                    return (f"GITHUB FILE {repo['full']}:{hit} (local cache) — "
+                            f"contents:\n{cached}")
                 content, _ = gh.gh_read(token, owner, name, hit)
                 return (f"GITHUB FILE {repo['full']}:{hit} — contents (may be "
                         f"truncated):\n{content}")
@@ -1078,7 +1083,10 @@ class ConsoleServer(ThreadingHTTPServer):
                                max_chars=20000)
         if not content:
             raise ValueError(f"'{hit.get('name','')}' has no readable text (a PDF or image?)")
-        n = self._queue_text(s, content, source=f"drive:{hit.get('name','')[:40]}")
+        from . import sources
+        src = f"drive:{hit.get('name','')}"[:80]
+        sources.save(self.console.home, src, content)   # local copy — detail without the internet
+        n = self._queue_text(s, content, source=src)
         return {"ok": True, "added": n, "file": hit.get("name", "")}
 
     def ingest_github(self, s, body):
@@ -1115,21 +1123,26 @@ class ConsoleServer(ThreadingHTTPServer):
         files = [f for f in files if f][:50]                            # bound the batch
         if not files:
             raise ValueError(f"nothing to pull for '{path or 'whole repo'}' in {repo['full']}")
+        from . import sources
         if len(files) == 1:                                             # one file -> routed pull
             content, _ = gh.gh_read(token, owner, name, files[0])
             if not content:
                 raise ValueError(f"'{files[0]}' isn't a readable file in {repo['full']}")
-            n = self._queue_text(s, content, source=f"gh:{name}/{files[0]}")
+            src = f"gh:{name}/{files[0]}"
+            sources.save(self.console.home, src, content)               # local copy for offline detail
+            n = self._queue_text(s, content, source=src)
             return {"ok": True, "added": n, "file": f"{repo['full']}:{files[0]}"}
         added = 0                                                       # many -> bulk into Rosco's Vault
         for p in files:
             content, _ = gh.gh_read(token, owner, name, p)
             if not content:
                 continue
+            src = f"gh:{name}/{p}"
+            sources.save(self.console.home, src, content)               # local copy for offline detail
             added += Ingest(log).add(
                 [{"text": content, "business": "system", "confidence": 0.6,
                   "why": "repo source file", "summary": ""}],
-                source=f"gh:{name}/{p}")
+                source=src)
         if not added:
             raise ValueError(f"no readable files pulled from {repo['full']}")
         return {"ok": True, "added": added, "file": f"{repo['full']} — {added} files"}
