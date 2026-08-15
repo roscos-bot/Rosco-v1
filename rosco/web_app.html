@@ -150,8 +150,15 @@
   .cfg .res{margin-top:9px;font:11px/1.5 var(--mono);white-space:pre-wrap}
   .cfg .res.ok{color:var(--green)}.cfg .res.err{color:var(--red)}
   .keystat{margin:2px 0 12px;border:1px solid var(--line);background:var(--sunk)}
-  .ksrow{display:flex;align-items:center;gap:9px;padding:6px 10px;border-bottom:1px solid var(--line)}
+  .ksrow{display:flex;flex-wrap:wrap;align-items:center;gap:9px;padding:6px 10px;border-bottom:1px solid var(--line)}
   .ksrow:last-child{border-bottom:none}
+  .ksmsel{flex:0 0 100%;margin-top:1px;background:var(--sunk);border:1px solid var(--line);color:var(--text);font:11px/1.3 var(--mono);padding:5px 6px;cursor:pointer}
+  .ksassign{flex:0 0 100%;display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:2px}
+  .karole{background:var(--sunk);border:1px solid var(--line);color:var(--text);font:11px/1.3 var(--mono);padding:5px 6px;cursor:pointer}
+  .ksassign .go.sm{background:var(--amber-bg);border:1px solid var(--amber);color:var(--amber);font:700 9px/1 var(--mono);letter-spacing:.06em;padding:6px 11px;cursor:pointer}
+  .ksassign .go.sm:disabled{opacity:.4}
+  .ksares{font:700 9px/1.3 var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
+  .ksares.ok{color:var(--green)}.ksares.err{color:var(--red)}
   .ksrow.pick{cursor:pointer}.ksrow.pick:hover{background:var(--raise)}
   .ksname{flex:1;font:700 10px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--text)}
   .ksst{font:700 9px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}

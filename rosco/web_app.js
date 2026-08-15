@@ -474,9 +474,49 @@ function loadKeyStatus(el,nameInput,scopeInput){
         row.addEventListener("click",function(){
           if(scopeInput)scopeInput.value="system";             // model keys always live in system scope
           if(nameInput){nameInput.value=k.secret;nameInput.focus();}});}
+      loadProviderModels(row,k.provider);                      // fill in this provider's live catalogue
       el.appendChild(row);
     });
   }).catch(function(){el.innerHTML="<div class='n'>(couldn't check keys)</div>";});
+}
+// Each provider row shows its live model catalogue as a dropdown right under the
+// status, AND lets you assign a model to a role from there. Only where there ARE
+// models: openrouter and ollama list without a key; anthropic/openai/gemini/xai
+// need a valid key, so a keyless provider shows none and its "not set" status
+// stands as the answer. Pick a model -> a "use for <role>" strip appears ->
+// Assign writes it via /api/cfg/model (the same choose() the Models form uses).
+function loadProviderModels(row,provider){
+  api("/api/cfg/models?provider="+encodeURIComponent(provider)).then(function(r){
+    var ids=(r.ok&&r.j&&r.j.models)||[];
+    if(!ids.length) return;
+    var sel=document.createElement("select");sel.className="ksmsel";
+    var head=document.createElement("option");head.value="";
+    head.textContent=ids.length+" model"+(ids.length===1?"":"s")+" available — pick one to assign";
+    sel.appendChild(head);
+    ids.forEach(function(id){var o=document.createElement("option");o.value=id;o.textContent=id;sel.appendChild(o);});
+    sel.addEventListener("click",function(e){e.stopPropagation();});   // don't trip the row's fill-key-name click
+    // the assign strip: hidden until a real model is chosen
+    var strip=document.createElement("div");strip.className="ksassign";strip.style.display="none";
+    strip.addEventListener("click",function(e){e.stopPropagation();});
+    var roleSel=document.createElement("select");roleSel.className="karole";
+    (cfgState.roles||["chat","workhorse","cheap","vision","local"]).forEach(function(rl){
+      var o=document.createElement("option");o.value=rl;o.textContent="use for "+rl;roleSel.appendChild(o);});
+    var apply=document.createElement("button");apply.className="go sm";apply.textContent="Assign";
+    var res=document.createElement("span");res.className="ksares";
+    sel.addEventListener("change",function(){strip.style.display=sel.value?"flex":"none";res.textContent="";res.className="ksares";});
+    apply.addEventListener("click",function(){
+      var model=sel.value; if(!model){res.className="ksares err";res.textContent="pick a model";return;}
+      apply.disabled=true;res.className="ksares";res.textContent="working…";
+      post("/api/cfg/model",{role:roleSel.value,model:model,provider:provider}).then(function(rr){
+        apply.disabled=false;
+        if(rr.ok){res.className="ksares ok";res.textContent=rr.j.msg||"set";
+          api("/api/cfg/state").then(function(x){if(x.ok&&x.j){cfgState=x.j;renderState();}});}
+        else{res.className="ksares err";res.textContent=(rr.j&&rr.j.error)||"failed";}
+      }).catch(function(){apply.disabled=false;res.className="ksares err";res.textContent="unreachable";});
+    });
+    strip.appendChild(roleSel);strip.appendChild(apply);strip.appendChild(res);
+    row.appendChild(sel);row.appendChild(strip);
+  }).catch(function(){});
 }
 // The bot-token line: green ● @name when Telegram's getMe accepts it, red when
 // it's rejected, grey when nothing's stored. Same look as the key rows.
