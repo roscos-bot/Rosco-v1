@@ -52,6 +52,16 @@ DECLINE = "decline"
 GET = "get"
 DO = "do"
 
+# A deny may cover both verbs at once; an allow may not. That asymmetry is
+# deliberate, and it is the third variant of the same bug to be found here.
+#
+# deny() used to default to GET like give() did, so the natural way to cut
+# somebody off - deny(person, business, "*") - silently only denied reading.
+# DO on RUM's ATF bound book stayed in force, and nothing said so. A deny is a
+# safety action and should be as broad as the words used; an allow is a
+# concession and should be exactly as narrow as it was written.
+ANY = "*"
+
 # Channel trust. Ross's rule: the spoofable ones carry a higher approval rate.
 #
 # A Telegram id was paired by him and cannot be forged. Google Chat is
@@ -137,7 +147,9 @@ class Grants:
             raise PermissionError(
                 f"only Ross grants; {by!r} tried to give {person}:{business}:{capability}")
         if verb not in (GET, DO):
-            raise ValueError(f"verb must be {GET!r} or {DO!r}")
+            # ANY is refused here on purpose. An allow covering both verbs at
+            # once is exactly the kind of grant nobody remembers agreeing to.
+            raise ValueError(f"verb must be {GET!r} or {DO!r}; an allow cannot cover both")
         if outcome not in (SELF, ANSWER):
             raise ValueError(f"an allow resolves to {SELF!r} or {ANSWER!r}")
         if not _norm(person) or not _norm(business) or not _norm(capability):
@@ -151,14 +163,27 @@ class Grants:
         )
 
     def deny(self, person: str, business: str, capability: str, *,
-             verb: str = GET, reason: str = "", by: str = ROSS) -> dict:
+             verb: str = ANY, reason: str = "", by: str = ROSS) -> dict:
         """Refuse explicitly. Different from never having been asked.
 
         An explicit deny is remembered so the same request stops reaching Ross,
         and so the person gets a straight answer rather than an indefinite wait.
+
+        DEFAULTS TO BOTH VERBS. `deny(person, business, "*")` means off
+        everything, which is what the words plainly say and what somebody typing
+        it in a hurry means. Narrowing it to one verb is possible and has to be
+        asked for.
+
+        The validation below is not ceremony: deny() used to skip the checks
+        give() enforced, so a typo'd verb was stored verbatim, matched nothing,
+        and left Ross with a "no" that governed no one and raised no error.
         """
         if by != ROSS:
             raise PermissionError(f"only Ross denies; {by!r} tried to")
+        if verb not in (GET, DO, ANY):
+            raise ValueError(f"verb must be {GET!r}, {DO!r} or {ANY!r} for both")
+        if not _norm(person) or not _norm(business) or not _norm(capability):
+            raise ValueError("a deny needs a person, a business and a capability")
         return self.log.append(
             "grant.denied",
             {"person": _norm(person), "business": _norm(business),
@@ -319,7 +344,7 @@ class Grants:
         (ts, node, seq) and is therefore identical on every node.
         """
         cands = [g for g in self.live(person=person, business=business)
-                 if g.verb == verb and g.capability in (capability, "*")]
+                 if g.verb in (verb, ANY) and g.capability in (capability, "*")]
         if not cands:
             return None
         newest = max(cands, key=lambda g: g.order)

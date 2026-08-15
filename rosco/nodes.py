@@ -195,7 +195,19 @@ class Nodes:
         report = SyncReport(peer=name, taken=0, chains={}, refused=[])
         mine = self.log.high_water()
 
-        for chain, their_max in sorted(peer.high_water().items()):
+        # Reading the peer at all is reading attacker-controlled data. high_water()
+        # and since() both parse row bodies as JSON, and a single row whose body
+        # is not valid JSON used to raise straight out of this function - past the
+        # guarded loop entirely - so every OTHER chain the peer was relaying went
+        # unpulled and nothing was reported. One bad row must degrade to a
+        # complaint about one chain, never to a silent, total sync failure.
+        try:
+            marks = sorted(peer.high_water().items())
+        except Exception as e:
+            report.refused.append(f"{name} could not be read at all: {e}")
+            return report
+
+        for chain, their_max in marks:
             if chain == self.log.node:
                 # Our own chain, coming back at us. Never absorbed - store.py
                 # refuses it outright - and not an error either: a peer holding
@@ -207,7 +219,11 @@ class Nodes:
             ours = mine.get(chain, 0)
             if their_max <= ours:
                 continue
-            rows = peer.since(chain, ours)
+            try:
+                rows = peer.since(chain, ours)
+            except Exception as e:
+                report.refused.append(f"{chain} could not be read: {e}")
+                continue
             # One row at a time so the count stays true. Absorbing the batch and
             # catching the exception reported taken=0 while the rows that landed
             # before the bad one stayed in the log - a report that says nothing
@@ -216,7 +232,7 @@ class Nodes:
             for row in rows:
                 try:
                     took += self.log.absorb([row])
-                except ValueError as e:
+                except Exception as e:
                     # One bad chain must not stop the others, and one bad row
                     # must not discard the good ones before it. Stop this chain
                     # here - everything after a break is unverifiable anyway -

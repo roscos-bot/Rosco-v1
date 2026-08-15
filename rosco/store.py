@@ -132,6 +132,13 @@ class Log:
             self.path.parent / "trust.json")
         if not self.trust.knows(node):
             self.trust.add_node(node, self.signer.public)
+        # A console holding Ross's signing key obviously trusts his public half.
+        # Without this the console wrote a perfectly good signed grant, replay()
+        # discarded it for want of a public key nobody had installed, and the
+        # grant evaporated with no error at all - indistinguishable from never
+        # having granted it, which is the exact trap this was meant to avoid.
+        if self.ross is not None and self.trust.bootstrapping:
+            self.trust.ross = self.ross.public
 
         self.db = sqlite3.connect(str(self.path), isolation_level=None)
         self.db.row_factory = sqlite3.Row
@@ -198,6 +205,12 @@ class Log:
                 raise Unauthorised(
                     f"{kind} needs Ross's signature and his key is not on this node. "
                     f"Authority is exercised at the console, not by a running agent.")
+            if self.trust.bootstrapping:
+                raise Unauthorised(
+                    f"{kind} would be signed but this node holds no public key for "
+                    f"Ross, so nothing here - including this node - could ever verify "
+                    f"it. Install trust.json before granting; a write that silently "
+                    f"evaporates is worse than one that fails.")
             ev["rsig"] = self.ross.sign(msg)
 
         self.db.execute(
@@ -248,7 +261,16 @@ class Log:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY ts, node, seq"
         for r in self.db.execute(sql, args):
-            ev = {**dict(r), "body": json.loads(r["body"])}
+            # A row whose body will not parse is skipped, never raised on. It
+            # cannot satisfy any rule below, and raising here takes down every
+            # projection on the node - grants, identity, nodes, the queue, all
+            # of it - permanently, on the strength of one bad row. rejected()
+            # surfaces them.
+            try:
+                parsed = json.loads(r["body"])
+            except (ValueError, TypeError):
+                continue
+            ev = {**dict(r), "body": parsed}
             if unchecked:
                 yield ev
                 continue
@@ -268,7 +290,12 @@ class Log:
         """
         out = []
         for r in self.db.execute("SELECT * FROM events ORDER BY ts, node, seq"):
-            ev = {**dict(r), "body": json.loads(r["body"])}
+            try:
+                parsed = json.loads(r["body"])
+            except (ValueError, TypeError):
+                out.append({**dict(r), "body": None, "problem": "body is not JSON"})
+                continue
+            ev = {**dict(r), "body": parsed}
             if not known(ev["kind"]):
                 out.append({**ev, "problem": "undeclared kind"})
             elif needs_ross(ev["kind"], ev["body"]) and \
@@ -300,7 +327,12 @@ class Log:
                 "SELECT * FROM events WHERE node=? ORDER BY seq", (node,)
             ).fetchall()
             for i, r in enumerate(rows, start=1):
-                ev = {**dict(r), "body": json.loads(r["body"])}
+                try:
+                    ev = {**dict(r), "body": json.loads(r["body"])}
+                except (ValueError, TypeError):
+                    problems.append(f"{node}: seq {r['seq']} has a body that is not JSON")
+                    prev = r["hash"]
+                    continue
                 if r["seq"] != i:
                     problems.append(f"{node}: gap at seq {i} (found {r['seq']})")
                 if r["prev"] != prev:

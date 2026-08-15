@@ -99,6 +99,34 @@ class Vault:
             subject=f"{business}:{agent}", actor=source or agent,
         )
 
+    def outranks(self, lesson_id: str, basis: str) -> bool:
+        """May a correction of this strength replace that lesson?
+
+        The rule the whole module turns on: A CORRECTION MAY NEVER OUTRANK WHAT
+        IT CORRECTS. An inference cannot overturn something Ross said. An
+        observation cannot either.
+
+        Three audits found this hole, the last one through four independent
+        lenses at once. Locking down vault.forgot stopped a compromised node
+        DELETING a Ross-signed lesson - and left it able to REPLACE one, which
+        is the same attack with better manners. It could turn "never wire money
+        on an emailed request" into "wiring is fine if the address matches" with
+        an event needing no signature from Ross, and verify() and rejected()
+        would both report clean on every node.
+
+        Because a TOLD correction requires Ross's signature to survive replay at
+        all, one comparison closes it: the correction's basis must be at least
+        as strong as the target's.
+        """
+        target = None
+        for les in self.recall(include_dead=True):
+            if les.id == lesson_id:
+                target = les
+                break
+        if target is None:
+            return True          # nothing to outrank
+        return WEIGHT.get(basis, 0) >= WEIGHT.get(target.basis, 0)
+
     def correct(self, lesson_id: str, text: str, *, by: str = "ross",
                 basis: str = TOLD) -> dict:
         """Supersede a lesson. The old one stays readable, marked dead.
@@ -107,7 +135,17 @@ class Vault:
         is nearly always him saying "no, that is wrong" - and a correction that
         inherited the weak basis of the thing it replaced would be argued with
         by the very agent it was meant to fix.
+
+        An agent may retract its own inference. It may not talk over Ross - see
+        outranks(). The check is here for a clear error, and again in recall()
+        because a compromised node does not call this method at all.
         """
+        if basis not in WEIGHT:
+            raise ValueError(f"basis must be one of {sorted(WEIGHT)}, got {basis!r}")
+        if not self.outranks(lesson_id, basis):
+            raise PermissionError(
+                f"a {basis!r} correction cannot overturn a stronger lesson; "
+                f"only Ross can, and only by saying so directly")
         return self.log.append(
             "vault.corrected",
             {"replaces": lesson_id, "text": text.strip(), "basis": basis},
@@ -170,17 +208,44 @@ class Vault:
         # makes the result independent of arrival order, which is the property
         # that actually matters across three machines.
         pending = [ev for ev in events if ev["kind"] == "vault.corrected"]
-        while pending:
+        rounds = 0
+        while pending and rounds <= len(pending):
+            # Bounded. A compromised node can plant thousands of corrections
+            # pointing at ids that do not exist, and an unbounded retry over
+            # them is quadratic work an attacker chooses the size of.
+            rounds += 1
             progressed = []
             for ev in pending:
                 b = ev["body"]
-                src = lessons.get(b["replaces"])
+                target = b["replaces"]
+                # Follow the chain. Two corrections naming the SAME lesson used
+                # to leave both live, so the agent believed two contradictory
+                # things and nothing flagged it. Re-targeting onto whatever
+                # already replaced it turns a fork into a chain, deterministically.
+                seen_hops = 0
+                while target in replaced and seen_hops < len(events) + 1:
+                    target = replaced[target]
+                    seen_hops += 1
+                src = lessons.get(target)
                 if src is None:
                     continue
-                replaced[b["replaces"]] = ev["id"]
+                if ev["id"] == target:
+                    continue     # a correction of itself; ignore rather than loop
+
+                # THE RULE: a correction may never outrank what it corrects.
+                # Enforced here and not only in correct(), because a compromised
+                # node writes the event directly and never touches the API.
+                # needs_ross() cannot do this - it sees one event and not its
+                # target - so the projection is the only place it can hold.
+                basis = b.get("basis", TOLD)
+                if WEIGHT.get(basis, 0) < WEIGHT.get(src.basis, 0):
+                    progressed.append(ev)     # resolved: refused, stop retrying
+                    continue
+
+                replaced[target] = ev["id"]
                 lessons[ev["id"]] = Lesson(
                     id=ev["id"], agent=src.agent, business=src.business,
-                    text=b["text"], basis=b.get("basis", TOLD),
+                    text=b["text"], basis=basis,
                     source=ev["actor"], learned=ev["ts"], tags=src.tags,
                 )
                 progressed.append(ev)

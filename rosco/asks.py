@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .grants import ASK, DO, GET, ROSS, Decision, Grants, Request, _norm
+from .grants import ASK, DO, GET, ROSS, STRONG, Decision, Grants, Request, _norm
 from .store import Log
 
 # The shortest id prefix answer() will accept. Long enough that two open asks
@@ -53,8 +53,9 @@ class Ask:
     detail: str                 # what they actually said, in their words
     why: str                    # why the system could not answer it
     raised: str
-    times: int = 1              # how often they have asked
-    last: str = ""              # most recent time they asked
+    times: int = 1              # asked again, on a channel that proves who they are
+    nagged: int = 0             # asked again from somewhere spoofable - not evidence
+    last: str = ""              # most recent time they arrived
     answer: str = ""
     answered: str = ""
     note: str = ""              # Ross's reason, if he gave one
@@ -81,8 +82,10 @@ class Ask:
     def line(self) -> str:
         """One row, for the console list and the Telegram digest."""
         age = f"x{self.times}" if self.times > 1 else "  "
+        if self.nagged:
+            age += f"(+{self.nagged}?)"     # unverifiable repeats, marked as such
         return (f"{self.id[:8]}  {self.person:9} {self.business:13} "
-                f"{self.verb.upper():4} {self.capability:18} {age}  {self.detail[:44]}")
+                f"{self.verb.upper():4} {self.capability:18} {age:9}  {self.detail[:40]}")
 
 
 class Asks:
@@ -128,12 +131,17 @@ class Asks:
                 {"ask": existing.id, "channel": req.channel, "also": req.detail[:300]},
                 subject=existing.id, actor=person,
             )
+        # verb is normalised too. It was the one field the last pass missed, and
+        # it was enough on its own: 'do', 'DO' and ' do' produced three separate
+        # pending asks for one question, which is precisely the flooding this
+        # dedupe exists to prevent.
+        verb = _norm(req.verb)
         return self.log.append(
             "ask.raised",
             {"person": person, "business": _norm(req.business),
-             "capability": _norm(req.capability), "verb": req.verb,
+             "capability": _norm(req.capability), "verb": verb,
              "channel": req.channel, "detail": req.detail[:600], "why": decision.why},
-            subject=f"{person}@{_norm(req.business)}:{_norm(req.capability)}:{req.verb}",
+            subject=f"{person}@{_norm(req.business)}:{_norm(req.capability)}:{verb}",
             actor=person,
         )
 
@@ -208,7 +216,15 @@ class Asks:
             elif ev["kind"] == "ask.repeated":
                 a = rows.get(b["ask"])
                 if a:
-                    a.times += 1
+                    # "They have asked three times" is a real signal Ross acts
+                    # on, so it must not be forgeable. A repeat arriving on a
+                    # spoofable channel counts separately: anyone who can put an
+                    # enrolled person's address in a From: header could otherwise
+                    # manufacture urgency on their behalf.
+                    if b.get("channel") in STRONG:
+                        a.times += 1
+                    else:
+                        a.nagged += 1
                     a.last = ev["ts"]
                     # Appended, never overwriting a.detail - see raise_().
                     if b.get("also"):
@@ -268,7 +284,8 @@ class Asks:
     def _open_for(self, person: str, req: Request) -> Ask | None:
         for a in self.pending():
             if (a.person == person and a.business == _norm(req.business)
-                    and a.capability == _norm(req.capability) and a.verb == req.verb):
+                    and a.capability == _norm(req.capability)
+                    and a.verb == _norm(req.verb)):
                 return a
         return None
 

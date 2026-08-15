@@ -64,6 +64,31 @@ def _utc(value: str) -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
+# Something no real time can be later than. An enrolment whose expiry cannot be
+# read is treated as already lapsed rather than as never lapsing.
+LAPSED = "0000-00-00T00:00:00Z"
+
+
+def _utc_or_lapsed(value: str) -> str:
+    """Read-path expiry. Never raises.
+
+    enrol() rejects an unreadable expiry outright, which is right on the write
+    path. Doing the same on the READ path was a mistake: handles() calls this on
+    every enrolment row, so one bad value - from a Ross-signed body assembled by
+    a script, or a future importer - made resolve() raise for a completely
+    unrelated person on a completely unrelated channel. One malformed row took
+    identity down for everyone.
+
+    Fails closed. An expiry nobody can parse retires the handle instead of
+    granting it eternal life, and the caller sees a lapsed enrolment rather than
+    an exception.
+    """
+    try:
+        return _utc(value)
+    except ValueError:
+        return LAPSED
+
 CERTAIN = "certain"
 CLAIMED = "claimed"
 UNKNOWN = "unknown"
@@ -197,7 +222,7 @@ class People:
                     # identity.enrolled event assembled another way - a Ross-signed
                     # body from a script, a future importer - and that is exactly
                     # the comparison that let an offset time expire two hours late.
-                    until=_utc(b.get("until", "")),
+                    until=_utc_or_lapsed(b.get("until", "")),
                 )
         out = []
         for hid, h in rows.items():
