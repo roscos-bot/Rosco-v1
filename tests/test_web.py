@@ -111,6 +111,38 @@ def main() -> int:
                        headers={"X-Rosco-CSRF": token})
         fails += not check("no cookie means no write", st, 401)
 
+        print("\nSETTINGS PAGE")
+        # Config is authority - every setting is a signed write, gated like answering.
+        st, j, _ = req(port, "GET", "/api/cfg/state", headers={"Cookie": sess})
+        fails += not check("settings state reads with the session", st, 200)
+        fails += not check("and lists the roles", "chat" in (j.get("roles") or []), True)
+        fails += not check("but is refused while locked",
+                           req(port, "GET", "/api/cfg/state")[0], 401)
+        # A write needs the CSRF token.
+        st, j, _ = req(port, "POST", "/api/cfg/budget", {"scope": "*", "usd": "150"},
+                       headers={"Cookie": sess})
+        fails += not check("a setting write without CSRF is refused", st, 403)
+        st, j, _ = req(port, "POST", "/api/cfg/budget", {"scope": "*", "usd": "150"},
+                       headers={"Cookie": sess, "X-Rosco-CSRF": token})
+        fails += not check("a setting write with the token applies", st, 200)
+        st, j, _ = req(port, "GET", "/api/cfg/state", headers={"Cookie": sess})
+        fails += not check("and the change shows in the state",
+                           any(b["cap"] == 150 for b in (j.get("budgets") or [])), True)
+        # A secret can be set, but its value is never read back.
+        st, j, _ = req(port, "POST", "/api/cfg/secret",
+                       {"name": "openrouter_api_key", "value": "sk-or-secret"},
+                       headers={"Cookie": sess, "X-Rosco-CSRF": token})
+        fails += not check("a secret stores via settings", st, 200)
+        st, j, _ = req(port, "GET", "/api/cfg/state", headers={"Cookie": sess})
+        blob = json.dumps(j)
+        fails += not check("the key name is listed",
+                           "system:openrouter_api_key" in (j.get("secretsHeld") or []), True)
+        fails += not check("but the value is never in the state", "sk-or-secret" in blob, False)
+        # A bad setting comes back as an error, not a crash.
+        st, j, _ = req(port, "POST", "/api/cfg/nope", {},
+                       headers={"Cookie": sess, "X-Rosco-CSRF": token})
+        fails += not check("an unknown setting is a clean error", st, 400)
+
         print("\nCHAT WITH ROSCO")
         # Chat is a gated write (it spends on a model call), so it needs the
         # session and the CSRF token like any other action.
@@ -124,8 +156,11 @@ def main() -> int:
         st, j, _ = req(port, "POST", "/api/chat", {"message": "what's waiting?"},
                        headers={"Cookie": sess, "X-Rosco-CSRF": token})
         fails += not check("chat with the token reaches Rosco", st, 200)
-        fails += not check("and degrades cleanly with no model key",
-                           "no chat model" in (j.get("reply") or ""), True)
+        # A fake key is set by the settings test above, so the call is attempted
+        # and fails cleanly - never a crash. Either way the reply mentions the
+        # chat model rather than throwing.
+        fails += not check("and a model failure degrades to a message, not a crash",
+                           "chat model" in (j.get("reply") or ""), True)
 
         print("\nLIVE ACTIVITY FEED")
         st, act, _ = req(port, "GET", "/api/activity", headers={"Cookie": sess})

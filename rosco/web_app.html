@@ -98,6 +98,30 @@
   .lockbox button{width:100%;margin-top:12px;background:var(--amber-bg);border:1px solid var(--amber);color:var(--amber);font:700 12px/1 var(--mono);letter-spacing:.1em;padding:12px;cursor:pointer;text-transform:uppercase}
   .lockbox .err{color:var(--red);font:700 10px/1.4 var(--mono);margin-top:12px;min-height:14px}
   @media(max-width:880px){.body{flex-direction:column}.tools{width:100%;flex-direction:row}.net{height:56vh}.right{width:100%}}
+  /* settings */
+  .gear{margin-left:14px;background:transparent;border:1px solid var(--line-hot);color:var(--dim);font:700 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:7px 10px;cursor:pointer;display:flex;align-items:center;gap:6px}
+  .gear:hover{color:var(--amber);border-color:var(--amber-dim)}
+  .gear svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.6}
+  .settings{position:fixed;inset:0;z-index:60;background:rgba(5,8,7,.92);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:36px 16px}
+  .sheet{width:640px;max-width:100%;background:var(--surface);border:1px solid var(--line-hot);margin-bottom:40px}
+  .sheet-head{position:sticky;top:0;background:var(--sunk);border-bottom:2px solid var(--amber);padding:14px 18px;display:flex;align-items:center;justify-content:space-between;z-index:2}
+  .sheet-head b{font:800 14px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--head)}
+  .sheet-head .close{font:700 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);cursor:pointer}
+  .sheet-head .close:hover{color:var(--red)}
+  .state{padding:14px 18px;border-bottom:1px solid var(--line);font:11.5px/1.7 var(--mono);color:var(--dim)}
+  .state b{color:var(--head)} .state .warn{color:var(--amber)}
+  .cfg{padding:15px 18px;border-bottom:1px solid var(--line)}
+  .cfg h4{margin:0 0 3px;font:700 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--head)}
+  .cfg .n{font-size:11px;color:var(--faint);margin-bottom:9px}
+  .cfg label{display:block;font:700 8px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:8px 0 4px}
+  .cfg input,.cfg select,.cfg textarea{width:100%;background:var(--sunk);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1.4 var(--sans);padding:8px 9px;outline:none}
+  .cfg textarea{min-height:66px;resize:vertical;font-family:var(--mono);font-size:11.5px}
+  .cfg input:focus,.cfg select:focus,.cfg textarea:focus{border-color:var(--amber-dim)}
+  .cfg .row{display:flex;gap:8px;flex-wrap:wrap}.cfg .row>div{flex:1;min-width:120px}
+  .cfg .go{margin-top:11px;background:var(--amber-bg);border:1px solid var(--amber);color:var(--amber);font:700 10px/1 var(--mono);letter-spacing:.06em;padding:9px 15px;cursor:pointer}
+  .cfg .go:disabled{opacity:.4}
+  .cfg .res{margin-top:9px;font:11px/1.5 var(--mono);white-space:pre-wrap}
+  .cfg .res.ok{color:var(--green)}.cfg .res.err{color:var(--red)}
 </style></head>
 <body>
 <div class="lock" id="lock"><div class="lockbox">
@@ -111,6 +135,7 @@
     <div class="brand"><b>Rosco</b><span>Console</span></div>
     <span class="live">● Live</span>
     <div class="hud" id="hud"></div>
+    <button class="gear" id="gear" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 00-1.7-1l-.3-2.5h-4l-.3 2.5a7 7 0 00-1.7 1l-2.4-1-2 3.5 2 1.5a7 7 0 000 2l-2 1.5 2 3.5 2.4-1a7 7 0 001.7 1l.3 2.5h4l.3-2.5a7 7 0 001.7-1l2.4 1 2-3.5-2-1.5a7 7 0 00.1-1z"/></svg> Settings</button>
   </header>
   <div class="body">
     <nav class="tools" id="tools"></nav>
@@ -144,6 +169,12 @@
     </aside>
   </div>
 </div>
+
+<div class="settings" id="settings" style="display:none"><div class="sheet">
+  <div class="sheet-head"><b>Settings</b><span class="close" id="settingsClose">✕ close</span></div>
+  <div class="state" id="cfgState">Loading…</div>
+  <div id="cfgForms"></div>
+</div></div>
 
 <script src="/app.js"></script>
 </body></html>

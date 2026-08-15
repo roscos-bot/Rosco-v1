@@ -241,6 +241,82 @@ class ConsoleServer(ThreadingHTTPServer):
             # message in the chat, never as a crashed request.
             return f"(couldn't reach the chat model: {e})"
 
+    # ---- settings: the CLI's config commands, as forms ----
+    #
+    # Every one is an authority write - a grant, a secret, a model choice - so it
+    # runs through the exact signed console methods the CLI uses, gated by the
+    # session and the CSRF token like any other action. The browser can configure
+    # the system only because Ross unlocked it; a locked console can change nothing.
+
+    def cfg_state(self, s):
+        """What the settings forms show as current. No secret VALUES, only names."""
+        from . import capabilities as caps
+        from .github import GitHub
+        from .meter import ALL, Meter
+        from .models import ROLES
+        from .roster import BUSINESSES
+        from .tools import Tools
+        log = self.console.open(s.passphrase)
+        models = Models(log, Vault(log, key=self.console._vault_key(s.passphrase)))
+        ch = models.choices(node="console")
+        return {
+            "roles": list(ROLES),
+            "providers": ["openrouter", "anthropic", "openai", "google", "xai", "ollama"],
+            "models": {r: {"model": c.model, "provider": c.provider, "why": c.why}
+                       for r, c in ch.items()},
+            "secretsHeld": Vault(log).secret_names(),
+            "missingKeys": models.missing(node="console"),
+            "budgets": [{"scope": b.scope, "cap": b.monthly_usd}
+                        for b in Meter(log).budgets().values()],
+            "businesses": [b.slug for b in BUSINESSES],
+            "capabilities": sorted({c.name for c in caps.CATALOGUE}),
+            "tools": [{"name": t.name, "businesses": list(t.businesses)}
+                      for t in Tools(log).all()],
+            "repos": [{"business": r.business, "slug": r.slug} for r in GitHub(log).all()],
+            "people": sorted({h.person for h in People(log).handles()}),
+        }
+
+    def cfg(self, s, action, body):
+        """Apply one setting. Returns the console's own confirmation string."""
+        pw = s.passphrase
+        c = self.console
+        if action == "model":
+            return c.model_set(pw, body["role"], body["model"], body["provider"],
+                               node=body.get("node", ""))
+        if action == "secret":
+            v = body.get("value", "")
+            if not v:
+                raise ValueError("a key value is required")
+            return c.secret_set(pw, body.get("business", "system"), body["name"], v)
+        if action == "budget":
+            return c.budget_set(pw, body.get("scope", "*"), body["usd"])
+        if action == "ingest":
+            text = (body.get("text") or "").strip()
+            if text:
+                from . import knowledge
+                n = knowledge.ingest_text(Vault(c.open(pw)), body["business"], text,
+                                          source="dashboard")
+                return f"ingested {n} lessons into {body['business']}"
+            return c.ingest(pw, body["business"])
+        if action == "enrol":
+            return c.enrol(pw, body["person"], body["channel"], body["address"])
+        if action == "grant":
+            from .grants import SCOPE_ALL
+            return c.give(pw, body["person"], body["business"], body["capability"],
+                          verb=body.get("verb", "get"),
+                          scope=body.get("scope", SCOPE_ALL),
+                          reason=body.get("reason", ""))
+        if action == "tool":
+            biz = body.get("businesses") or ["*"]
+            return c.tool_add(pw, body["name"], body["endpoint"],
+                              businesses=tuple(biz), secret=body.get("secret", ""),
+                              caution=body.get("caution", ""))
+        if action == "github":
+            return c.github_link(pw, body["business"], body["repo"],
+                                 branch=body.get("branch", "main"),
+                                 secret=body.get("secret", "github_token"))
+        raise ValueError(f"no such setting {action!r}")
+
 
 LOCAL_HOSTS = None  # set per-server from its port
 
@@ -322,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
         if s is None:
             return self._send(401, {"error": "locked"})
         views = {"/api/queue": srv.queue, "/api/mesh": srv.mesh,
-                 "/api/activity": srv.activity,
+                 "/api/activity": srv.activity, "/api/cfg/state": srv.cfg_state,
                  "/api/grants": srv.grants_view, "/api/people": srv.people_view,
                  "/api/spend": srv.spend_view}
         fn = views.get(self.path.split("?")[0])
@@ -364,6 +440,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "result": self.server.answer(s, body)})
             if self.path == "/api/chat":
                 return self._send(200, {"reply": self.server.chat(s, body)})
+            if self.path.startswith("/api/cfg/"):
+                msg = self.server.cfg(s, self.path[len("/api/cfg/"):], body)
+                return self._send(200, {"ok": True, "msg": msg})
             if self.path == "/api/lock":
                 self.server.session = None
                 return self._send(200, {"ok": True})

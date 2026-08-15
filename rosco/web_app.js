@@ -245,6 +245,81 @@ function sendChat(){
 document.getElementById("chatsend").addEventListener("click",sendChat);
 document.getElementById("chatin").addEventListener("keydown",function(e){if(e.key==="Enter")sendChat();});
 
+// ---- settings: the CLI's config commands, as forms ----
+var CFG=[
+ {t:"Models",a:"model",n:"Point a role at a model your key can serve.",
+  f:[{k:"role",l:"Role",sel:"roles"},{k:"model",l:"Model id",ph:"anthropic/claude-3.7-sonnet"},{k:"provider",l:"Provider",sel:"providers"}]},
+ {t:"API keys",a:"secret",n:"Stored encrypted in the vault. Never shown again.",
+  f:[{k:"name",l:"Key name",ph:"openrouter_api_key"},{k:"value",l:"Value",type:"password"}]},
+ {t:"Spend cap",a:"budget",n:"A soft monthly cap. Warns at 80% and 100%; never blocks.",
+  f:[{k:"scope",l:"Scope (* = all)",ph:"*"},{k:"usd",l:"Monthly $",ph:"200"}]},
+ {t:"Teach a business",a:"ingest",n:"Paste a doc to load as lessons, or leave blank to load the starter facts.",
+  f:[{k:"business",l:"Business",sel:"businesses"},{k:"text",l:"Doc (optional)",type:"textarea"}]},
+ {t:"Enrol a person",a:"enrol",n:"Telegram/chat prove identity; email/phone are treated as spoofable.",
+  f:[{k:"person",l:"Name",ph:"brent"},{k:"channel",l:"Channel",opt:["telegram","chat","email","phone"]},{k:"address",l:"Address or id",ph:"8481123"}]},
+ {t:"Grant a capability",a:"grant",n:"Who may reach what. 'subject' scope = only rows about them.",
+  f:[{k:"person",l:"Person"},{k:"business",l:"Business",sel:"businesses"},{k:"capability",l:"Capability",sel:"capabilities"},{k:"verb",l:"Verb",opt:["get","do"]},{k:"scope",l:"Scope",opt:["all","subject"]}]},
+ {t:"External tool",a:"tool",n:"An endpoint agents can be granted. The key goes in the vault.",
+  f:[{k:"name",l:"Name",ph:"higgsfield"},{k:"endpoint",l:"HTTPS endpoint",ph:"https://…"},{k:"businesses",l:"Businesses (comma, * = any)",ph:"*"},{k:"secret",l:"Key name (optional)",ph:"higgsfield_api_key"},{k:"caution",l:"Caution (optional)"}]},
+ {t:"Link a repo",a:"github",n:"Agents branch and open PRs; you merge on GitHub.",
+  f:[{k:"business",l:"Business",sel:"businesses"},{k:"repo",l:"owner/name",ph:"fuzzeh84/rumachines"},{k:"branch",l:"Default branch",ph:"main"},{k:"secret",l:"Token name",ph:"github_token"}]},
+];
+var cfgState={};
+function openSettings(){ document.getElementById("settings").style.display="flex";
+  api("/api/cfg/state").then(function(res){ cfgState=(res.ok&&res.j)?res.j:{}; renderState(); buildForms(); }); }
+function closeSettings(){ document.getElementById("settings").style.display="none"; }
+function renderState(){var s=cfgState,el=document.getElementById("cfgState");
+  if(!s.roles){el.textContent="(couldn't load settings)";return;}
+  var mods=s.roles.map(function(r){var m=(s.models&&s.models[r])||{};
+    return r+" → "+(m.model||"?")+" ("+(m.provider||"?")+")";}).join("\n");
+  var keys=(s.secretsHeld||[]).length?(s.secretsHeld||[]).join(", "):"none";
+  var miss=(s.missingKeys||[]);
+  el.innerHTML="<b>Models</b>\n"+esc(mods)
+    +"\n\n<b>Keys held</b> "+esc(keys)
+    +(miss.length?"  <span class='warn'>missing: "+esc(miss.join(", "))+"</span>":"")
+    +"\n<b>Budgets</b> "+esc((s.budgets||[]).map(function(b){return b.scope+" $"+b.cap;}).join(", ")||"none")
+    +"\n<b>Tools</b> "+esc((s.tools||[]).map(function(t){return t.name;}).join(", ")||"none")
+    +"  <b>Repos</b> "+esc((s.repos||[]).map(function(r){return r.slug;}).join(", ")||"none")
+    +"  <b>People</b> "+esc((s.people||[]).join(", ")||"none");
+}
+function optionsFor(field){
+  if(field.opt) return field.opt;
+  if(field.sel && Array.isArray(cfgState[field.sel])) return cfgState[field.sel];
+  return null;
+}
+function buildForms(){var host=document.getElementById("cfgForms");host.innerHTML="";
+  CFG.forEach(function(sec){
+    var card=document.createElement("div");card.className="cfg";
+    var h=document.createElement("h4");h.textContent=sec.t;card.appendChild(h);
+    if(sec.n){var nn=document.createElement("div");nn.className="n";nn.textContent=sec.n;card.appendChild(nn);}
+    var inputs={};
+    sec.f.forEach(function(fl){
+      var lab=document.createElement("label");lab.textContent=fl.l;card.appendChild(lab);
+      var opts=optionsFor(fl),el;
+      if(opts){el=document.createElement("select");opts.forEach(function(o){var op=document.createElement("option");op.value=o;op.textContent=o;el.appendChild(op);});}
+      else if(fl.type==="textarea"){el=document.createElement("textarea");}
+      else{el=document.createElement("input");el.type=fl.type||"text";if(fl.ph)el.placeholder=fl.ph;el.autocomplete="off";}
+      card.appendChild(el);inputs[fl.k]=el;
+    });
+    var btn=document.createElement("button");btn.className="go";btn.textContent="Apply";
+    var res=document.createElement("div");res.className="res";
+    btn.addEventListener("click",function(){
+      var body={};for(var k in inputs){var v=inputs[k].value;body[k]=v;}
+      if(body.businesses!==undefined) body.businesses=body.businesses.split(",").map(function(x){return x.trim();}).filter(Boolean);
+      btn.disabled=true;res.className="res";res.textContent="working…";
+      post("/api/cfg/"+sec.a,body).then(function(r){btn.disabled=false;
+        if(r.ok){res.className="res ok";res.textContent=r.j.msg||"done";
+          if(inputs.value)inputs.value.value="";               // never keep a secret in the field
+          api("/api/cfg/state").then(function(x){cfgState=(x.ok&&x.j)?x.j:cfgState;renderState();});
+        } else {res.className="res err";res.textContent=(r.j&&r.j.error)||"failed";}
+      }).catch(function(){btn.disabled=false;res.className="res err";res.textContent="server unreachable";});
+    });
+    card.appendChild(btn);card.appendChild(res);host.appendChild(card);
+  });
+}
+document.getElementById("gear").addEventListener("click",openSettings);
+document.getElementById("settingsClose").addEventListener("click",closeSettings);
+
 // Ambient pulses are just idle liveness now - real activity drives the graph
 // through loadActivity(), so keep the timer slow and let the log do the talking.
 resize();if(!reduce)setInterval(fire,3200);requestAnimationFrame(frame);
