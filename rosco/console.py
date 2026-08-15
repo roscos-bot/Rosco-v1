@@ -382,6 +382,17 @@ class Console:
         Models(log).choose(role, model, provider, node=node, why=why)
         return f"{role} -> {model} via {provider}" + (f" on {node}" if node else "")
 
+    def model_pin(self, passphrase: str, agent: str, model: str, provider: str,
+                  why: str = "") -> str:
+        log = self.open(passphrase)
+        Models(log).pin_agent(agent, model, provider, why=why)
+        return f"{agent} pinned to {model} via {provider}"
+
+    def model_unpin(self, passphrase: str, agent: str) -> str:
+        log = self.open(passphrase)
+        Models(log).unpin_agent(agent)
+        return f"{agent} unpinned - back to its role default"
+
     def model_list(self) -> str:
         log = self.open()
         return Models(log, Vault(log)).report(node=NODE)

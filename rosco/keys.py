@@ -82,6 +82,8 @@ KINDS: dict[str, str] = {
     "node.seen": NODE,
 
     "model.chosen": AUTHORED,
+    "model.pinned": AUTHORED,         # one agent gets its own model, whatever its role
+    "model.unpinned": AUTHORED,       # ...cleared, back to the role default
     "model.trialled": NODE,           # agents may judge a model
     "model.spotted": NODE,            # ...and ask for one
 
@@ -170,6 +172,8 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "node.seen": ("name",),
 
     "model.chosen": ("role", "model", "provider"),
+    "model.pinned": ("agent", "model", "provider"),
+    "model.unpinned": ("agent",),
     "model.trialled": ("model", "role", "verdict"),
     "model.spotted": ("model", "provider"),
 

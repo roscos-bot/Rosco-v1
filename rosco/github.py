@@ -30,6 +30,7 @@ by remembering not to call one. Ross merges on GitHub, where he can read the dif
 from __future__ import annotations
 
 import base64
+import re
 import urllib.parse
 from dataclasses import dataclass
 
@@ -82,6 +83,15 @@ class GitHub:
             raise PermissionError(f"only Ross links a repo; {by!r} tried {owner}/{name}")
         if not all((business, owner, name)):
             raise ValueError("a link needs a business, an owner and a repo name")
+        # token_secret is the NAME of a vault entry, not the token. A real token
+        # value here would be written to the plaintext log - the one thing the
+        # vault exists to prevent - so refuse anything that looks like a credential.
+        if re.match(r"^(gh[pousr]_|github_pat_)", (token_secret or "").strip()):
+            raise ValueError(
+                "token_secret is the NAME of a vault secret (default 'github_token'), "
+                "not the token itself. Store the token with `rosco secret set system "
+                "github_token`, then link with the default name — never pass the token "
+                "here, or it lands in the log in the clear.")
         return self.log.append(
             "github.linked",
             {"business": business.strip().lower(), "owner": owner.strip(),

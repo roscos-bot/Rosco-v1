@@ -82,15 +82,20 @@ function stat(k,v){return "<div class='stat'><span class='k'>"+k+"</span><span c
 
 // ---- the queue ----
 var SENS={"bound-book":1,"books":1,"payroll":1,"taxes":1,"transfers":1,"budget":1};
+var ingCount=0;                          // pending ingest items, kept fresh by the pip poll
+function ingestBanner(){
+  return ingCount>0 ? "<div class='ask ingbanner' style='cursor:pointer;border-left:3px solid var(--teal)'>"
+    +"<div class='said'>\U0001f4e5 <b>"+ingCount+"</b> item(s) in the ingest queue — click to review</div></div>" : "";
+}
 function loadQueue(){ api("/api/queue").then(function(res){
   var q=(res.ok&&Array.isArray(res.j))?res.j:[];
   markWaiting(q);                       // ring captains even while a node is shown
   var el=document.getElementById("qwrap"),rh=document.getElementById("rhead");
   if(!el||!rh) return;                  // a node's context is showing; queue is hidden
   rh.textContent="Waiting on you · "+q.length;
-  if(!q.length){el.innerHTML="<div class='empty'>Nothing waiting. You're clear.</div>";return;}
-  el.innerHTML=q.map(askCard).join("");
+  el.innerHTML=(q.length?q.map(askCard).join(""):"<div class='empty'>Nothing waiting. You're clear.</div>")+ingestBanner();
   q.forEach(function(a){ wireCard(a.id); });
+  var ib=el.querySelector(".ingbanner"); if(ib)ib.addEventListener("click",openIngest);
 });}
 
 // Ring the captain of any business with a request waiting on Ross. The captain
@@ -188,7 +193,7 @@ function frame(){var T=performance.now();
   if(!W||!H){resize();if(!W||!H){return requestAnimationFrame(frame);}}
   if(auto&&!drag)tYaw+=.0015;yaw+=(tYaw-yaw)*.08;pitch+=(tPitch-pitch)*.08;ctx.clearRect(0,0,W,H);
   for(var i=0;i<N.length;i++){var r=rot(N[i]),p=project(r);N[i].px=p.x;N[i].py=p.y;N[i].pf=p.f;N[i].pz=r.z;
-    N[i].pr=N[i].r*p.f*(1+Math.min(N[i].links,10)*.03);if(N[i].pulse>0)N[i].pulse*=.94;}
+    N[i].pr=N[i].r*p.f*(1+Math.min(N[i].links,10)*.03);if(N[i].pulse>0)N[i].pulse*=.955;}
   var sel=null;if(selected>=0&&N[selected]){sel={};E.forEach(function(e){if(e[0]===selected)sel[e[1]]=1;if(e[1]===selected)sel[e[0]]=1;});sel[selected]=1;}
   ctx.globalCompositeOperation="lighter";
   for(var j=0;j<E.length;j++){var a=N[E[j][0]],b=N[E[j][1]];var k=(((a.pf+b.pf)/2)-.55)/.5;k=Math.max(0,Math.min(1,k));
@@ -201,10 +206,12 @@ function frame(){var T=performance.now();
   var order=N.map(function(n,ix){return ix;}).sort(function(x,y){return N[x].pz-N[y].pz;});
   for(var o=0;o<order.length;o++){var ix=order[o],n=N[ix];var k2=(n.pf-.55)/.5;k2=Math.max(.25,Math.min(1,k2));
     var col=n.core?TYPEC.core:TYPEC[n.type]||"#8aa";var base=n.pr,glow=n.pulse,hi=(ix===hover||ix===selected),dim=sel&&!sel[ix];
-    var tw=.82+.18*Math.sin(T/650+n.tw),spr=sprite[n.core?"core":n.type]||sprite.agent,gs=base*(3.4+glow*3)*(hi?1.3:1);
+    var tw=.82+.18*Math.sin(T/650+n.tw),spr=sprite[n.core?"core":n.type]||sprite.agent,gs=base*(3.4+glow*5)*(hi?1.3:1);
     ctx.globalAlpha=(dim?.1:.55*k2)*tw;ctx.drawImage(spr,n.px-gs,n.py-gs,gs*2,gs*2);
     ctx.globalCompositeOperation="source-over";ctx.globalAlpha=dim?.3:1;
-    ctx.beginPath();ctx.arc(n.px,n.py,Math.max(1.2,base*(hi?1.25:1)),0,7);ctx.fillStyle=dim?"#3a4640":col;ctx.fill();
+    var rad=Math.max(1.2,base*(1+glow*0.9)*(hi?1.25:1));    // the node SWELLS while active
+    if(glow>.04&&!dim){ctx.globalAlpha=glow*.5;ctx.beginPath();ctx.arc(n.px,n.py,rad+(1-glow)*15+2,0,7);ctx.strokeStyle=col;ctx.lineWidth=1.6;ctx.stroke();ctx.globalAlpha=dim?.3:1;}
+    ctx.beginPath();ctx.arc(n.px,n.py,rad,0,7);ctx.fillStyle=dim?"#3a4640":col;ctx.fill();
     if(n.core){ctx.beginPath();ctx.arc(n.px,n.py,base+4,0,7);ctx.strokeStyle=col;ctx.globalAlpha=dim?.2:.7;ctx.lineWidth=1;ctx.stroke();}
     if(n.waiting&&!dim){var pw=base+7+2*Math.sin(T/300+n.tw);ctx.beginPath();ctx.arc(n.px,n.py,pw,0,7);
       ctx.strokeStyle="#c9a227";ctx.globalAlpha=.5+.3*Math.sin(T/300+n.tw);ctx.lineWidth=1.4;ctx.stroke();}
@@ -244,6 +251,70 @@ function showNode(n){
   document.getElementById("back").addEventListener("click",restoreQueue);
   ctx.querySelectorAll("[data-jump]").forEach(function(el){el.addEventListener("click",function(){
     var i=byId[el.getAttribute("data-jump")]; if(i!=null){selected=i;N[i].pulse=1;showNode(N[i]);}});});
+  // Agents (graph nodes) can be pinned to their own model, right here. People,
+  // sites and tools have no model, so the picker is agents-only.
+  if(n.type==="agent") buildAgentModel(n, ctx.querySelector(".node-ctx"));
+}
+
+// The per-agent model picker inside a node's panel. Pinning an agent overrides
+// its role default; unpinning falls back. Provider -> live model list (same
+// endpoint the Models settings uses) -> Pin. Every write is /api/cfg/pin|unpin,
+// which only Ross's unlocked session can call.
+function buildAgentModel(n, host){
+  if(!host) return;
+  var box=document.createElement("div"); box.className="amodel";
+  box.innerHTML="<div class='amh'>Model</div><div class='amcur n'>loading…</div>";
+  host.appendChild(box);
+  var curLine=box.querySelector(".amcur");
+  var provSel=document.createElement("select"); provSel.className="amsel";
+  var mwrap=document.createElement("div"); mwrap.className="amwrap";
+  var row=document.createElement("div"); row.className="amrow";
+  var pinBtn=document.createElement("button"); pinBtn.className="go sm"; pinBtn.textContent="Pin model";
+  var res=document.createElement("div"); res.className="res";
+  var modelEl=null;
+  function fillModels(preselect){
+    mwrap.innerHTML="<div class='n'>loading models…</div>";
+    api("/api/cfg/models?provider="+encodeURIComponent(provSel.value)).then(function(r){
+      mwrap.innerHTML="";
+      var ids=(r.ok&&r.j&&r.j.models)||[];
+      if(ids.length){var sel=document.createElement("select"); sel.className="amsel";
+        if(preselect&&ids.indexOf(preselect)<0){var oc=document.createElement("option");oc.value=preselect;oc.textContent=preselect+" (current)";sel.appendChild(oc);}
+        ids.forEach(function(id){var o=document.createElement("option");o.value=id;o.textContent=id;sel.appendChild(o);});
+        if(preselect)sel.value=preselect;
+        mwrap.appendChild(sel); modelEl=sel;
+      } else {var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";inp.autocomplete="off";
+        if(preselect)inp.value=preselect;
+        mwrap.appendChild(inp); modelEl=inp;
+        if(r.j&&r.j.error){var e=document.createElement("div");e.className="n";e.textContent=esc(r.j.error);mwrap.appendChild(e);}
+      }
+    }).catch(function(){mwrap.innerHTML="";var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";mwrap.appendChild(inp);modelEl=inp;});
+  }
+  api("/api/cfg/state").then(function(r){
+    var st=(r.ok&&r.j)||{};
+    var provs=st.providers||["openrouter","anthropic","openai","gemini","xai","ollama"];
+    provs.forEach(function(p){var o=document.createElement("option");o.value=p;o.textContent=p;provSel.appendChild(o);});
+    var pin=(st.pins&&st.pins[n.id])||null;
+    if(pin){curLine.className="amcur";
+      curLine.innerHTML="Pinned to <b>"+esc(pin.model)+"</b> via "+esc(pin.provider)+" &middot; <span class='unpin'>unpin</span>";
+      curLine.querySelector(".unpin").addEventListener("click",function(){
+        post("/api/cfg/unpin",{agent:n.id}).then(function(r){ if(r.ok)showNode(n);
+          else{res.className="res err";res.textContent=(r.j&&r.j.error)||"failed";}});});
+    } else {curLine.className="amcur n"; curLine.textContent="Using its role default — not pinned.";}
+    provSel.value=pin?pin.provider:"openrouter";
+    fillModels(pin?pin.model:"");
+  });
+  provSel.addEventListener("change",function(){fillModels("");});
+  pinBtn.addEventListener("click",function(){
+    if(!modelEl||!modelEl.value){res.className="res err";res.textContent="pick a model first";return;}
+    pinBtn.disabled=true; res.className="res"; res.textContent="working…";
+    post("/api/cfg/pin",{agent:n.id,model:modelEl.value,provider:provSel.value}).then(function(r){
+      pinBtn.disabled=false;
+      if(r.ok)showNode(n);   // re-render; the updated "Pinned to…" line is the confirmation
+      else{res.className="res err";res.textContent=(r.j&&r.j.error)||"failed";}
+    }).catch(function(){pinBtn.disabled=false;res.className="res err";res.textContent="server unreachable";});
+  });
+  row.appendChild(provSel); row.appendChild(mwrap);
+  box.appendChild(row); box.appendChild(pinBtn); box.appendChild(res);
 }
 function restoreQueue(){
   document.getElementById("ctx").innerHTML=
@@ -251,14 +322,53 @@ function restoreQueue(){
   loadQueue();
 }
 
-// ---- tools rail (navigation stubs for now) ----
+// ---- tools rail: each one shows its view in the right-panel context area ----
 var TOOLS=[["Mesh","M12 3v4M12 17v4M3 12h4M17 12h4M12 8a4 4 0 100 8 4 4 0 000-8z"],
   ["Queue","M4 6h16M4 12h16M4 18h10"],["People","M9 11a3 3 0 100-6 3 3 0 000 6zm7 8a7 7 0 00-14 0"],
   ["Tools","M14 7l3 3-8 8-3-3zM3 21l4-1"],["Spend","M4 18l5-6 4 4 7-9"],["Verify","M20 6L9 17l-5-5"]];
+function showTool(name){
+  // Mesh = the graph (always centre) with the default queue on the right; Queue = the same list.
+  if(name==="Mesh"||name==="Queue"){selected=byId["Rosco"]!=null?byId["Rosco"]:selected;restoreQueue();return;}
+  var ctx=document.getElementById("ctx");
+  // note: no #rhead/#qwrap ids here, so the 15s queue poll won't clobber this view
+  ctx.innerHTML="<div class='rhead'>"+esc(name)+"</div><div class='stream' id='toolbody'><div class='empty'>Loading…</div></div>";
+  var body=document.getElementById("toolbody");
+  function card(title,sub){return "<div class='ask'><div class='top'><span class='who'>"+esc(title)+"</span></div>"+(sub?"<div class='said'>"+sub+"</div>":"")+"</div>";}
+  if(name==="People"){
+    Promise.all([api("/api/people"),api("/api/grants")]).then(function(res){
+      var ppl=(res[0].ok&&Array.isArray(res[0].j))?res[0].j:[], gr=(res[1].ok&&Array.isArray(res[1].j))?res[1].j:[];
+      if(!ppl.length){body.innerHTML="<div class='empty'>No one enrolled yet.</div>";return;}
+      body.innerHTML=ppl.map(function(p){
+        var acc=gr.filter(function(g){return g.person===p.person&&g.allow;}).map(function(g){return g.business+":"+g.capability;});
+        var ch=(p.handles||[]).map(function(h){return h.channel;}).join(", ");
+        return card(p.person, esc(ch||"no channels")+(acc.length?"<br><span style='color:var(--dim)'>can reach: "+esc(acc.join(", "))+"</span>":""));
+      }).join("");
+    }).catch(function(){body.innerHTML="<div class='empty'>couldn't load people</div>";});
+  } else if(name==="Spend"){
+    api("/api/spend").then(function(r){var d=(r.ok&&r.j)||{};
+      body.innerHTML="<pre class='mono' style='white-space:pre-wrap;font-size:11.5px;color:var(--text);padding:2px 4px;margin:0'>"+esc(d.report||"(no spend yet)")+"</pre>"
+        +"<div class='said' style='padding:0 4px;color:var(--dim)'>caps: "+esc((d.budgets||[]).map(function(b){return b.scope+" $"+b.cap;}).join(", ")||"none set")+"</div>";
+    }).catch(function(){body.innerHTML="<div class='empty'>couldn't load spend</div>";});
+  } else if(name==="Verify"){
+    api("/api/overview").then(function(r){var o=(r.ok&&r.j)||{};
+      var col=o.chains==="sound"?"var(--green)":"var(--amber)";
+      body.innerHTML=card("Chain integrity","<b style='color:"+col+"'>"+esc(o.chains||"?")+"</b> — every event's hash links to the prior")
+        +card("Spend","$"+esc(o.spend!=null?o.spend.toFixed(2):"?")+" over "+esc(o.spendCalls||0)+" model calls")
+        +card("Waiting on you",esc(o.waiting||0)+" request(s)");
+    }).catch(function(){body.innerHTML="<div class='empty'>couldn't verify</div>";});
+  } else if(name==="Tools"){
+    api("/api/cfg/state").then(function(r){var d=(r.ok&&r.j)||{};
+      var tools=d.tools||[], repos=d.repos||[];
+      var html=tools.length?tools.map(function(t){return card(t.name,esc((t.businesses||[]).join(", ")||"*"));}).join(""):"<div class='empty'>No external tools registered.</div>";
+      if(repos.length)html+="<div class='rhead' style='border-top:1px solid var(--line)'>Linked repos</div>"+repos.map(function(rp){return card(rp.slug||rp.repo||rp.business||JSON.stringify(rp),"");}).join("");
+      body.innerHTML=html;
+    }).catch(function(){body.innerHTML="<div class='empty'>couldn't load tools</div>";});
+  }
+}
 var tel=document.getElementById("tools");
 TOOLS.forEach(function(t,i){var el=document.createElement("div");el.className="tool"+(i===0?" on":"");
   el.innerHTML="<svg viewBox='0 0 24 24'><path d='"+t[1]+"'/></svg><span class='t'>"+t[0]+"</span>";
-  el.addEventListener("click",function(){tel.querySelectorAll(".tool").forEach(function(x){x.classList.remove("on");});el.classList.add("on");});
+  el.addEventListener("click",function(){tel.querySelectorAll(".tool").forEach(function(x){x.classList.remove("on");});el.classList.add("on");showTool(t[0]);});
   tel.appendChild(el);});
 
 // ---- chat with Rosco ----
@@ -267,12 +377,21 @@ function bubble(cls,by,text){var m=document.createElement("div");m.className="ms
   var d=document.createElement("div");d.className="bub";d.textContent=text;
   m.appendChild(b);m.appendChild(d);var s=document.getElementById("stream");
   s.appendChild(m);s.scrollTop=s.scrollHeight;return m;}
+// A snapshot of what Ross is looking at, so "the queue" / "this node" / "this
+// button" resolve to what's on screen. Sent with every chat message.
+function dashState(){
+  var tool="";var on=document.querySelector(".tool.on .t");if(on)tool=on.textContent;
+  var node=(typeof selected!=="undefined"&&selected>=0&&N[selected])?N[selected].label:"";
+  var ctx=document.getElementById("ctx");
+  var visible=ctx?((ctx.innerText||ctx.textContent||"").replace(/\s+/g," ").trim().slice(0,700)):"";
+  return {tool:tool,node:node,visible:visible};
+}
 function sendChat(){
   var inp=document.getElementById("chatin"),btn=document.getElementById("chatsend");
   var msg=inp.value.trim(); if(!msg) return;
   bubble("you","Ross",msg); inp.value=""; btn.disabled=true;
   var waiting=bubble("wait","Rosco","thinking…");
-  post("/api/chat",{message:msg}).then(function(res){
+  post("/api/chat",{message:msg,ui:dashState()}).then(function(res){
     waiting.remove(); btn.disabled=false; inp.focus();
     if(res.ok){ bubble("ros","Rosco", res.j.reply||"…"); }
     else{ bubble("ros","Rosco", (res.j&&res.j.error)||"couldn't reach the model."); }
@@ -289,6 +408,7 @@ var CFG=[
  {t:"API keys",a:"secret",n:"Stored encrypted in the vault. A live green check means the provider accepts it. Model keys use scope 'system'; a connector credential (Google, GitHub) goes under its business. Click a row to fill its name.",
   f:[{k:"business",l:"Scope",sel:"scopes"},{k:"name",l:"Key name",ph:"openrouter_api_key"},{k:"value",l:"Value",type:"password"}]},
  {t:"Google Workspace",google:true,n:"Connect each Google account by OAuth — full Gmail/Drive/Calendar/Docs/Sheets/Chat/Contacts. First store that account's google_client_id + google_client_secret above (scope = the business), then Authorize and consent as the right account in the tab that opens.",f:[]},
+ {t:"GitHub",gh:true,n:"Paste a fine-grained token (Contents: Read on the repos you want Rosco to see; add Pull requests: Read+write for PRs). It's stored as github_token and Rosco can then browse and read your repos in chat.",f:[]},
  {t:"Test a model",a:"test",btn:"Test",n:"Pings the model a role actually uses and reports the raw reply — or the exact provider error. Use it right after pasting a key.",
   f:[{k:"role",l:"Role",sel:"roles"}]},
  {t:"Spend cap",a:"budget",n:"A soft monthly cap. Warns at 80% and 100%; never blocks.",
@@ -394,6 +514,7 @@ function buildForms(){var host=document.getElementById("cfgForms");host.innerHTM
     var h=document.createElement("h4");h.textContent=sec.t;card.appendChild(h);
     if(sec.n){var nn=document.createElement("div");nn.className="n";nn.textContent=sec.n;card.appendChild(nn);}
     if(sec.google){renderGooglePane(card);host.appendChild(card);addNav(idx,sec.t);return;}
+    if(sec.gh){renderGithubPane(card);host.appendChild(card);addNav(idx,sec.t);return;}
     var inputs={},dyn={},ksEl=null,tgEl=null;
     if(sec.a==="secret"&&!sec.tg){ksEl=document.createElement("div");ksEl.className="keystat";card.appendChild(ksEl);}
     if(sec.tg){tgEl=document.createElement("div");tgEl.className="keystat";card.appendChild(tgEl);}
@@ -410,21 +531,31 @@ function buildForms(){var host=document.getElementById("cfgForms");host.innerHTM
     // provider change; if the provider has no listing, fall back to a text box.
     if(dyn.model && inputs.provider){
       var wrap=dyn.model;
+      function curModel(){var role=inputs.role?inputs.role.value:"";return (cfgState.models&&cfgState.models[role])||{};}
       var fillModels=function(){
+        var cur=curModel();
         wrap.innerHTML="<div class='n'>loading models…</div>";
         api("/api/cfg/models?provider="+encodeURIComponent(inputs.provider.value)).then(function(r){
           wrap.innerHTML="";
           var ids=(r.ok&&r.j&&r.j.models)||[];
+          var onCur=cur.model&&inputs.provider.value===cur.provider;   // showing the role's current provider?
           if(ids.length){var sel=document.createElement("select");
+            if(onCur&&ids.indexOf(cur.model)<0){var oc=document.createElement("option");oc.value=cur.model;oc.textContent=cur.model+" (current)";sel.appendChild(oc);}
             ids.forEach(function(id){var o=document.createElement("option");o.value=id;o.textContent=id;sel.appendChild(o);});
+            if(onCur)sel.value=cur.model;                              // pre-select what's actually set
             wrap.appendChild(sel);inputs.model=sel;
           } else {var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";inp.autocomplete="off";
+            if(onCur)inp.value=cur.model;
             wrap.appendChild(inp);inputs.model=inp;
             if(r.j&&r.j.error){var e=document.createElement("div");e.className="n";e.textContent=esc(r.j.error);wrap.appendChild(e);}
           }
         }).catch(function(){wrap.innerHTML="";var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";wrap.appendChild(inp);inputs.model=inp;});
       };
-      inputs.provider.addEventListener("change",fillModels); fillModels();
+      // point provider + model at what THIS role currently uses
+      var syncRole=function(){var cur=curModel();if(cur.provider&&inputs.provider)inputs.provider.value=cur.provider;fillModels();};
+      inputs.provider.addEventListener("change",fillModels);
+      if(inputs.role)inputs.role.addEventListener("change",syncRole);
+      syncRole();
     }
     if(ksEl)loadKeyStatus(ksEl,inputs.name,inputs.business);
     if(tgEl)loadTelegramStatus(tgEl);
@@ -523,12 +654,46 @@ function authorizeGoogle(account,btn,wrap){
     },2000);
   }).catch(function(){btn.disabled=false;btn.textContent=old;});
 }
+// ---- GitHub: one field, paste the token, see it connect ----
+function renderGithubPane(card){
+  var wrap=document.createElement("div");wrap.className="keystat";card.appendChild(wrap);
+  var lab=document.createElement("label");lab.textContent="Personal access token";card.appendChild(lab);
+  var inp=document.createElement("input");inp.type="password";inp.placeholder="github_pat_… or ghp_…";inp.autocomplete="off";card.appendChild(inp);
+  var actions=document.createElement("div");actions.className="ing-row";actions.style.marginTop="8px";
+  var btn=document.createElement("button");btn.className="ing-go";btn.textContent="Save token";
+  var msg=document.createElement("span");msg.className="ksst";
+  actions.appendChild(btn);actions.appendChild(msg);card.appendChild(actions);
+  btn.addEventListener("click",function(){var v=inp.value.trim();
+    if(!v){msg.className="ksst r";msg.textContent="paste a token";return;}
+    btn.disabled=true;msg.className="ksst";msg.textContent="saving…";
+    post("/api/cfg/secret",{business:"system",name:"github_token",value:v}).then(function(r){btn.disabled=false;
+      if(r.ok){inp.value="";msg.className="ksst g";msg.textContent="saved";loadGithubStatus(wrap);}
+      else{msg.className="ksst r";msg.textContent=(r.j&&r.j.error)||"failed";}});});
+  loadGithubStatus(wrap);
+}
+function loadGithubStatus(wrap){
+  wrap.innerHTML="<div class='n'>checking GitHub…</div>";
+  api("/api/github/status").then(function(r){wrap.innerHTML="";
+    var d=(r.ok&&r.j)||{};
+    var cls=d.connected?"g":(d.stored?"r":"o");
+    var repos=d.repos||[];
+    var st=d.connected?("connected · "+repos.length+" repos"):(d.stored?("token stored but "+(d.error||"rejected")):"no token yet");
+    var row=document.createElement("div");row.className="ksrow";
+    var dot=document.createElement("span");dot.className="dot "+cls;
+    var nm=document.createElement("span");nm.className="ksname";nm.textContent="github";
+    var sv=document.createElement("span");sv.className="ksst "+cls;sv.textContent=st;
+    row.appendChild(dot);row.appendChild(nm);row.appendChild(sv);wrap.appendChild(row);
+    if(d.connected&&repos.length){var rl=document.createElement("div");rl.className="n";rl.style.padding="4px 10px 2px";
+      rl.textContent="reachable: "+repos.slice(0,8).join(", ")+(repos.length>8?" …":"");wrap.appendChild(rl);}
+  }).catch(function(){wrap.innerHTML="<div class='n'>(couldn't check GitHub)</div>";});
+}
 document.getElementById("gear").addEventListener("click",openSettings);
 document.getElementById("settingsClose").addEventListener("click",closeSettings);
 
 // ---- ingestion review: learn one item at a time ----
 function ingestBusinesses(){return (cfgState&&cfgState.businesses)||[];}
-function setIngestPip(n){var pip=document.getElementById("ingestPip");if(pip)pip.style.display=n>0?"inline-block":"none";}
+function setIngestPip(n){ingCount=n;var pip=document.getElementById("ingestPip");if(pip)pip.style.display=n>0?"inline-block":"none";
+  var ib=document.querySelector(".ingbanner");if((ib?1:0)!==(n>0?1:0)&&document.getElementById("qwrap"))loadQueue();}
 function pollIngestPip(){api("/api/ingest/queue").then(function(r){setIngestPip(((r.ok&&r.j&&r.j.items)||[]).length);});}
 function openIngest(){document.getElementById("ingest").style.display="flex";
   api("/api/cfg/state").then(function(r){if(r.ok&&r.j&&r.j.businesses)cfgState=r.j;loadIngest();});}
@@ -556,6 +721,21 @@ function loadIngest(){
       if(r.ok){din.value="";dmsg.className="ksst g";dmsg.textContent="queued "+r.j.added+" from "+(r.j.file||nm);loadIngest();}
       else{dmsg.className="ksst r";dmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
   drow.appendChild(din);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
+  // or pull a file from a GitHub repo (needs a github_token stored)
+  var grow=document.createElement("div");grow.className="ing-row";
+  var gl=document.createElement("label");gl.textContent="or GitHub";grow.appendChild(gl);
+  var grepo=document.createElement("input");grepo.type="text";grepo.placeholder="repo, e.g. Rosco-v1";grepo.autocomplete="off";
+  grepo.style.cssText="flex:1;min-width:110px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
+  var gpath=document.createElement("input");gpath.type="text";gpath.placeholder="path, e.g. DESIGN.md";gpath.autocomplete="off";
+  gpath.style.cssText=grepo.style.cssText;
+  var gbtn=document.createElement("button");gbtn.className="ing-go";gbtn.textContent="Pull from GitHub";
+  var gmsg=document.createElement("span");gmsg.className="ksst";
+  gbtn.addEventListener("click",function(){var rp=grepo.value.trim(),pt=gpath.value.trim();if(!rp||!pt)return;
+    gbtn.disabled=true;gmsg.className="ksst";gmsg.textContent="reading GitHub…";
+    post("/api/ingest/github",{repo:rp,path:pt}).then(function(r){gbtn.disabled=false;
+      if(r.ok){gpath.value="";gmsg.className="ksst g";gmsg.textContent="queued "+r.j.added+" from "+(r.j.file||rp);loadIngest();}
+      else{gmsg.className="ksst r";gmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
+  grow.appendChild(grepo);grow.appendChild(gpath);grow.appendChild(gbtn);grow.appendChild(gmsg);host.appendChild(grow);
   Promise.all([api("/api/ingest/queue"),api("/api/ingest/readiness")]).then(function(res){
     var q=(res[0].ok&&res[0].j&&res[0].j.items)||[];
     var rd=(res[1].ok&&res[1].j)||{};
@@ -578,6 +758,11 @@ function loadIngest(){
 function ingestCard(item){
   var card=document.createElement("div");card.className="ing-card";
   var txt=document.createElement("div");txt.className="ing-text";txt.textContent=item.text;card.appendChild(txt);
+  var rd=document.createElement("div");rd.className="ing-reads";
+  rd.innerHTML="<span class='rl'>Rosco reads this as</span> <span class='rv'>"+(item.summary?esc(item.summary):"reading…")+"</span>";
+  card.appendChild(rd);
+  if(!item.summary){post("/api/ingest/read",{text:item.text}).then(function(r){
+    var v=rd.querySelector(".rv");if(v)v.textContent=(r.ok&&r.j&&r.j.summary)||"(couldn't read it)";});}
   var prop=document.createElement("div");prop.className="ing-prop";
   if(item.business){var s1=document.createElement("span");s1.textContent="Rosco →";
     var b=document.createElement("b");b.textContent=item.business;
@@ -609,6 +794,29 @@ function autoRoute(items){var withBiz=items.filter(function(x){return x.business
     post("/api/ingest/decide",{cand:it.cand,business:it.business,action:"ingest"}).then(next,next);})();}
 document.getElementById("ingestBtn").addEventListener("click",openIngest);
 document.getElementById("ingestClose").addEventListener("click",closeIngest);
+
+// ---- resizable right panel: slide the context/chat split (up-down) and the
+// whole panel's width (left-right). Both handles use the same drag scaffold.
+(function(){
+  var right=document.getElementById("rightpane"),ctx=document.getElementById("ctx"),
+      vh=document.getElementById("vhandle"),hh=document.getElementById("hhandle");
+  function onDrag(handle,move){
+    if(!handle)return;
+    handle.addEventListener("mousedown",function(e){e.preventDefault();
+      document.body.style.userSelect="none";document.body.style.cursor=getComputedStyle(handle).cursor;
+      function mm(ev){move(ev);}
+      function up(){window.removeEventListener("mousemove",mm);window.removeEventListener("mouseup",up);
+        document.body.style.userSelect="";document.body.style.cursor="";}
+      window.addEventListener("mousemove",mm);window.addEventListener("mouseup",up);});
+  }
+  onDrag(vh,function(e){if(!right||!ctx)return;var r=right.getBoundingClientRect();
+    var h=Math.max(70,Math.min(r.height-140,e.clientY-r.top));
+    ctx.style.flex="none";ctx.style.height=h+"px";});
+  onDrag(hh,function(e){if(!right)return;
+    var w=Math.max(280,Math.min(window.innerWidth-340,window.innerWidth-e.clientX));
+    right.style.width=w+"px";
+    if(typeof resize==="function")resize();});   // graph canvas re-measures on width change
+})();
 
 // Ambient pulses are just idle liveness now - real activity drives the graph
 // through loadActivity(), so keep the timer slow and let the log do the talking.

@@ -22,9 +22,13 @@ class NoModel(RuntimeError):
 
 
 def complete(models: Models, role: str, system: str, user: str, *,
-             node: str = "", meter=None, max_tokens: int = 800,
+             node: str = "", agent: str = "", meter=None, max_tokens: int = 800,
              temperature: float = 0.4) -> str:
     choice = models.pick(role, node=node)
+    if agent:                             # an agent pinned to its own model wins
+        pinned = models.pin_for(agent)    # over the role default - Ross's call
+        if pinned is not None:
+            choice = pinned
     key = models.key_for(choice)          # "" for ollama, None if missing
     if key is None:
         raise NoModel(

@@ -62,7 +62,8 @@ class Ingest:
                 "ingest.proposed",
                 {"cand": cand, "text": text[:500], "source": source,
                  "business": biz, "confidence": conf,
-                 "why": (it.get("why") or "")[:200]},
+                 "why": (it.get("why") or "")[:200],
+                 "summary": (it.get("summary") or "")[:240]},
                 subject=source or "paste", actor=by)
             n += 1
         return n
@@ -100,7 +101,8 @@ class Ingest:
                         "source": b.get("source", ""),
                         "business": b.get("business", ""),
                         "confidence": b.get("confidence", 0),
-                        "why": b.get("why", "")})
+                        "why": b.get("why", ""),
+                        "summary": b.get("summary", "")})
         return out
 
     # ---- deciding --------------------------------------------------------

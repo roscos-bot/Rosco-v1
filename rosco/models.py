@@ -132,6 +132,39 @@ class Models:
             subject=f"{role}@{node or '*'}", actor=ROSS,
         )
 
+    def pin_agent(self, agent: str, model: str, provider: str, *,
+                  why: str = "", by: str = ROSS) -> dict:
+        """Pin ONE agent (a graph node) to its own model, whatever its role.
+
+        The rest of the system stays role-addressed - swap the workhorse once,
+        it changes everywhere. This is the deliberate exception: when Ross wants
+        HavenMind on Opus but a bulk classifier on Haiku, he says so per agent,
+        and that agent's think() uses it. Still only Ross - a model choice reads
+        his mail and spends his money, the same reason choose() is his alone.
+        """
+        if by != ROSS:
+            raise PermissionError(f"only Ross pins models; {by!r} tried to pin {agent}")
+        agent = (agent or "").strip()
+        if not agent:
+            raise ValueError("which agent?")
+        if not (model or "").strip():
+            raise ValueError("a pin needs a model id")
+        return self.log.append(
+            "model.pinned",
+            {"agent": agent, "model": model.strip(), "provider": provider, "why": why},
+            subject=agent, actor=ROSS,
+        )
+
+    def unpin_agent(self, agent: str, *, by: str = ROSS) -> dict:
+        """Clear an agent's pin - it falls back to whatever its role resolves to."""
+        if by != ROSS:
+            raise PermissionError(f"only Ross unpins models; {by!r} tried {agent}")
+        agent = (agent or "").strip()
+        if not agent:
+            raise ValueError("which agent?")
+        return self.log.append(
+            "model.unpinned", {"agent": agent}, subject=agent, actor=ROSS)
+
     def trial(self, model: str, role: str, verdict: str, *, note: str = "",
               by: str = "rosco") -> dict:
         """Record how a model did.
@@ -193,6 +226,36 @@ class Models:
         if role not in ROLES:
             raise ValueError(f"unknown role {role!r}")
         return self.choices(node=node or self.log.node)[role]
+
+    def pins(self) -> dict[str, Choice]:
+        """agent name -> its pinned Choice. Latest wins; an unpin clears it.
+
+        Both kinds are read and merged in time order, so a pin then an unpin
+        leaves the agent unpinned - the same latest-event-wins the rest of the
+        registry uses.
+        """
+        events = []
+        for ev in self.log.replay(kind="model.pinned"):
+            events.append((ev["ts"], "pin", ev["body"]))
+        for ev in self.log.replay(kind="model.unpinned"):
+            events.append((ev["ts"], "unpin", ev["body"]))
+        events.sort(key=lambda e: e[0])
+        latest: dict[str, Choice] = {}
+        for ts, op, b in events:
+            agent = (b.get("agent") or "").strip()
+            if not agent:
+                continue
+            if op == "unpin":
+                latest.pop(agent, None)
+            else:
+                latest[agent] = Choice(
+                    role="pinned", model=b.get("model", ""),
+                    provider=b.get("provider", ""), why=b.get("why", ""), chosen=ts)
+        return latest
+
+    def pin_for(self, agent: str) -> Choice | None:
+        """This agent's pinned model, or None to fall back to its role."""
+        return self.pins().get((agent or "").strip())
 
     def key_for(self, choice: Choice) -> str | None:
         """The credential, or None if we do not hold one.
