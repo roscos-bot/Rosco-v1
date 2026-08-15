@@ -450,6 +450,37 @@ class Console:
                        f"tool:{t.name}" + (f"  !! {t.caution}" if t.caution else ""))
         return "\n".join(out)
 
+    def ingest_steelhaven(self, passphrase: str) -> str:
+        """Teach HavenMind SteelHaven - the real brand facts, told by Ross."""
+        from .agent import seed_steelhaven
+        n = seed_steelhaven(Vault(self.open(passphrase)))
+        return f"taught HavenMind {n} SteelHaven facts. Try: rosco agent HavenMind \"...\""
+
+    def run_agent(self, passphrase: str, name: str, task: str) -> str:
+        """Run an agent on a task with the real model. Proposes; never ships."""
+        from .agent import Agent
+        from .llm import NoModel, complete
+        from .meter import Meter
+        log = self.open(passphrase)
+        models = Models(log, Vault(log, key=self._vault_key(passphrase)))
+        meter = Meter(log)
+
+        def think(system, user):
+            return complete(models, "workhorse", system, user, node=NODE, meter=meter)
+        try:
+            r = Agent(name, log, think=think, meter=meter).work(
+                task, narrate=lambda s: print("  " + s))
+        except NoModel as e:
+            raise SystemExit(str(e))
+        out = ["", f"--- {r.agent}'s draft ---", r.draft, ""]
+        if r.warnings:
+            out.append("guardrail flags (fix before it ships):")
+            out += [f"  !! {w}" for w in r.warnings]
+        else:
+            out.append("guardrails: clean")
+        out.append(f"grounded on {r.grounded_on} lessons · proposed to you, not published")
+        return "\n".join(out)
+
     def github_link(self, passphrase: str, business: str, repo: str, *,
                     branch: str = "main", secret: str = "github_token") -> str:
         from .github import GitHub
@@ -599,6 +630,11 @@ def main(argv: list[str] | None = None) -> int:
     ta.add_argument("--secret", default=""); ta.add_argument("--caution", default="")
     tsub.add_parser("list")
 
+    ag = sub.add_parser("agent", help="run an agent on a task (it drafts and proposes)")
+    ag.add_argument("name"); ag.add_argument("task", nargs="+")
+    ing = sub.add_parser("ingest", help="teach an agent its business from known facts")
+    ing.add_argument("business")
+
     gh = sub.add_parser("github", help="link businesses to repos; agents propose, you merge")
     gsub = gh.add_subparsers(dest="gcmd")
     gl = gsub.add_parser("link"); gl.add_argument("business"); gl.add_argument("repo")
@@ -671,6 +707,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(c.budget_set(_ask_pass(), args.scope, args.usd))
             else:
                 print(c.budget_show())
+        elif args.cmd == "agent":
+            print(c.run_agent(_ask_pass(), args.name, " ".join(args.task)))
+        elif args.cmd == "ingest":
+            if args.business == "steelhaven":
+                print(c.ingest_steelhaven(_ask_pass()))
+            else:
+                raise SystemExit(f"no seeded facts for {args.business!r} yet")
         elif args.cmd == "github":
             if args.gcmd == "link":
                 print(c.github_link(_ask_pass(), args.business, args.repo,

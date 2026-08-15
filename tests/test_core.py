@@ -31,6 +31,7 @@ from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, Models,  # noq
                           secret_name)
 from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
 from rosco.store import Log, Unauthorised  # noqa: E402
+from rosco.agent import Agent, seed_steelhaven  # noqa: E402
 from rosco.github import GitHub  # noqa: E402
 from rosco.tools import Tools  # noqa: E402
 from rosco.vault import INFERRED, OBSERVED, TOLD, Vault, derive_key  # noqa: E402
@@ -932,6 +933,33 @@ def main() -> int:
     fails += not refuses("a business-scoped tool refuses an unnamed caller",
                          lambda: tt.invoke("scoped", {}, vault=tv2, business=""),
                          PermissionError)
+
+    print("\nHAVENMIND / THE AGENT LOOP")
+    al = fresh("console")
+    seeded = seed_steelhaven(Vault(al))
+    fails += not check("HavenMind was taught its business", seeded >= 5, True)
+    good = ("Wood rots and warps; our PermaHaven cold-formed-steel system does not, "
+            "paired with continuous exterior insulation. Steel-Strong, Smart-Secure.")
+    hv = Agent("HavenMind", al, think=lambda system, user: good)
+    fails += not check("it grounds on what it was told",
+                       len([l for l in hv.knows() if l.basis == TOLD]) >= 5, True)
+    r = hv.work("draft a post", narrate=lambda s: None)
+    fails += not check("a clean on-brand draft passes the guardrails", r.warnings, [])
+    fails += not check("and it proposes, does not publish", r.proposed, True)
+    fails += not check("the draft is the model's work", "Steel-Strong" in r.draft, True)
+    fails += not check("it recorded what it did (observed)",
+                       len([l for l in hv.knows() if l.basis == OBSERVED]), 1)
+    bad = Agent("HavenMind", al, think=lambda system, user:
+                "Our steel is FORTIFIED and cuts your insurance. Steel-Strong.")
+    rb = bad.work("botch it", narrate=lambda s: None)
+    fails += not check("FORTIFIED is caught",
+                       any("FORTIFIED" in w for w in rb.warnings), True)
+    fails += not check("a steel claim with no insulation is caught",
+                       any("insulation" in w for w in rb.warnings), True)
+    fails += not refuses("an agent not in the roster is refused",
+                         lambda: Agent("Nobody", al, think=lambda s, u: ""), ValueError)
+    fails += not check("proposals are recorded on the log",
+                       len(list(al.replay(kind="agent.produced"))), 2)
 
     print("\nGITHUB")
     gl2 = fresh("console")

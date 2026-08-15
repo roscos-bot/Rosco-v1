@@ -118,6 +118,10 @@ KINDS: dict[str, str] = {
     "github.linked": AUTHORED,
     "github.unlinked": AUTHORED,
     "github.proposed": NODE,
+
+    # An agent did a piece of work and proposed it. A plain node fact - the
+    # agent watched itself do this; it is not Ross's word and grants nothing.
+    "agent.produced": NODE,
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -184,6 +188,8 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "github.linked": ("business", "owner", "name"),
     "github.unlinked": ("business",),
     "github.proposed": ("business", "agent", "branch"),
+
+    "agent.produced": ("agent", "business"),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a
