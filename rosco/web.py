@@ -1119,32 +1119,54 @@ class ConsoleServer(ThreadingHTTPServer):
         return {"ok": True, "added": self._queue_text(s, text, source)}
 
     def ingest_drive(self, s, body):
-        """Pull a Google Drive file's TEXT into the review queue. Reads the real
-        contents (a Doc/Sheet exported, a .md/.txt downloaded) and runs it through
-        the same split-route-queue path as a paste."""
+        """Pull Drive text into the review queue — one file, or MANY at once.
+        `account` picks which connected Google account (personal, steelhaven, …).
+        With bulk set (or a blank name) it pulls a batch: a search term grabs
+        everything matching, a blank name grabs the most recent files; otherwise
+        it pulls the single best match. Each file is gisted on review, its full copy
+        cached locally, and its drive: source pointer kept."""
+        from . import sources
         from .adapters import google as g
+        from .ingest import Ingest
+        account = (body.get("account") or "personal").strip().lower()
         name = (body.get("name") or "").strip()
-        if not name:
-            raise ValueError("name a Drive file to pull")
+        bulk = bool(body.get("bulk")) or not name
         log = self.console.open(s.passphrase)
-        account = "personal"
         if f"{account}:{g.REFRESH_TOKEN}" not in set(Vault(log).secret_names()):
-            raise ValueError("personal Google isn't connected yet")
+            raise ValueError(f"the '{account}' Google account isn't connected — "
+                             f"add it in Settings → Google Workspace first")
         token = g.access_for(Vault(log, key=self.console._vault_key(s.passphrase)), account)
         if not token:
-            raise ValueError("couldn't sign in to Google")
-        hit = g.drive_find(token, name)
-        if not hit:
-            raise ValueError(f"no Drive file matching {name!r}")
-        content = g.drive_read(token, hit.get("id", ""), hit.get("mimeType", ""),
-                               max_chars=20000)
-        if not content:
-            raise ValueError(f"'{hit.get('name','')}' has no readable text (a PDF or image?)")
-        from . import sources
-        src = f"drive:{hit.get('name','')}"[:80]
-        sources.save(self.console.home, src, content)   # local copy — detail without the internet
-        n = self._queue_text(s, content, source=src)
-        return {"ok": True, "added": n, "file": hit.get("name", "")}
+            raise ValueError(f"couldn't sign in to the '{account}' Google account")
+        if not bulk:
+            hit = g.drive_find(token, name)
+            if not hit:
+                raise ValueError(f"no Drive file matching {name!r}")
+            content = g.drive_read(token, hit.get("id", ""), hit.get("mimeType", ""),
+                                   max_chars=20000)
+            if not content:
+                raise ValueError(f"'{hit.get('name','')}' has no readable text (a PDF or image?)")
+            src = f"drive:{hit.get('name','')}"[:80]
+            sources.save(self.console.home, src, content)
+            n = self._queue_text(s, content, source=src)
+            return {"ok": True, "added": n, "file": hit.get("name", "")}
+        files = g.drive_search(token, name, 40) if name else g.drive_recent(token, 40)
+        added = 0
+        for f in files:
+            content = g.drive_read(token, f.get("id", ""), f.get("mimeType", ""),
+                                   max_chars=20000)
+            if not content:
+                continue                      # a PDF/image/binary — skip, don't queue noise
+            src = f"drive:{f.get('name','')}"[:80]
+            sources.save(self.console.home, src, content)
+            added += Ingest(log).add(
+                [{"text": content, "business": "", "confidence": 0.0,
+                  "why": "drive file", "summary": ""}], source=src)
+        if not added:
+            raise ValueError(f"no readable text files in {account} Drive for "
+                             f"'{name or 'recent'}' (Docs/Sheets/text only)")
+        return {"ok": True, "added": added,
+                "file": f"{added} from {account} Drive" + (f" · '{name}'" if name else " (recent)")}
 
     def ingest_github(self, s, body):
         """Pull a file — OR a whole repo/folder — from GitHub into the review queue.

@@ -764,19 +764,21 @@ function loadIngest(){
     post("/api/ingest/add",{text:t}).then(function(r){addBtn.disabled=false;addBtn.textContent="Queue items";
       if(r.ok){ta.value="";loadIngest();}else alert((r.j&&r.j.error)||"couldn't queue");});});
   add.appendChild(ta);add.appendChild(addBtn);host.appendChild(add);
-  // or pull a Google Drive file's contents straight into the queue
+  // or pull Google Drive contents — one file, or a whole batch (search / recent)
   var drow=document.createElement("div");drow.className="ing-row";
-  var dl=document.createElement("label");dl.textContent="or Drive file";drow.appendChild(dl);
-  var din=document.createElement("input");din.type="text";din.placeholder="file name, e.g. DECISIONS.md";din.autocomplete="off";
+  var dl=document.createElement("label");dl.textContent="or Drive";drow.appendChild(dl);
+  var dacc=document.createElement("input");dacc.type="text";dacc.value="personal";dacc.title="Google account";dacc.autocomplete="off";
+  dacc.style.cssText="width:90px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
+  var din=document.createElement("input");din.type="text";din.placeholder="search/folder, or blank = recent (pulls all matching)";din.autocomplete="off";
   din.style.cssText="flex:1;min-width:150px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
   var dbtn=document.createElement("button");dbtn.className="ing-go";dbtn.textContent="Pull from Drive";
   var dmsg=document.createElement("span");dmsg.className="ksst";
-  dbtn.addEventListener("click",function(){var nm=din.value.trim();if(!nm)return;
-    dbtn.disabled=true;dmsg.className="ksst";dmsg.textContent="reading Drive…";
-    post("/api/ingest/drive",{name:nm}).then(function(r){dbtn.disabled=false;
-      if(r.ok){din.value="";dmsg.className="ksst g";dmsg.textContent="queued "+r.j.added+" from "+(r.j.file||nm);loadIngest();}
+  dbtn.addEventListener("click",function(){var nm=din.value.trim(),acc=dacc.value.trim()||"personal";
+    dbtn.disabled=true;dmsg.className="ksst";dmsg.textContent=nm?("searching "+acc+" Drive…"):("pulling recent from "+acc+" Drive…");
+    post("/api/ingest/drive",{name:nm,account:acc,bulk:true}).then(function(r){dbtn.disabled=false;
+      if(r.ok){din.value="";dmsg.className="ksst g";dmsg.textContent="queued "+r.j.added+" from "+(r.j.file||acc);loadIngest();}
       else{dmsg.className="ksst r";dmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
-  drow.appendChild(din);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
+  drow.appendChild(dacc);drow.appendChild(din);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
   // or pull a file from a GitHub repo (needs a github_token stored)
   var grow=document.createElement("div");grow.className="ing-row";
   var gl=document.createElement("label");gl.textContent="or GitHub";grow.appendChild(gl);
