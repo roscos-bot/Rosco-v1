@@ -1347,6 +1347,8 @@ def _probe_key(provider, key):
     The detail never carries the provider's body - safehttp already drops it for
     auth failures, and _redact strips anything key-shaped as a second line."""
     from . import safehttp
+    if provider == "higgsfield":
+        return _probe_higgsfield(key)
     try:
         if provider == "openrouter":
             # /key authenticates without spending a completion; the public
@@ -1368,14 +1370,6 @@ def _probe_key(provider, key):
                           bearer=key, timeout=8)
         elif provider == "ollama":
             safehttp.call("http://localhost:11434/api/tags", method="GET", timeout=5)
-        elif provider == "higgsfield":
-            # No health endpoint, so probe the status route with a bogus request id:
-            # a bad key 401/403s, a good key 404s (auth passed, id just not found).
-            # Key format is "ID:SECRET"; the header is "Key ID:SECRET". Zero cost.
-            safehttp.call(
-                "https://platform.higgsfield.ai/requests/00000000-0000-0000-0000-000000000000",
-                method="GET", headers={"Authorization": "Key " + (key or "").strip()},
-                timeout=8)
         else:
             return None, "no probe"
         return True, "valid"
@@ -1385,9 +1379,36 @@ def _probe_key(provider, key):
         code = m.group(1) if m else ""
         if code in ("401", "403"):
             return False, "key rejected"      # definitively wrong credential
-        if provider == "higgsfield" and code in ("400", "404", "422"):
-            return True, "valid"              # auth passed; the bogus request id just 404s
         return None, msg                       # unreachable / limited / unknown
+
+
+def _probe_higgsfield(key):
+    """Validate a Higgsfield key with no spend. There is no health endpoint, so hit
+    GET /requests/<bogus>/status: 401/403 = bad credentials, 404 = auth PASSED (the
+    id just doesn't exist / isn't yours). The auth scheme is unsettled between
+    sources — the docs say 'Key ID:SECRET', a third-party guide says 'Bearer <key>'
+    — so try both and say which one authenticated. Both 401 => the key really is
+    rejected (or stored wrong)."""
+    from . import safehttp
+    k = (key or "").strip()
+    url = ("https://platform.higgsfield.ai/requests/"
+           "00000000-0000-0000-0000-000000000000/status")
+    saw = None
+    for scheme in ("Key " + k, "Bearer " + k):
+        try:
+            safehttp.call(url, method="GET", headers={"Authorization": scheme}, timeout=8)
+            return True, "valid"
+        except Exception as e:
+            msg = _redact_probe_error(str(e), key)
+            m = re.search(r"HTTP (\d+)", msg)
+            code = m.group(1) if m else ""
+            if code in ("400", "404", "422"):
+                return True, "valid (" + scheme.split(" ", 1)[0] + " auth)"
+            if code in ("401", "403"):
+                saw = "key rejected"
+                continue                       # try the other scheme
+            saw = msg                          # unreachable / limited
+    return (False, "key rejected") if saw == "key rejected" else (None, saw or "unreachable")
 
 
 def _redact_probe_error(msg, key):
