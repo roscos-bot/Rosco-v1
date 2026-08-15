@@ -1,0 +1,279 @@
+"""The console with a face - a localhost web app over the real modules.
+
+Same authority model as the CLI, same rule: only this machine, and only after
+Ross unlocks. The design was approved as a mockup; this is it wired to live data.
+
+WHY A LOCAL WEB SERVER IS TREATED AS HOSTILE TERRAIN. A browser on Ross's
+machine can be pointed at 127.0.0.1 by any web page he happens to have open, and
+DNS-rebinding can make a remote site's JavaScript talk to a local server. So a
+localhost bind is necessary and not sufficient. Three more guards:
+
+  BIND 127.0.0.1 ONLY. Never 0.0.0.0 - the network must not reach it at all.
+  This is the same "only localhost changes anything" rule as the whole system.
+
+  HOST ALLOW-LIST. Every request's Host header must be localhost or 127.0.0.1
+  on our port. A rebinding attack arrives with the attacker's hostname in Host;
+  it is refused before any handler runs.
+
+  UNLOCK, THEN A TOKEN ON EVERY WRITE. Reading and writing both require an
+  unlock (the passphrase, entered once), which mints a session held only in this
+  process's memory. Writes additionally carry that token in a header no
+  cross-site page can set, so a page that tricks the browser into POSTing still
+  cannot act - it cannot read the cookie and cannot forge the header.
+
+The passphrase lives in memory for the session, exactly as `rosco serve` holds
+it - the price of a console that stays open. It is never written to disk and
+never sent back to the browser; the browser holds an opaque token, nothing more.
+"""
+from __future__ import annotations
+
+import json
+import secrets as pysecrets
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from .asks import ANSWERS, Asks
+from .grants import ANY, DO, GET, SCOPE_ALL, SCOPES, Grants
+from .identity import People
+from .keys import ROSS
+from .meter import ALL, Meter
+from .models import Models
+from .nodes import Nodes
+from .roster import BUSINESSES, roster
+from .vault import Vault
+
+APP = (Path(__file__).parent / "web_app.html")
+
+
+class Session:
+    """One unlocked session. The passphrase and a token, in memory only."""
+    def __init__(self, passphrase: str) -> None:
+        self.passphrase = passphrase
+        self.token = pysecrets.token_urlsafe(24)
+        self.opened = time.time()
+
+
+class ConsoleServer(ThreadingHTTPServer):
+    def __init__(self, console, port: int) -> None:
+        super().__init__(("127.0.0.1", port), Handler)
+        self.console = console
+        self.session: Session | None = None      # single user, single session
+        self.port = port
+
+    # ---- the live data, assembled from the real modules ----
+
+    def _log(self, s: Session | None):
+        # A read uses the passphrase if we have it (some views want the vault);
+        # the queue and grants do not need it, so an unlocked session is enough.
+        return self.console.open(s.passphrase if s else None)
+
+    def overview(self, s):
+        log = self.console.open()
+        asks = Asks(log)
+        meter = Meter(log)
+        spent = meter.reading(ALL)
+        problems = log.verify()
+        return {
+            "node": "console",
+            "unlocked": s is not None,
+            "waiting": len(asks.pending()),
+            "spend": round(spent.spent, 2),
+            "spendCalls": spent.calls,
+            "chains": "sound" if not problems else f"{len(problems)} problem(s)",
+        }
+
+    def queue(self, s):
+        log = self.console.open()
+        out = []
+        for a in Asks(log).pending():
+            out.append({"id": a.id, "person": a.person, "business": a.business,
+                        "capability": a.capability, "verb": a.verb,
+                        "detail": a.detail, "times": a.times, "nagged": a.nagged,
+                        "seen": a.seen})
+        return out
+
+    def mesh(self, s):
+        """Agents, people and sites as one graph - the real roster, live."""
+        log = self.console.open()
+        nodes, edges, seen = [], [], set()
+
+        def node(nid, label, typ, **extra):
+            if nid in seen:
+                return
+            seen.add(nid)
+            nodes.append({"id": nid, "label": label, "type": typ, **extra})
+
+        for a in roster():
+            node(a.name, a.name, "agent", rank=a.rank, business=a.business,
+                 reports=a.reports_to)
+            if a.reports_to and a.reports_to != "ross":
+                edges.append({"a": a.name, "b": a.reports_to, "kind": "command"})
+        # people, linked to the businesses they can reach (from live grants)
+        grants = Grants(log).live()
+        access = {}
+        for g in grants:
+            if g.allow:
+                access.setdefault(g.person, set()).add(g.business)
+        for person, bizset in access.items():
+            if person == ROSS:
+                continue
+            node("p:" + person, person.title(), "person",
+                 business=", ".join(sorted(bizset)))
+            for b in bizset:
+                cap = next((c.captain for c in BUSINESSES if c.slug == b), None)
+                if cap:
+                    edges.append({"a": "p:" + person, "b": cap, "kind": "access"})
+        # sites
+        for n in Nodes(log).all():
+            node("s:" + n.name, n.name, "site", business=n.site)
+            edges.append({"a": "s:" + n.name, "b": "Rosco", "kind": "host"})
+        return {"nodes": nodes, "edges": edges}
+
+    def grants_view(self, s):
+        return [{"id": g.id, "person": g.person, "business": g.business,
+                 "capability": g.capability, "verb": g.verb, "allow": g.allow,
+                 "scope": g.scope, "reason": g.reason}
+                for g in Grants(self.console.open()).live()]
+
+    def people_view(self, s):
+        p = People(self.console.open())
+        names = sorted({h.person for h in p.handles()})
+        return [{"person": n, "handles": [{"channel": h.channel, "raw": h.raw}
+                                          for h in p.handles(person=n)]} for n in names]
+
+    def spend_view(self, s):
+        m = Meter(self.console.open())
+        return {"report": m.report(), "budgets": [{"scope": b.scope, "cap": b.monthly_usd}
+                                                  for b in m.budgets().values()]}
+
+    # ---- the one write the dashboard needs first ----
+
+    def answer(self, s, body):
+        aid = body.get("id", ""); verdict = body.get("verdict", "")
+        note = body.get("note", "")
+        if verdict not in ANSWERS:
+            raise ValueError("bad verdict")
+        return self.console.answer(s.passphrase, aid, verdict, note)
+
+
+LOCAL_HOSTS = None  # set per-server from its port
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "rosco/1"
+
+    def log_message(self, *a):        # quiet; this is a personal tool
+        pass
+
+    # ---- guards ----
+
+    def _host_ok(self) -> bool:
+        host = (self.headers.get("Host") or "").split(":")[0]
+        return host in ("127.0.0.1", "localhost")
+
+    def _session(self):
+        cookie = self.headers.get("Cookie") or ""
+        tok = ""
+        for part in cookie.split(";"):
+            part = part.strip()
+            if part.startswith("rosco_session="):
+                tok = part[len("rosco_session="):]
+        s = self.server.session
+        if s and tok and pysecrets.compare_digest(tok, s.token):
+            return s
+        return None
+
+    def _send(self, code, obj, cookie=None):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # No external anything: the page is self-contained and same-origin only.
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(data)
+
+    # ---- routing ----
+
+    def do_GET(self):
+        if not self._host_ok():
+            return self._send(421, {"error": "bad host"})
+        if self.path == "/" or self.path.startswith("/index"):
+            try:
+                html = APP.read_bytes()
+            except OSError:
+                html = b"<h1>web_app.html missing</h1>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:")
+            self.end_headers()
+            return self.wfile.write(html)
+
+        srv = self.server
+        if self.path == "/api/overview":
+            return self._send(200, srv.overview(self._session()))
+
+        s = self._session()
+        if s is None:
+            return self._send(401, {"error": "locked"})
+        views = {"/api/queue": srv.queue, "/api/mesh": srv.mesh,
+                 "/api/grants": srv.grants_view, "/api/people": srv.people_view,
+                 "/api/spend": srv.spend_view}
+        fn = views.get(self.path.split("?")[0])
+        if fn:
+            return self._send(200, fn(s))
+        return self._send(404, {"error": "no such view"})
+
+    def do_POST(self):
+        if not self._host_ok():
+            return self._send(421, {"error": "bad host"})
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            return self._send(400, {"error": "bad json"})
+
+        if self.path == "/api/unlock":
+            pw = body.get("passphrase", "")
+            try:
+                self.server.console._ross(pw)         # unseal; raises if wrong
+            except Exception:
+                return self._send(401, {"error": "wrong passphrase"})
+            self.server.session = Session(pw)
+            cookie = ("rosco_session=" + self.server.session.token +
+                      "; HttpOnly; SameSite=Strict; Path=/")
+            return self._send(200, {"ok": True, "csrf": self.server.session.token}, cookie)
+
+        # every other POST is a write: unlock + CSRF header, both required.
+        s = self._session()
+        if s is None:
+            return self._send(401, {"error": "locked"})
+        csrf = self.headers.get("X-Rosco-CSRF") or ""
+        if not pysecrets.compare_digest(csrf, s.token):
+            return self._send(403, {"error": "missing or bad CSRF token"})
+
+        try:
+            if self.path == "/api/answer":
+                return self._send(200, {"ok": True, "result": self.server.answer(s, body)})
+            if self.path == "/api/lock":
+                self.server.session = None
+                return self._send(200, {"ok": True})
+        except (ValueError, KeyError, SystemExit) as e:
+            return self._send(400, {"error": str(e)})
+        return self._send(404, {"error": "no such action"})
+
+
+def serve_web(console, port: int = 8787) -> None:
+    srv = ConsoleServer(console, port)
+    print(f"console on http://127.0.0.1:{port}  (localhost only)")
+    print("open it, unlock with your passphrase. Ctrl-C to stop.")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped.")

@@ -426,6 +426,11 @@ class Console:
     def vault_read(self, business: str) -> str:
         return Vault(self.open()).to_markdown(business)
 
+    def serve_web(self, port: int = 8787) -> None:
+        """The dashboard. Starts locked; unlock in the browser, once."""
+        from .web import serve_web
+        serve_web(self, port)
+
     def serve(self, passphrase: str) -> None:
         """Run the Telegram service. Long-polls, routes, replies - forever.
 
@@ -540,6 +545,8 @@ def main(argv: list[str] | None = None) -> int:
     va = sub.add_parser("vault", help="what the agents have learned")
     va.add_argument("business")
 
+    wb = sub.add_parser("web", help="run the local dashboard (localhost only)")
+    wb.add_argument("--port", type=int, default=8787)
     sub.add_parser("serve", help="run the Telegram service (long-polls, routes, replies)")
     sub.add_parser("verify", help="walk every chain and signature")
 
@@ -603,6 +610,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(c.budget_show())
         elif args.cmd == "vault":
             print(c.vault_read(args.business))
+        elif args.cmd == "web":
+            c.serve_web(port=args.port)
         elif args.cmd == "serve":
             c.serve(_ask_pass())
         elif args.cmd == "verify":
