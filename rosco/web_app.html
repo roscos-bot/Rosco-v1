@@ -165,7 +165,8 @@
   .ksst{font:700 9px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
   .ksst.g{color:var(--green)}.ksst.r{color:var(--red)}.ksst.a{color:var(--amber)}.ksst.o{color:var(--faint)}
   .pip{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);box-shadow:0 0 8px var(--amber);margin-left:6px;vertical-align:middle}
-  .ingest-body{padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+  .ingest-body{padding:16px 18px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;flex:1 1 auto;min-height:0}
+  #ingest .sheet{max-height:calc(100vh - 72px)}   /* fixed-height dialog: header pinned, body scrolls under it (no overlap) */
   .ing-add{display:flex;flex-direction:column;gap:8px}
   .ing-add textarea{width:100%;min-height:78px;background:var(--sunk);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1.5 var(--sans);padding:9px;outline:none;resize:vertical}
   .ing-add textarea:focus{border-color:var(--amber-dim)}

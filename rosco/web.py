@@ -1270,13 +1270,19 @@ class ConsoleServer(ThreadingHTTPServer):
             n = 5
         log = self.console.open(s.passphrase)
         vault = Vault(log, key=self.console._vault_key(s.passphrase))
+        models = Models(log, vault)
+        meter = Meter(log)
         pend = Ingest(log).pending()[:n]
         if not pend:
             return {"items": [], "count": 0, "confidence": 0}
-        props = _route_ingest(Models(log, vault), Meter(log),
-                              [(p.get("text") or "")[:3000] for p in pend])
+        texts = [(p.get("text") or "")[:3000] for p in pend]
+        props = _route_ingest(models, meter, texts)
         items, confs = [], []
-        for p, pr in zip(pend, props):
+        for i, (p, pr) in enumerate(zip(pend, props)):
+            if not (pr.get("summary") or "").strip():   # the batch missed this one — route it alone
+                solo = _route_ingest(models, meter, [texts[i]])
+                if solo and (solo[0].get("summary") or "").strip():
+                    pr = solo[0]
             c = 0.0
             try:
                 c = float(pr.get("confidence", 0) or 0)
@@ -1665,9 +1671,13 @@ def _route_ingest(models, meter, chunks):
               "on one line: [{\"i\":1,\"business\":\"slug\",\"confidence\":0.0,"
               "\"why\":\"...\",\"summary\":\"2-3 sentence shorthand\"}]")
     numbered = "\n".join(f"{i + 1}. {c[:3000]}" for i, c in enumerate(chunks))
+    # Scale the output budget to the batch: a fixed 1600 truncated the later items
+    # in a big batch, so they came back with no shorthand/business. ~300 tokens per
+    # item plus headroom, capped so it can't run away.
+    max_out = min(8000, 700 + len(chunks) * 320)
     try:
         raw, pt, ct = _provider_call(choice.provider, choice.model, key,
-                                     system, numbered, 1600, 0, timeout=40)
+                                     system, numbered, max_out, 0, timeout=60)
         if meter is not None:
             try:
                 meter.record(choice.provider, choice.model, WORKHORSE, pt, ct)
