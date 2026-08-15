@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import secrets as pysecrets
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -455,7 +456,68 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "no such action"})
 
 
-def serve_web(console, port: int = 8787) -> None:
+def _stamp():
+    """mtimes of the package's own source - what the watcher compares."""
+    out = {}
+    for p in Path(__file__).parent.rglob("*.py"):
+        try:
+            out[p] = p.stat().st_mtime
+        except OSError:
+            pass
+    return out
+
+
+def _supervise(port: int) -> None:
+    """Run the server as a child and restart it when rosco/*.py changes.
+
+    A supervisor rather than os.execv, because execv is flaky on Windows: this
+    spawns `rosco web --no-reload` as a child, watches the source, and on any
+    change terminates and respawns it. Stdlib only - no watchdog dependency, in
+    keeping with the rest of the codebase.
+
+    The served page is read from disk each request, so a browser reload already
+    picks up HTML/JS edits; this is for the Python ROUTES, where a stale process
+    calling endpoints it does not yet have was the confusion this removes.
+
+    One honest cost: a restart drops the in-memory session, so the browser
+    unlocks again. The passphrase lives only in memory by design - a reload
+    cannot carry it across without writing it down, the one thing it must not do.
+    """
+    import subprocess
+    child_cmd = [sys.executable, "-m", "rosco", *sys.argv[1:], "--no-reload"]
+    print(f"console on http://127.0.0.1:{port}  (localhost only)")
+    print("watching for code changes — it restarts itself. Ctrl-C to stop.")
+    proc, base = None, _stamp()
+    try:
+        proc = subprocess.Popen(child_cmd)
+        while True:
+            time.sleep(1.0)
+            if proc.poll() is not None:
+                print(f"server exited ({proc.returncode}).")
+                return
+            cur = _stamp()
+            changed = {p.name for p in cur if base.get(p) != cur.get(p)}
+            changed |= {p.name for p in base if p not in cur}
+            if changed:
+                print(f"  code changed ({', '.join(sorted(changed)[:4])}) — "
+                      f"restarting; unlock again in the browser.")
+                proc.terminate()
+                try:
+                    proc.wait(5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                proc = subprocess.Popen(child_cmd)
+                base = cur
+    except KeyboardInterrupt:
+        print("\nstopped.")
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+
+
+def serve_web(console, port: int = 8787, *, reload: bool = True) -> None:
+    if reload:
+        return _supervise(port)
     srv = ConsoleServer(console, port)
     print(f"console on http://127.0.0.1:{port}  (localhost only)")
     print("open it, unlock with your passphrase. Ctrl-C to stop.")
