@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -43,6 +44,17 @@ from typing import Any, Iterable, Iterator
 from .keys import Signer, Trust, known, malformed, needs_ross
 
 SCHEMA_VERSION = 3
+
+# One append at a time, across the whole process. append() reads the node's last
+# seq, adds one, and inserts - three steps that are NOT atomic. The console is a
+# threaded server, so two overlapping writes (rapid ingests, a poll landing on a
+# decide) both read seq N and both insert N+1, which trips UNIQUE(node, seq) and,
+# worse, forks the hash chain on a shared prev. Every write as THIS node happens
+# in THIS process (a different machine writes under a different node id, its own
+# seq space), so a module-level lock is enough to serialise them. WAL + autocommit
+# means the insert is committed before the lock releases, so the next writer's
+# SELECT sees it.
+_APPEND_LOCK = threading.RLock()
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -183,43 +195,47 @@ class Log:
         if problem:
             raise Unauthorised(f"{kind!r} body is unusable: {problem}")
 
-        prev_row = self.db.execute(
-            "SELECT hash, seq FROM events WHERE node=? ORDER BY seq DESC LIMIT 1",
-            (self.node,),
-        ).fetchone()
-        prev = prev_row["hash"] if prev_row else ""
-        seq = (prev_row["seq"] + 1) if prev_row else 1
+        # Serialised: reading the last seq, chaining onto its hash, and inserting
+        # must be one indivisible step, or two threads fork the chain on a shared
+        # prev and collide on UNIQUE(node, seq). See _APPEND_LOCK above.
+        with _APPEND_LOCK:
+            prev_row = self.db.execute(
+                "SELECT hash, seq FROM events WHERE node=? ORDER BY seq DESC LIMIT 1",
+                (self.node,),
+            ).fetchone()
+            prev = prev_row["hash"] if prev_row else ""
+            seq = (prev_row["seq"] + 1) if prev_row else 1
 
-        ev = {
-            "id": str(uuid.uuid4()), "seq": seq, "node": self.node,
-            "ts": ts or now(), "kind": kind, "subject": subject,
-            "actor": actor, "body": body, "prev": prev,
-        }
-        msg = signable(ev)
-        ev["hash"] = hashlib.sha256(msg).hexdigest()
-        ev["nsig"] = self.signer.sign(msg)
-        ev["rsig"] = ""
+            ev = {
+                "id": str(uuid.uuid4()), "seq": seq, "node": self.node,
+                "ts": ts or now(), "kind": kind, "subject": subject,
+                "actor": actor, "body": body, "prev": prev,
+            }
+            msg = signable(ev)
+            ev["hash"] = hashlib.sha256(msg).hexdigest()
+            ev["nsig"] = self.signer.sign(msg)
+            ev["rsig"] = ""
 
-        if needs_ross(kind, body):
-            if self.ross is None:
-                raise Unauthorised(
-                    f"{kind} needs Ross's signature and his key is not on this node. "
-                    f"Authority is exercised at the console, not by a running agent.")
-            if self.trust.bootstrapping:
-                raise Unauthorised(
-                    f"{kind} would be signed but this node holds no public key for "
-                    f"Ross, so nothing here - including this node - could ever verify "
-                    f"it. Install trust.json before granting; a write that silently "
-                    f"evaporates is worse than one that fails.")
-            ev["rsig"] = self.ross.sign(msg)
+            if needs_ross(kind, body):
+                if self.ross is None:
+                    raise Unauthorised(
+                        f"{kind} needs Ross's signature and his key is not on this node. "
+                        f"Authority is exercised at the console, not by a running agent.")
+                if self.trust.bootstrapping:
+                    raise Unauthorised(
+                        f"{kind} would be signed but this node holds no public key for "
+                        f"Ross, so nothing here - including this node - could ever verify "
+                        f"it. Install trust.json before granting; a write that silently "
+                        f"evaporates is worse than one that fails.")
+                ev["rsig"] = self.ross.sign(msg)
 
-        self.db.execute(
-            "INSERT INTO events(id,seq,node,ts,kind,subject,actor,body,prev,hash,nsig,rsig)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (ev["id"], ev["seq"], ev["node"], ev["ts"], ev["kind"], ev["subject"],
-             ev["actor"], canonical(ev["body"]), ev["prev"], ev["hash"],
-             ev["nsig"], ev["rsig"]),
-        )
+            self.db.execute(
+                "INSERT INTO events(id,seq,node,ts,kind,subject,actor,body,prev,hash,nsig,rsig)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ev["id"], ev["seq"], ev["node"], ev["ts"], ev["kind"], ev["subject"],
+                 ev["actor"], canonical(ev["body"]), ev["prev"], ev["hash"],
+                 ev["nsig"], ev["rsig"]),
+            )
         return ev
 
     # ---- reading ---------------------------------------------------------
