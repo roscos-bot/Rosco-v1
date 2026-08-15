@@ -879,7 +879,8 @@ class ConsoleServer(ThreadingHTTPServer):
         vault = Vault(log, key=self.console._vault_key(s.passphrase))
         held = set(Vault(log).secret_names())
         out = []
-        for p in ("openrouter", "anthropic", "openai", "gemini", "xai", "ollama"):
+        for p in ("openrouter", "anthropic", "openai", "gemini", "xai", "ollama",
+                  "higgsfield"):
             name = secret_name(p)
             row = {"provider": p, "secret": name, "stored": False,
                    "valid": None, "detail": ""}
@@ -1367,14 +1368,25 @@ def _probe_key(provider, key):
                           bearer=key, timeout=8)
         elif provider == "ollama":
             safehttp.call("http://localhost:11434/api/tags", method="GET", timeout=5)
+        elif provider == "higgsfield":
+            # No health endpoint, so probe the status route with a bogus request id:
+            # a bad key 401/403s, a good key 404s (auth passed, id just not found).
+            # Key format is "ID:SECRET"; the header is "Key ID:SECRET". Zero cost.
+            safehttp.call(
+                "https://platform.higgsfield.ai/requests/00000000-0000-0000-0000-000000000000",
+                method="GET", headers={"Authorization": "Key " + (key or "").strip()},
+                timeout=8)
         else:
             return None, "no probe"
         return True, "valid"
     except Exception as e:
         msg = _redact_probe_error(str(e), key)
         m = re.search(r"HTTP (\d+)", msg)
-        if m and m.group(1) in ("401", "403"):
+        code = m.group(1) if m else ""
+        if code in ("401", "403"):
             return False, "key rejected"      # definitively wrong credential
+        if provider == "higgsfield" and code in ("400", "404", "422"):
+            return True, "valid"              # auth passed; the bogus request id just 404s
         return None, msg                       # unreachable / limited / unknown
 
 
