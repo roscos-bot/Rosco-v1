@@ -142,6 +142,18 @@ def main() -> int:
         st, j, _ = req(port, "POST", "/api/cfg/nope", {},
                        headers={"Cookie": sess, "X-Rosco-CSRF": token})
         fails += not check("an unknown setting is a clean error", st, 400)
+        # The model dropdown asks a provider what it offers - gated, and never
+        # crashes when the provider is unreachable (no key / offline).
+        fails += not check("the model list is refused while locked",
+                           req(port, "GET", "/api/cfg/models?provider=openrouter")[0], 401)
+        st, j, _ = req(port, "GET", "/api/cfg/models?provider=xai",
+                       headers={"Cookie": sess})
+        fails += not check("a provider with no listing returns an empty list",
+                           j.get("models"), [])
+        st, j, _ = req(port, "GET", "/api/cfg/models?provider=anthropic",
+                       headers={"Cookie": sess})
+        fails += not check("a missing key is a note, not a crash",
+                           isinstance(j.get("models"), list) and "error" in j, True)
 
         print("\nCHAT WITH ROSCO")
         # Chat is a gated write (it spends on a model call), so it needs the

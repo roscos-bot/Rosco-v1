@@ -247,8 +247,8 @@ document.getElementById("chatin").addEventListener("keydown",function(e){if(e.ke
 
 // ---- settings: the CLI's config commands, as forms ----
 var CFG=[
- {t:"Models",a:"model",n:"Point a role at a model your key can serve.",
-  f:[{k:"role",l:"Role",sel:"roles"},{k:"model",l:"Model id",ph:"anthropic/claude-3.7-sonnet"},{k:"provider",l:"Provider",sel:"providers"}]},
+ {t:"Models",a:"model",n:"Pick a role, a provider, then a model your key can serve.",
+  f:[{k:"role",l:"Role",sel:"roles"},{k:"provider",l:"Provider",sel:"providers"},{k:"model",l:"Model",dyn:"models"}]},
  {t:"API keys",a:"secret",n:"Stored encrypted in the vault. Never shown again.",
   f:[{k:"name",l:"Key name",ph:"openrouter_api_key"},{k:"value",l:"Value",type:"password"}]},
  {t:"Spend cap",a:"budget",n:"A soft monthly cap. Warns at 80% and 100%; never blocks.",
@@ -292,19 +292,40 @@ function buildForms(){var host=document.getElementById("cfgForms");host.innerHTM
     var card=document.createElement("div");card.className="cfg";
     var h=document.createElement("h4");h.textContent=sec.t;card.appendChild(h);
     if(sec.n){var nn=document.createElement("div");nn.className="n";nn.textContent=sec.n;card.appendChild(nn);}
-    var inputs={};
+    var inputs={},dyn={};
     sec.f.forEach(function(fl){
       var lab=document.createElement("label");lab.textContent=fl.l;card.appendChild(lab);
+      if(fl.dyn){var wrap=document.createElement("div");card.appendChild(wrap);dyn[fl.k]=wrap;inputs[fl.k]=null;return;}
       var opts=optionsFor(fl),el;
       if(opts){el=document.createElement("select");opts.forEach(function(o){var op=document.createElement("option");op.value=o;op.textContent=o;el.appendChild(op);});}
       else if(fl.type==="textarea"){el=document.createElement("textarea");}
       else{el=document.createElement("input");el.type=fl.type||"text";if(fl.ph)el.placeholder=fl.ph;el.autocomplete="off";}
       card.appendChild(el);inputs[fl.k]=el;
     });
+    // Models: the model list comes live from the chosen provider. Refetch on
+    // provider change; if the provider has no listing, fall back to a text box.
+    if(dyn.model && inputs.provider){
+      var wrap=dyn.model;
+      var fillModels=function(){
+        wrap.innerHTML="<div class='n'>loading models…</div>";
+        api("/api/cfg/models?provider="+encodeURIComponent(inputs.provider.value)).then(function(r){
+          wrap.innerHTML="";
+          var ids=(r.ok&&r.j&&r.j.models)||[];
+          if(ids.length){var sel=document.createElement("select");
+            ids.forEach(function(id){var o=document.createElement("option");o.value=id;o.textContent=id;sel.appendChild(o);});
+            wrap.appendChild(sel);inputs.model=sel;
+          } else {var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";inp.autocomplete="off";
+            wrap.appendChild(inp);inputs.model=inp;
+            if(r.j&&r.j.error){var e=document.createElement("div");e.className="n";e.textContent=esc(r.j.error);wrap.appendChild(e);}
+          }
+        }).catch(function(){wrap.innerHTML="";var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";wrap.appendChild(inp);inputs.model=inp;});
+      };
+      inputs.provider.addEventListener("change",fillModels); fillModels();
+    }
     var btn=document.createElement("button");btn.className="go";btn.textContent="Apply";
     var res=document.createElement("div");res.className="res";
     btn.addEventListener("click",function(){
-      var body={};for(var k in inputs){var v=inputs[k].value;body[k]=v;}
+      var body={};for(var k in inputs){body[k]=inputs[k]?inputs[k].value:"";}
       if(body.businesses!==undefined) body.businesses=body.businesses.split(",").map(function(x){return x.trim();}).filter(Boolean);
       btn.disabled=true;res.className="res";res.textContent="working…";
       post("/api/cfg/"+sec.a,body).then(function(r){btn.disabled=false;

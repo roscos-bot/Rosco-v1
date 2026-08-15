@@ -277,6 +277,27 @@ class ConsoleServer(ThreadingHTTPServer):
             "people": sorted({h.person for h in People(log).handles()}),
         }
 
+    def models_available(self, s, provider):
+        """What a provider actually offers - for the model dropdown.
+
+        Fetches the provider's own model list (over safehttp: no redirects, so
+        the key can't be walked off). Uses the stored key where the provider
+        needs one; returns an empty list with a note when there is none or the
+        provider has no simple listing, and the form falls back to typing.
+        """
+        from .models import secret_name
+        log = self.console.open(s.passphrase)
+        key = ""
+        try:
+            key = Vault(log, key=self.console._vault_key(s.passphrase)).get_secret(
+                "system", secret_name(provider)) or ""
+        except Exception:
+            pass
+        try:
+            return {"models": _list_models(provider, key)}
+        except Exception as e:
+            return {"models": [], "error": str(e)}
+
     def cfg(self, s, action, body):
         """Apply one setting. Returns the console's own confirmation string."""
         pw = s.passphrase
@@ -317,6 +338,30 @@ class ConsoleServer(ThreadingHTTPServer):
                                  branch=body.get("branch", "main"),
                                  secret=body.get("secret", "github_token"))
         raise ValueError(f"no such setting {action!r}")
+
+
+def _list_models(provider, key):
+    """The model ids a provider currently serves. Over safehttp, no redirects."""
+    from . import safehttp
+    if provider == "openrouter":
+        d = safehttp.call("https://openrouter.ai/api/v1/models", method="GET",
+                          bearer=key or None)
+        return sorted({m.get("id", "") for m in (d.get("data") or []) if m.get("id")})
+    if provider == "anthropic":
+        if not key:
+            raise RuntimeError("no anthropic key stored")
+        d = safehttp.call("https://api.anthropic.com/v1/models", method="GET",
+                          headers={"x-api-key": key, "anthropic-version": "2023-06-01"})
+        return sorted({m.get("id", "") for m in (d.get("data") or []) if m.get("id")})
+    if provider == "openai":
+        if not key:
+            raise RuntimeError("no openai key stored")
+        d = safehttp.call("https://api.openai.com/v1/models", method="GET", bearer=key)
+        return sorted({m.get("id", "") for m in (d.get("data") or []) if m.get("id")})
+    if provider == "ollama":
+        d = safehttp.call("http://localhost:11434/api/tags", method="GET")
+        return sorted({m.get("name", "") for m in (d.get("models") or []) if m.get("name")})
+    return []          # google / xai: no simple public list - the form lets you type
 
 
 LOCAL_HOSTS = None  # set per-server from its port
@@ -398,6 +443,10 @@ class Handler(BaseHTTPRequestHandler):
         s = self._session()
         if s is None:
             return self._send(401, {"error": "locked"})
+        if self.path.split("?")[0] == "/api/cfg/models":
+            from urllib.parse import parse_qs, urlparse
+            provider = (parse_qs(urlparse(self.path).query).get("provider") or [""])[0]
+            return self._send(200, srv.models_available(s, provider))
         views = {"/api/queue": srv.queue, "/api/mesh": srv.mesh,
                  "/api/activity": srv.activity, "/api/cfg/state": srv.cfg_state,
                  "/api/grants": srv.grants_view, "/api/people": srv.people_view,
