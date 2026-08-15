@@ -31,7 +31,8 @@ from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, Models,  # noq
                           secret_name)
 from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
 from rosco.store import Log, Unauthorised  # noqa: E402
-from rosco.agent import Agent, seed_steelhaven  # noqa: E402
+from rosco.agent import Agent  # noqa: E402
+from rosco.knowledge import guardrails, ingest_text, seed  # noqa: E402
 from rosco.github import GitHub  # noqa: E402
 from rosco.tools import Tools  # noqa: E402
 from rosco.vault import INFERRED, OBSERVED, TOLD, Vault, derive_key  # noqa: E402
@@ -994,7 +995,7 @@ def main() -> int:
 
     print("\nHAVENMIND / THE AGENT LOOP")
     al = fresh("console")
-    seeded = seed_steelhaven(Vault(al))
+    seeded = seed(Vault(al), "steelhaven")
     fails += not check("HavenMind was taught its business", seeded >= 5, True)
     good = ("Wood rots and warps; our PermaHaven cold-formed-steel system does not, "
             "paired with continuous exterior insulation. Steel-Strong, Smart-Secure.")
@@ -1041,6 +1042,54 @@ def main() -> int:
     import rosco.classify as _cl
     fails += not check("the classifier has no private urllib model call",
                        hasattr(_cl, "_post") or hasattr(_cl, "_call"), False)
+
+    print("\nBUILDING OUT THE AGENTS")
+    # Every captain builds out the same way - facts + guardrails as data.
+    kl = fresh("console")
+    kv = Vault(kl)
+    for biz in ("steelhaven", "rum", "sugar-creek", "finance", "personal"):
+        fails += not check(f"{biz} has starter facts", seed(kv, biz) >= 1, True)
+    fails += not refuses("an unknown business cannot be seeded",
+                         lambda: seed(kv, "atlantis"), ValueError)
+    # CaptainMorgan is now grounded in RUM and enforces RUM's compliance guardrail.
+    cm = Agent("CaptainMorgan", kl, think=lambda s, u:
+               "We can get your suppressor to you fast - just come pick it up.")
+    rcm = cm.work("suppressor question", narrate=lambda s: None)
+    fails += not check("RUM flags an NFA item with no stamp/FFL",
+                       any("NFA" in w or "stamp" in w for w in rcm.warnings), True)
+    # A clean RUM draft that names the stamp passes.
+    cm2 = Agent("CaptainMorgan", kl, think=lambda s, u:
+                "Your suppressor transfers once the ATF tax stamp is approved and on file.")
+    fails += not check("a compliant RUM draft passes",
+                       Agent("CaptainMorgan", kl, think=lambda s, u:
+                             "Suppressor transfers need the approved stamp on file via our FFL."
+                             ).work("q", narrate=lambda s: None).warnings, [])
+    # A business's guardrails are its own - RUM's rules do not fire for SteelHaven.
+    fails += not check("guardrails are per-business",
+                       guardrails("rum") != guardrails("steelhaven"), True)
+
+    print("\nINGESTING A DOC")
+    # A markdown doc becomes lessons for the captain, told by Ross.
+    doc = ("# Field Crossing\n\n"
+           "160 Field Crossing Dr is the active build (160A/160B).\n\n"
+           "- A South Carolina buyer toured The Duo at the Highland open house.\n"
+           "- John Donati is CEO and brand steward.\n")
+    before = len(Vault(kl).recall(business="steelhaven", agent="HavenMind"))
+    got = ingest_text(Vault(kl), "steelhaven", doc, source="notes.md")
+    fails += not check("a doc splits into several lessons", got >= 3, True)
+    after = len(Vault(kl).recall(business="steelhaven", agent="HavenMind"))
+    fails += not check("and they land in the captain's vault", after - before, got)
+    fails += not check("headings and bullets are cleaned",
+                       any("South Carolina buyer" in l.text
+                           for l in Vault(kl).recall(business="steelhaven",
+                                                     agent="HavenMind")), True)
+    fails += not refuses("ingest to an unknown business is refused",
+                         lambda: ingest_text(Vault(kl), "atlantis", doc), ValueError)
+    fails += not refuses("a node without Ross's key cannot ingest",
+                         lambda: ingest_text(
+                             Vault(Log(Path(tempfile.mkdtemp()) / "n.db", "cloud",
+                                       trust=Trust(ross=ROSS_KEY.public))),
+                             "steelhaven", doc), Unauthorised)
 
     print("\nGITHUB")
     gl2 = fresh("console")

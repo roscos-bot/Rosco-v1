@@ -32,7 +32,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-from . import roster
+from . import knowledge, roster
 from .vault import OBSERVED, TOLD, Vault
 
 
@@ -47,25 +47,13 @@ class Result:
     proposed: bool = False
 
 
-# SteelHaven's hard guardrails, the ones the brand-voice work locked. These are
-# the deterministic catch behind the model - the model is TOLD them in its
-# grounding, and this refuses to let the catastrophic ones through even if it
-# forgets. Other businesses get their own set as they are taught.
-#
-# Matched against a SQUEEZED copy of the draft - unicode-normalised, lowercased,
-# stripped to letters and digits - so "FORT­IFIED", "f o r t i f i e d",
-# "radon-free", "radon​free" and the like cannot walk past a naive word-boundary
-# regex. An audit showed the first version was evadable exactly that way.
-_STEELHAVEN_SQUEEZED_FORBIDDEN = [
-    ("fortif", "mentions FORTIFIED - off-limits in all copy right now"),
-    ("radonfree", "implies radon-free - never claim that"),
-]
-_STEELHAVEN_STEEL = re.compile(r"steel", re.I)
-_STEELHAVEN_INSULATION = re.compile(r"insulat", re.I)
-
-
 def _squeeze(text: str) -> str:
-    """Unicode-normalised, letters/digits only - the form guardrails match on."""
+    """Unicode-normalised, letters/digits only - the form 'forbid' rules match on.
+
+    So "FORT­IFIED", "f o r t i f i e d", "radon-free", "radon​free" and the like
+    cannot walk past a naive word-boundary regex. An audit showed the first
+    version was evadable exactly that way.
+    """
     norm = unicodedata.normalize("NFKD", text or "").lower()
     return re.sub(r"[^a-z0-9]+", "", norm)
 
@@ -116,15 +104,19 @@ class Agent:
     # ---- guardrails ------------------------------------------------------
 
     def _check(self, draft: str) -> list[str]:
+        """The business's hard guardrails, from knowledge.py - data, not code.
+
+        Every business's rules run the same way, so a new one is an entry in
+        knowledge.KNOWLEDGE, never a branch here.
+        """
         warns = []
-        if self.business == "steelhaven":
-            squeezed = _squeeze(draft)
-            for needle, why in _STEELHAVEN_SQUEEZED_FORBIDDEN:
-                if needle in squeezed:
-                    warns.append(why)
-            if _STEELHAVEN_STEEL.search(draft) and not _STEELHAVEN_INSULATION.search(draft):
-                warns.append("a steel claim with no mention of continuous insulation - "
-                             "steel conducts, so always pair the two")
+        squeezed = _squeeze(draft)
+        for rule in knowledge.guardrails(self.business):
+            if rule[0] == "forbid" and rule[1] in squeezed:
+                warns.append(rule[2])
+            elif rule[0] == "pair" and re.search(rule[1], draft, re.I) \
+                    and not re.search(rule[2], draft, re.I):
+                warns.append(rule[3])
         return warns
 
     # ---- answering a read ------------------------------------------------
@@ -202,23 +194,3 @@ class Agent:
         return Result(agent=self.name, business=self.business, task=task,
                       draft=draft, warnings=warnings, grounded_on=len(lessons),
                       proposed=True)
-
-
-# The real brand facts, as SteelHaven lessons - the ingest that grounds
-# HavenMind. Told by Ross (they are firm), so seeding them needs his key.
-STEELHAVEN_FACTS = [
-    "PermaHaven is the hero: a patent-pending, factory-panelized, 100% cold-formed-steel building SYSTEM - not a construction method. Assemblies arrive factory-built; no field framing.",
-    "The core angle is cold-formed steel vs. wood: steel avoids rot, termites, mold, warping, fire and storm failure. Tagline: Steel-Strong, Smart-Secure.",
-    "Real proof points, safe to cite: measured ~2.9 ACH50 blower-door, 0.3 pCi/L radon at The Duo (EPA action level is 4.0), R6 continuous exterior insulation, noncombustible CFS framing, documented QA.",
-    "The Second Price(TM): purchase price vs. lifetime cost of ownership - first-time buyers' #1 fear is hidden post-purchase cost. Strongest differentiated lane.",
-    "Audience: first-time buyers in the St. Louis metro and Midwest, people overlooked by the housing market. Voice: warm, plain-spoken, on the buyer's side - the honest ally, not a salesman.",
-    "Never invent statistics. Never imply a home is radon-free. Do NOT mention FORTIFIED at all right now. Always pair a steel claim with continuous exterior insulation (steel conducts ~300-400x wood).",
-    "Never use AI-generated media - it reads as fake and kills trust. Real jobsite photos and B-roll only.",
-]
-
-
-def seed_steelhaven(vault: Vault) -> int:
-    """Teach HavenMind SteelHaven. Told by Ross - needs his key on the log."""
-    for fact in STEELHAVEN_FACTS:
-        vault.learn("HavenMind", "steelhaven", fact, basis=TOLD, source="ross")
-    return len(STEELHAVEN_FACTS)

@@ -476,11 +476,31 @@ class Console:
                        f"tool:{t.name}" + (f"  !! {t.caution}" if t.caution else ""))
         return "\n".join(out)
 
-    def ingest_steelhaven(self, passphrase: str) -> str:
-        """Teach HavenMind SteelHaven - the real brand facts, told by Ross."""
-        from .agent import seed_steelhaven
-        n = seed_steelhaven(Vault(self.open(passphrase)))
-        return f"taught HavenMind {n} SteelHaven facts. Try: rosco agent HavenMind \"...\""
+    def ingest(self, passphrase: str, business: str, path: str = "") -> str:
+        """Teach a business's captain. With a file, load it; without, the starter facts.
+
+        Both write TOLD lessons (Ross's word), so both need his key. A file is one
+        Ross points at on this machine - his own doc, read locally.
+        """
+        from . import knowledge
+        from .roster import business as biz_of
+        if biz_of(business) is None:
+            raise SystemExit(f"unknown business {business!r} - see the roster")
+        vault = Vault(self.open(passphrase))
+        captain = biz_of(business).captain
+        if path:
+            try:
+                text = Path(path).read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                raise SystemExit(f"could not read {path}: {e}")
+            n = knowledge.ingest_text(vault, business, text, source=Path(path).name)
+            return f"ingested {n} lessons from {path} into {business} ({captain})"
+        n = knowledge.seed(vault, business)
+        if not n:
+            return (f"no starter facts for {business} yet - point me at a file:\n"
+                    f"  rosco ingest {business} <file.md>")
+        return (f"seeded {n} starter facts for {business} ({captain}). "
+                f"Add your own:  rosco ingest {business} <file.md>")
 
     def run_agent(self, passphrase: str, name: str, task: str) -> str:
         """Run an agent on a task with the real model. Proposes; never ships."""
@@ -658,8 +678,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ag = sub.add_parser("agent", help="run an agent on a task (it drafts and proposes)")
     ag.add_argument("name"); ag.add_argument("task", nargs="+")
-    ing = sub.add_parser("ingest", help="teach an agent its business from known facts")
+    ing = sub.add_parser("ingest", help="teach a business's captain (starter facts, or a file)")
     ing.add_argument("business")
+    ing.add_argument("file", nargs="?", default="", help="a .md/.txt doc to load")
 
     gh = sub.add_parser("github", help="link businesses to repos; agents propose, you merge")
     gsub = gh.add_subparsers(dest="gcmd")
@@ -736,10 +757,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "agent":
             print(c.run_agent(_ask_pass(), args.name, " ".join(args.task)))
         elif args.cmd == "ingest":
-            if args.business == "steelhaven":
-                print(c.ingest_steelhaven(_ask_pass()))
-            else:
-                raise SystemExit(f"no seeded facts for {args.business!r} yet")
+            print(c.ingest(_ask_pass(), args.business, args.file or ""))
         elif args.cmd == "github":
             if args.gcmd == "link":
                 print(c.github_link(_ask_pass(), args.business, args.repo,

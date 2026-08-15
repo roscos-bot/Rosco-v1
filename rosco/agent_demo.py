@@ -15,8 +15,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from .agent import Agent, seed_steelhaven
+from .agent import Agent
 from .console import Console
+from .knowledge import seed
 from .vault import Vault
 
 PW = "the demo passphrase, long enough"
@@ -56,7 +57,7 @@ def main() -> int:
         log = c.open(PW)
 
         line("Teach HavenMind its business")
-        n = seed_steelhaven(Vault(log))
+        n = seed(Vault(log), "steelhaven")
         print(f"  ingested {n} SteelHaven brand facts into the vault (told by Ross)")
 
         agent = Agent("HavenMind", log, think=stub)
