@@ -829,6 +829,23 @@ function ingestCard(item){
   var skip=document.createElement("button");skip.className="ing-skip";skip.textContent="Skip";
   skip.addEventListener("click",function(){decideIngest(item.cand,"","skip",card);});
   row.appendChild(go);row.appendChild(skip);card.appendChild(row);
+  // Keyboard review: Tab cycles File-into → Ingest → Skip, Enter accepts the
+  // highlighted action, Esc drops focus. On the select, Enter stays native so a
+  // business pick commits before anything ingests. A confident item lands on
+  // Ingest so Enter files it; an unsure one lands on the picker to choose first.
+  var controls=[sel,go,skip];
+  card.addEventListener("keydown",function(e){
+    if(e.key==="Tab"){e.preventDefault();
+      var i=controls.indexOf(document.activeElement),dir=e.shiftKey?-1:1;
+      controls[(i+dir+controls.length)%controls.length].focus();
+    } else if(e.key==="Enter"){
+      if(document.activeElement===go){e.preventDefault();go.click();}
+      else if(document.activeElement===skip){e.preventDefault();skip.click();}
+    } else if(e.key==="Escape"&&document.activeElement&&document.activeElement.blur){
+      document.activeElement.blur();
+    }
+  });
+  setTimeout(function(){(item.business?go:sel).focus();},0);
   return card;
 }
 function decideIngest(cand,business,action,card){
