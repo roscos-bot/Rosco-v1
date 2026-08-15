@@ -1527,6 +1527,31 @@ def _extract_json_array(raw):
     return None
 
 
+def _salvage_objects(raw):
+    """When strict JSON parsing fails (an unescaped quote in a long summary, a
+    literal newline, stray prose), rescue the fields we need per object with
+    regex, so a good answer is never lost to a formatting slip. Returns a list of
+    dicts, or [] if nothing usable is there."""
+    out = []
+    blocks = re.findall(r"\{[^{}]*\}", raw or "", re.S) or ([raw] if raw else [])
+    for block in blocks:
+        sm = re.search(r'"summary"\s*:\s*"(.+?)"\s*(?:,\s*"\w+"\s*:|\}\s*$|\})', block, re.S)
+        if not sm:
+            continue
+        im = re.search(r'"i"\s*:\s*(\d+)', block)
+        bm = re.search(r'"business"\s*:\s*"([^"]*)"', block)
+        cm = re.search(r'"confidence"\s*:\s*([0-9.]+)', block)
+        wm = re.search(r'"why"\s*:\s*"([^"]*)"', block)
+        out.append({
+            "i": int(im.group(1)) if im else len(out) + 1,
+            "business": bm.group(1) if bm else "",
+            "confidence": float(cm.group(1)) if cm else 0.5,
+            "why": wm.group(1) if wm else "salvaged",
+            "summary": sm.group(1).strip(),
+        })
+    return out
+
+
 def _route_ingest(models, meter, chunks):
     """Rosco's proposed home for each candidate item, in ONE batched model call.
     Returns a per-chunk [{business, confidence, why}]. Degrades to empty
@@ -1556,9 +1581,11 @@ def _route_ingest(models, meter, chunks):
               "is, its key pieces/functions, and why it matters. This shorthand is "
               "the DURABLE KNOWLEDGE that gets learned — not the raw text — so make "
               "it self-contained and information-dense, the way you'd note a file so "
-              "you understand it later without re-reading it. Reply with a JSON "
-              "array ONLY, one object per document, in order: [{\"i\":1,\"business\""
-              ":\"slug\",\"confidence\":0.0,\"why\":\"...\",\"summary\":\"2-3 sentence shorthand\"}]")
+              "you understand it later without re-reading it. Reply with STRICT, "
+              "VALID JSON ONLY — a JSON array, one object per document, in order; "
+              "escape any double-quote inside a string as \\\" and keep each value "
+              "on one line: [{\"i\":1,\"business\":\"slug\",\"confidence\":0.0,"
+              "\"why\":\"...\",\"summary\":\"2-3 sentence shorthand\"}]")
     numbered = "\n".join(f"{i + 1}. {c[:3000]}" for i, c in enumerate(chunks))
     try:
         raw, pt, ct = _provider_call(choice.provider, choice.model, key,
@@ -1573,9 +1600,11 @@ def _route_ingest(models, meter, chunks):
             p["why"] = "routing call failed: " + str(e)[:140]
         return blank
     arr = _extract_json_array(raw)
-    if arr is None:
+    if not arr:
+        arr = _salvage_objects(raw)        # rescue slightly-malformed JSON before giving up
+    if not arr:
         detail = ("model returned nothing" if not (raw or "").strip()
-                  else "no JSON array in reply: " + raw.strip().replace(chr(10), " ")[:120])
+                  else "no JSON in reply: " + raw.strip().replace(chr(10), " ")[:120])
         for p in blank:
             p["why"] = detail
         return blank
