@@ -58,6 +58,20 @@ def _squeeze(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", norm)
 
 
+# When an agent grounds, inject only the lessons relevant to the task at hand, up
+# to this many characters — not the whole vault. Rosco (business '*') reads across
+# everything, so once its own code is ingested the vault is large; dumping all of
+# it into every prompt would blow the context window and the bill. A small vault
+# fits under the cap and is untouched; the cap only bites once there's a lot.
+GROUNDING_CAP = 12000
+
+_STOP = frozenset(
+    "the a an of to in on at for and or but is are was were be been being this "
+    "that these those it its as by with from into about how what when where why "
+    "who which do does did done can could should would will i you he she we they "
+    "me my your our their not no yes if then than so up out get show read".split())
+
+
 class Agent:
     """One agent, able to do a piece of its business's work.
 
@@ -91,6 +105,35 @@ class Agent:
         if self.business == "*":
             return self.vault.recall()
         return self.vault.recall(business=self.business, agent=self.name)
+
+    def _relevant(self, lessons, query, cap: int = GROUNDING_CAP):
+        """The lessons most worth grounding on for THIS query, up to a char budget.
+
+        Lexical and dependency-free: score each lesson by how many query terms it
+        contains, tilt toward what Ross TOLD over what was merely inferred, then
+        take the best until the budget is spent. With no useful query terms it
+        degrades to trust-order (told first), so even a vague ask grounds on the
+        firmest facts rather than nothing. A vault that fits under the cap is
+        returned whole - this only prunes once there's a lot (e.g. ingested code).
+        """
+        if not lessons or sum(len(l.text) for l in lessons) <= cap:
+            return lessons
+        terms = {w for w in re.findall(r"[a-z0-9_]+", (query or "").lower())
+                 if len(w) > 2 and w not in _STOP}
+        weight = {TOLD: 3, OBSERVED: 1}
+
+        def score(l):
+            text = l.text.lower()
+            hits = sum(text.count(t) for t in terms) if terms else 0
+            return hits * 2 + weight.get(l.basis, 0)
+
+        out, used = [], 0
+        for l in sorted(lessons, key=score, reverse=True):
+            out.append(l)
+            used += len(l.text)
+            if used >= cap:
+                break
+        return out
 
     def _system(self, lessons) -> str:
         told = [l for l in lessons if l.basis == TOLD]
@@ -144,7 +187,7 @@ class Agent:
         the console chat uses.
         """
         narrate(f"{self.name} answering for {self.business}")
-        lessons = self.knows()
+        lessons = self._relevant(self.knows(), question)
         system = (self._system(lessons) +
                   "\n\nAnswer the person directly and briefly. If you would need "
                   "to look something up that you do not have, say so plainly.")
@@ -248,7 +291,7 @@ class Agent:
 
     def work(self, task: str, *, narrate=lambda s: None) -> Result:
         narrate(f"{self.name} · {self.business} — taking the task")
-        lessons = self.knows()
+        lessons = self._relevant(self.knows(), task)
         narrate(f"  grounding on {len(lessons)} lesson(s) from the vault")
 
         narrate("  thinking with the model…")
