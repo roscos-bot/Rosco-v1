@@ -25,6 +25,7 @@ from rosco.grants import (ANSWER, ANY, ASK, DECLINE, DO, GET,  # noqa: E402
                           Request)
 from rosco.identity import CERTAIN, CLAIMED, UNKNOWN, People  # noqa: E402
 from rosco.keys import Signer, Trust  # noqa: E402
+from rosco.meter import ALL, Meter, cost  # noqa: E402
 from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, Models,  # noqa: E402
                           secret_name)
 from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
@@ -979,6 +980,44 @@ def main() -> int:
                        "system:openrouter_api_key" in con2.secret_list(), True)
     fails += not check("and the console's chains verify clean",
                        "sound" in con2.verify(), True)
+
+    print("\nTHE SOFT CAP")
+    ml2 = fresh("console")
+    mt = Meter(ml2)
+    M = "2026-08"
+    fails += not refuses("only Ross sets a budget",
+                         lambda: mt.set_budget("*", 100, by="rosco"))
+    fails += not refuses("a budget must be a positive amount",
+                         lambda: mt.set_budget("*", -5))
+    fails += not check("an unknown model is priced, not free",
+                       cost("openrouter", "brand/new", 1_000_000, 0)[1], False)
+    fails += not check("ollama is genuinely free",
+                       cost("ollama", "llama3.1:8b", 9_000_000, 9_000_000)[0], 0.0)
+    mt.set_budget(ALL, 10)
+    mt.record("anthropic", "claude-opus-5", "workhorse", 400_000, 100_000,
+              at=f"{M}-15T10:00:00Z")
+    r = mt.reading(ALL, month=M)
+    fails += not check("spend accrues from real token counts", r.spent > 10, True)
+    fails += not check("and reads as over the soft cap", r.over, True)
+    fired = mt.check_and_alert(month=M)
+    fails += not check("both thresholds fire when leapt at once", len(fired), 2)
+    fails += not check("and they do not fire again",
+                       mt.check_and_alert(month=M), [])
+    # The whole point: never blocks.
+    ev = mt.record("anthropic", "claude-opus-5", "workhorse", 999_999, 999_999,
+                   at=f"{M}-17T10:00:00Z")
+    fails += not check("a call over the cap is still recorded (never blocked)",
+                       ev["kind"], "model.billed")
+    # An unpriced call is surfaced, so an under-estimate is visible.
+    mt.record("openrouter", "brand/new", "chat", 500_000, 0, at=f"{M}-18T10:00:00Z")
+    fails += not check("unpriced calls are counted and flagged",
+                       mt.reading(ALL, month=M).unpriced, 1)
+    # A different month is a clean slate.
+    fails += not check("last month's spend does not haunt this one",
+                       mt.reading(ALL, month="2026-09").spent, 0.0)
+    fails += not refuses("a malformed billing row cannot be written",
+                         lambda: ml2.append("model.billed", {"provider": "x"}),
+                         Unauthorised)
 
     print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}\n")
     return 1 if fails else 0

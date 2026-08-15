@@ -101,8 +101,10 @@ class ModelClassifier:
     messages, so keeping it off the middleman is the right default.
     """
 
-    def __init__(self, models: Models, *, node: str = "", timeout: int = TIMEOUT) -> None:
+    def __init__(self, models: Models, *, meter=None, node: str = "",
+                 timeout: int = TIMEOUT) -> None:
         self.models = models
+        self.meter = meter
         self.node = node
         self.timeout = timeout
 
@@ -119,13 +121,24 @@ class ModelClassifier:
             return None
 
         try:
-            raw = _call(choice.provider, choice.model, key,
-                        SYSTEM % caps.catalogue_for_prompt(), USER % body,
-                        self.timeout)
+            raw, pt, ct = _call(choice.provider, choice.model, key,
+                                SYSTEM % caps.catalogue_for_prompt(), USER % body,
+                                self.timeout)
         except Exception:
             # Network, auth, rate limit, malformed response - all the same
             # answer. The doorway asks Ross. It never guesses and never stops.
             return None
+
+        # Record what it cost, and warn Ross if a soft line was crossed. Wrapped
+        # so a metering failure never breaks classification - bookkeeping must
+        # not take down the job it is counting.
+        if self.meter is not None:
+            try:
+                self.meter.record(choice.provider, choice.model, WORKHORSE, pt, ct)
+                self.meter.check_and_alert()
+            except Exception:
+                pass
+
         return _parse(raw)
 
 
@@ -191,14 +204,19 @@ def _post(url: str, headers: dict, payload: dict, timeout: int) -> dict:
 
 
 def _call(provider: str, model: str, key: str, system: str, user: str,
-          timeout: int) -> str:
+          timeout: int) -> tuple[str, int, int]:
+    """(text, prompt_tokens, completion_tokens). Token counts are what the
+    provider reported, or 0 if it said nothing - the meter treats a call it
+    cannot size as a call, not as free."""
     if provider == ANTHROPIC:
         d = _post("https://api.anthropic.com/v1/messages",
                   {"x-api-key": key, "anthropic-version": "2023-06-01"},
                   {"model": model, "max_tokens": 300, "system": system,
                    "messages": [{"role": "user", "content": user}]}, timeout)
         parts = d.get("content") or []
-        return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        u = d.get("usage") or {}
+        return text, int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0))
 
     if provider == OLLAMA:
         # On-machine, no key, no internet. What a sealed or cut-off node uses.
@@ -206,7 +224,8 @@ def _call(provider: str, model: str, key: str, system: str, user: str,
                   {"model": model, "stream": False, "format": "json",
                    "messages": [{"role": "system", "content": system},
                                 {"role": "user", "content": user}]}, timeout)
-        return (d.get("message") or {}).get("content", "")
+        return ((d.get("message") or {}).get("content", ""),
+                int(d.get("prompt_eval_count", 0)), int(d.get("eval_count", 0)))
 
     # OpenRouter, and anything else speaking the OpenAI chat shape.
     url = ("https://openrouter.ai/api/v1/chat/completions" if provider == OPENROUTER
@@ -215,7 +234,9 @@ def _call(provider: str, model: str, key: str, system: str, user: str,
               {"model": model, "max_tokens": 300, "temperature": 0,
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}]}, timeout)
+    u = d.get("usage") or {}
+    pt, ct = int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
     choices = d.get("choices") or []
     if not choices:
-        return ""
-    return (choices[0].get("message") or {}).get("content", "")
+        return "", pt, ct
+    return (choices[0].get("message") or {}).get("content", ""), pt, ct

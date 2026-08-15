@@ -42,6 +42,7 @@ from .asks import ANSWERS, Asks
 from .grants import ANY, DO, GET, SCOPE_ALL, SCOPES, Grants
 from .identity import People
 from .keys import ROSS, Signer, Trust
+from .meter import ALL, Meter
 from .models import ROLES, SYSTEM, Models, secret_name
 from .nodes import RENDEZVOUS, SITE, Nodes
 from .store import Log, now
@@ -183,6 +184,12 @@ class Console:
             for g in gaps:
                 lines.append(f"  !! no API key for {g} - `rosco secret set system "
                              f"{secret_name(g)}`")
+        meter = Meter(log)
+        if meter.budgets() or meter.reading(ALL).calls:
+            lines.append("")
+            lines.append(meter.report())
+        for al in meter.check_and_alert():
+            lines.append(f"  !! {al.message()}")
         if problems:
             lines.append("")
             lines.append(f"  !! verify(): {len(problems)} problem(s) - run `rosco verify`")
@@ -346,6 +353,36 @@ class Console:
         return (f"registered {name} ({site}). Now put its public key in "
                 f"trust.json on every machine, by hand.")
 
+    def budget_set(self, passphrase: str, scope: str, monthly_usd: str) -> str:
+        log = self.open(passphrase)
+        Meter(log).set_budget(scope, float(monthly_usd))
+        return (f"soft cap: ${float(monthly_usd):,.2f}/month on "
+                f"{scope if scope != ALL else 'all providers'}. "
+                f"Nothing will be blocked; you'll be warned at 80% and 100%.")
+
+    def budget_show(self) -> str:
+        return Meter(self.open()).report()
+
+    def doorway(self, passphrase: str | None = None):
+        """The doorway, wired to the chosen model and the spend meter.
+
+        This is what an adapter (Telegram, email) hands arrivals to. It needs
+        the vault key to read provider credentials, so a sealed doorway falls
+        back to Keywords - which sends nearly everything to Ross, the right
+        behaviour for a node that cannot reach a model.
+        """
+        from .arrive import Doorway, Keywords
+        from .classify import ModelClassifier
+
+        log = self.open(passphrase)
+        meter = Meter(log)
+        if passphrase is not None:
+            models = Models(log, Vault(log, key=self._vault_key(passphrase)))
+            classifier = ModelClassifier(models, meter=meter, node=NODE)
+        else:
+            classifier = Keywords()
+        return Doorway(log, classifier)
+
     def vault_read(self, business: str) -> str:
         return Vault(self.open()).to_markdown(business)
 
@@ -442,6 +479,12 @@ def main(argv: list[str] | None = None) -> int:
     no.add_argument("--role", choices=(SITE, RENDEZVOUS), default=SITE)
     no.add_argument("--reach", default="")
 
+    bu = sub.add_parser("budget", help="soft monthly spend cap (never blocks)")
+    bsub = bu.add_subparsers(dest="bcmd")
+    bs = bsub.add_parser("set")
+    bs.add_argument("scope", help="a provider name, or * for all")
+    bs.add_argument("usd", help="monthly dollars")
+
     va = sub.add_parser("vault", help="what the agents have learned")
     va.add_argument("business")
 
@@ -500,6 +543,11 @@ def main(argv: list[str] | None = None) -> int:
                                  role=args.role, reach=args.reach))
             else:
                 print(Nodes(c.open()).health())
+        elif args.cmd == "budget":
+            if args.bcmd == "set":
+                print(c.budget_set(_ask_pass(), args.scope, args.usd))
+            else:
+                print(c.budget_show())
         elif args.cmd == "vault":
             print(c.vault_read(args.business))
         elif args.cmd == "verify":

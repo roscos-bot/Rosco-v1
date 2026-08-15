@@ -94,6 +94,10 @@ KINDS: dict[str, str] = {
     "vault.learned": BASIS,           # 'Ross told me' needs Ross
     "vault.corrected": BASIS,         # an agent may retract its own inference
     "vault.forgot": AUTHORED,         # erasure is authority, always
+
+    "budget.set": AUTHORED,           # a spend cap is Ross's policy
+    "model.billed": NODE,             # what a call cost - agents record it
+    "spend.alerted": NODE,            # a soft threshold was crossed, warned once
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -145,6 +149,10 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "vault.learned": ("agent", "business", "text"),
     "vault.corrected": ("replaces", "text"),
     "vault.forgot": ("lesson",),
+
+    "budget.set": ("scope", "monthly_usd"),
+    "model.billed": ("provider", "model", "prompt_tokens", "completion_tokens"),
+    "spend.alerted": ("scope", "period", "threshold"),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a
