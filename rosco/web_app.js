@@ -297,14 +297,20 @@ function buildAgentModel(n, host){
     var provs=st.providers||["openrouter","anthropic","openai","gemini","xai","ollama"];
     provs.forEach(function(p){var o=document.createElement("option");o.value=p;o.textContent=p;provSel.appendChild(o);});
     var pin=(st.pins&&st.pins[n.id])||null;
+    // What this agent uses RIGHT NOW: its pin if any, else its role default —
+    // chat for Rosco (the Admiral), workhorse for the working agents. The dropdowns
+    // preselect that, so they show the real current model, not the first in the list.
+    var role=(n.id==="Rosco"||n.rank==="Admiral")?"chat":"workhorse";
+    var eff=pin||((st.models&&st.models[role])||{});
     if(pin){curLine.className="amcur";
       curLine.innerHTML="Pinned to <b>"+esc(pin.model)+"</b> via "+esc(pin.provider)+" &middot; <span class='unpin'>unpin</span>";
       curLine.querySelector(".unpin").addEventListener("click",function(){
         post("/api/cfg/unpin",{agent:n.id}).then(function(r){ if(r.ok)showNode(n);
           else{res.className="res err";res.textContent=(r.j&&r.j.error)||"failed";}});});
-    } else {curLine.className="amcur n"; curLine.textContent="Using its role default — not pinned.";}
-    provSel.value=pin?pin.provider:"openrouter";
-    fillModels(pin?pin.model:"");
+    } else {curLine.className="amcur n";
+      curLine.innerHTML="Using its "+esc(role)+" role default: <b>"+esc(eff.model||"?")+"</b> — not pinned.";}
+    provSel.value=eff.provider||"openrouter";
+    fillModels(eff.model||"");
   });
   provSel.addEventListener("change",function(){fillModels("");});
   pinBtn.addEventListener("click",function(){
