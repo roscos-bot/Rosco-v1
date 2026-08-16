@@ -271,6 +271,7 @@ class TelegramBot:
         if not self._known(sender_id):
             self.send(chat_id, _REPLIES.get(ASK, "I don't recognise this account."))
             return
+        self.send(chat_id, "\U0001f4e5 Got it — reading the image, one sec…")   # quick ack; the read follows
         try:
             b64, media = self._download_photo((photos[-1] or {}).get("file_id", ""))
         except Exception:
