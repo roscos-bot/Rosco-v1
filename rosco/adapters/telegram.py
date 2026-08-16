@@ -175,8 +175,13 @@ class TelegramBot:
                   "then start again.")
             return
         print(f"listening on Telegram as @{who} as of {now()}. Ctrl-C to stop.")
-        print("message @%s from your phone; run `rosco pair` to link it." % who)
-        print("authority stays at the console - this only carries messages.")
+        if any(h.channel == CHANNEL for h in self.people.handles()):
+            print("your phone is paired — text it or send it photos. Authority stays "
+                  "at the console; this only carries messages.")
+        else:
+            print("not paired yet: from your phone message @%s, then run "
+                  "`python -m rosco pair` AT THIS CONSOLE (not on your phone) to link "
+                  "it." % who)
         warned_conflict = False
         while True:
             try:
