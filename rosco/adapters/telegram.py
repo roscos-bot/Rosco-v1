@@ -212,15 +212,24 @@ class TelegramBot:
         chat_id = (msg.get("chat") or {}).get("id", sender_id)
         text = msg.get("text") or ""
         photos = msg.get("photo") or []
+        doc = msg.get("document") or {}
+        caption = msg.get("caption") or ""
         if sender_id is None:
             return
         sender_id = str(sender_id)
         if not text.strip():
-            # A photo gets READ by the vision model rather than silently dropped —
-            # that empty-text return is why an image sent to the bot used to get no
-            # reply at all. Anything else we don't handle (sticker, voice) is ignored.
+            # An image gets READ by the vision model, not silently dropped — that
+            # empty-text return is why a picture used to get no reply. A screenshot
+            # can arrive as a compressed 'photo' OR as an uncompressed image
+            # 'document' (sent as a file), so handle both.
             if photos:
-                self._handle_photo(sender_id, chat_id, photos, msg.get("caption") or "")
+                self._see_file(sender_id, chat_id, (photos[-1] or {}).get("file_id", ""), caption)
+            elif doc and str(doc.get("mime_type", "")).lower().startswith("image/"):
+                self._see_file(sender_id, chat_id, doc.get("file_id", ""), caption,
+                               media=doc.get("mime_type", ""))
+            elif self._known(sender_id):
+                self.send(chat_id, "I got that, but I can only read text or an image "
+                                   "right now — send it as text or a picture.")
             return
 
         # Pairing handshake. If Ross has a pairing open at the console and this
@@ -264,18 +273,19 @@ class TelegramBot:
         self.send(chat_id, "Paired. This account is now recognised as Ross.")
         return True
 
-    def _handle_photo(self, sender_id, chat_id, photos, caption) -> None:
-        """Read an image with the vision model and reply. A read, but it spends a
-        model call, so only for a recognised sender (a stranger's image is ignored
-        the same as any ungranted request). Ross's caption, if any, is the prompt."""
+    def _see_file(self, sender_id, chat_id, file_id, caption, media="") -> None:
+        """Read an image (a 'photo' or an image 'document') with the vision model
+        and reply. A read, but it spends a model call, so only for a recognised
+        sender. Ross's caption, if any, is the prompt."""
         if not self._known(sender_id):
             self.send(chat_id, _REPLIES.get(ASK, "I don't recognise this account."))
             return
         self.send(chat_id, "\U0001f4e5 Got it — reading the image, one sec…")   # quick ack; the read follows
         try:
-            b64, media = self._download_photo((photos[-1] or {}).get("file_id", ""))
+            b64, dmedia = self._download_photo(file_id)
         except Exception:
-            b64, media = "", ""
+            b64, dmedia = "", ""
+        media = media or dmedia
         if not b64:
             self.send(chat_id, "I couldn't download that image.")
             return
@@ -300,7 +310,7 @@ class TelegramBot:
         # a capture, not a throwaway; Rosco reviews/places it later.
         tail = ""
         if answer and not answer.startswith("("):
-            if self._queue_capture(answer, "telegram:photo"):
+            if self._queue_capture(answer, "telegram:image"):
                 tail = "\n\n\U0001f4e5 Saved to your ingest queue to review."
         self.send(chat_id, answer + tail)
 
