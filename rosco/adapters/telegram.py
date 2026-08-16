@@ -234,7 +234,14 @@ class TelegramBot:
         # The doorway's reply carries the fulfilled work (an answer, or a
         # "drafted for Ross" note) when a fulfiller is wired; fall back to the
         # plain per-outcome line only when it left the reply empty.
-        self.send(chat_id, handling.reply or _REPLIES.get(handling.outcome, _REPLIES[ASK]))
+        reply = handling.reply or _REPLIES.get(handling.outcome, _REPLIES[ASK])
+        # When the bot couldn't act on it (ASK) but a RECOGNISED sender sent it,
+        # don't just let it become an unanswered ask — capture it to the ingest
+        # hopper so Rosco can learn/place it on review. Telegram is a capture inbox.
+        if handling.outcome == ASK and self._known(sender_id):
+            if self._queue_capture(text, "telegram:note"):
+                reply += "  \U0001f4e5 Saved to your ingest queue to review."
+        self.send(chat_id, reply)
 
         # A heads-up to Ross when something NEW lands in his queue - read-only.
         # Only a fresh ask, never a repeat: otherwise an enrolled account could
@@ -261,9 +268,7 @@ class TelegramBot:
         """Read an image with the vision model and reply. A read, but it spends a
         model call, so only for a recognised sender (a stranger's image is ignored
         the same as any ungranted request). Ross's caption, if any, is the prompt."""
-        known = any(h.channel == CHANNEL and str(h.address) == sender_id
-                    for h in self.people.handles())
-        if not known:
+        if not self._known(sender_id):
             self.send(chat_id, _REPLIES.get(ASK, "I don't recognise this account."))
             return
         try:
@@ -289,7 +294,33 @@ class TelegramBot:
         except Exception as e:
             self.send(chat_id, "I couldn't read the image — " + str(e)[:120])
             return
-        self.send(chat_id, (answer or "").strip() or "(the vision model returned nothing)")
+        answer = (answer or "").strip() or "(the vision model returned nothing)"
+        # Capture what it read into the ingest hopper — an image sent to the bot is
+        # a capture, not a throwaway; Rosco reviews/places it later.
+        tail = ""
+        if answer and not answer.startswith("("):
+            if self._queue_capture(answer, "telegram:photo"):
+                tail = "\n\n\U0001f4e5 Saved to your ingest queue to review."
+        self.send(chat_id, answer + tail)
+
+    def _known(self, sender_id) -> bool:
+        """Is this Telegram id a recognised person (Ross paired, or enrolled)?"""
+        return any(h.channel == CHANNEL and str(h.address) == str(sender_id)
+                   for h in self.people.handles())
+
+    def _queue_capture(self, text, source) -> int:
+        """Drop content Ross sent the bot into the ingest hopper for review. A NODE
+        write (ingest.proposed) — no learning happens until he reviews it."""
+        text = (text or "").strip()
+        if not text:
+            return 0
+        try:
+            from ..ingest import Ingest
+            return Ingest(self.console.open(self._passphrase)).add(
+                [{"text": text, "business": "", "confidence": 0.0,
+                  "why": "from telegram", "summary": ""}], source=source)
+        except Exception:
+            return 0
 
     def _download_photo(self, file_id):
         """(base64, media_type) for a Telegram photo, or ('', '') if unavailable.
