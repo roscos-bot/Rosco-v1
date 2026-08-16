@@ -304,8 +304,11 @@ class ConsoleServer(ThreadingHTTPServer):
                     "invent a model name, even if an earlier message did.")
         except Exception:
             pass
+        # The last couple of turns, so a bare "go" / "yes" re-reads what Rosco just
+        # offered to pull instead of stalling.
+        recent = " ".join(t.get("text", "") for t in self._chat[-2:])
         try:
-            g_ctx = self._google_context(log, s.passphrase, msg)
+            g_ctx = self._google_context(log, s.passphrase, msg, recent)
             if g_ctx:
                 ctx += "\n\n" + g_ctx
         except Exception:
@@ -434,7 +437,7 @@ class ConsoleServer(ThreadingHTTPServer):
         except Exception:
             pass
 
-    def _google_context(self, log, passphrase, msg):
+    def _google_context(self, log, passphrase, msg, recent=""):
         """When the message asks about Google, fetch a live slice (Drive files,
         recent inbox, upcoming calendar) for the agent to answer from. Returns ''
         when nothing is connected or relevant. Personal account only for now -
@@ -451,6 +454,21 @@ class ConsoleServer(ThreadingHTTPServer):
                             "email address", "number for", "reach ", "how do i reach"))
         wants_chat = any(w in low for w in ("google chat", "chat space", "chat message",
                          "in the space", " spaces", "marketing space"))
+        if not (wants_drive or wants_mail or wants_cal or wants_contact or wants_chat):
+            # A follow-up ("go", "yes", "another 10", "pull it", "the list") carries
+            # no keyword of its own, so re-read what was JUST being discussed —
+            # otherwise Rosco offers to pull something, Ross says "go", and it stalls
+            # because nothing re-triggered the fetch.
+            cont = (len(low.split()) <= 5 or any(w in low for w in
+                    ("go", "yes", "do it", "another", "more", "again", "next", "them",
+                     "those", "the list", "pull", "recent", "items", "list them")))
+            r = (recent or "").lower()
+            if cont and r:
+                wants_drive = any(w in r for w in ("drive", "file", "folder", "document",
+                                                   "spreadsheet", "sheet"))
+                wants_mail = any(w in r for w in ("email", "gmail", "inbox", " mail"))
+                wants_cal = any(w in r for w in ("calendar", "schedule", "meeting",
+                                                 "event", "appointment"))
         if not (wants_drive or wants_mail or wants_cal or wants_contact or wants_chat):
             return ""
         account = "personal"

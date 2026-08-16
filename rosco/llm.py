@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from . import safehttp
 from .models import (ANTHROPIC, GEMINI, OLLAMA, OPENAI, OPENROUTER, WORKHORSE,
-                     Models, secret_name)
+                     XAI, Models, secret_name)
 
 
 class NoModel(RuntimeError):
@@ -93,6 +93,7 @@ def _provider_call(provider, model, key, system, user, max_tokens, temperature,
                 int(d.get("prompt_eval_count", 0)), int(d.get("eval_count", 0)))
 
     url = ("https://openrouter.ai/api/v1/chat/completions" if provider == OPENROUTER
+           else "https://api.x.ai/v1/chat/completions" if provider == XAI
            else "https://api.openai.com/v1/chat/completions")
     d = safehttp.call(
         url, method="POST", bearer=key, timeout=timeout,
@@ -160,6 +161,7 @@ def _provider_vision(provider, model, key, prompt, image_b64, media_type,
                 int(u.get("candidatesTokenCount", 0)))
     # openrouter / openai — content array with an image_url data URI
     url = ("https://openrouter.ai/api/v1/chat/completions" if provider == OPENROUTER
+           else "https://api.x.ai/v1/chat/completions" if provider == XAI
            else "https://api.openai.com/v1/chat/completions")
     d = safehttp.call(
         url, method="POST", bearer=key, timeout=timeout,
