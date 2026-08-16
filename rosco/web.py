@@ -376,13 +376,20 @@ class ConsoleServer(ThreadingHTTPServer):
             t = a.get("type")
             if t in ("gmail_draft", "ingest"):   # a draft / a queue-for-review — safe now
                 shown += "\n\n" + self._do_action(log, s.passphrase, a)
-            elif t in ("calendar_create", "chat_post", "github_pr", "browser", "image"):
+            elif t in ("calendar_create", "calendar_series", "chat_post", "github_pr",
+                       "browser", "image"):
                 self._pending = a
                 if t == "image":
                     shown += ("\n\n\U0001f5bc️ Ready to generate \""
                               + str(a.get("prompt", ""))[:80]
                               + "\" via Higgsfield (spends a credit; ~15-30s). Reply "
                               + "'yes' to make it.")
+                elif t == "calendar_series":
+                    evs = a.get("events") or []
+                    first = (evs[0].get("start", "") if evs and isinstance(evs[0], dict) else "")
+                    shown += ("\n\n\U0001f4c5 Ready to add " + str(len(evs))
+                              + " events to your calendar (starting " + str(first)[:16]
+                              + "). Reply 'yes' to add them all.")
                 elif t == "calendar_create":
                     shown += ("\n\n\U0001f4c5 Ready to add \"" + str(a.get("summary", ""))
                               + "\" (" + str(a.get("start", ""))[:16]
@@ -620,6 +627,22 @@ class ConsoleServer(ThreadingHTTPServer):
                                   str(a.get("location", "")), str(a.get("description", "")))
                 return ("\U0001f4c5 Added to your calendar: " + str(a.get("summary", ""))
                         + " (" + str(a.get("start", ""))[:16] + ").")
+            if t == "calendar_series":
+                evs = a.get("events") or []
+                made = 0
+                for e in evs[:30]:              # bound a runaway series
+                    if not isinstance(e, dict) or not str(e.get("start", "")).strip():
+                        continue
+                    try:
+                        g.calendar_create(token, str(e.get("summary", "")), str(e.get("start", "")),
+                                          str(e.get("end", "")) or str(e.get("start", "")),
+                                          str(e.get("location", "")), str(e.get("description", "")))
+                        made += 1
+                    except Exception:
+                        pass
+                if not made:
+                    return "(couldn't add any of those events — check the dates.)"
+                return f"\U0001f4c5 Added {made} events to your calendar."
             if t == "chat_post":
                 space = str(a.get("space", ""))
                 if not space.startswith("spaces/"):

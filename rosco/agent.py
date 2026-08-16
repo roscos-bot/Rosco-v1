@@ -58,6 +58,21 @@ def _squeeze(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", norm)
 
 
+def _strip_toolcalls(text: str) -> str:
+    """Remove any native tool-call markup a model leaked into its reply.
+
+    grok (xai) emits <xai:function_call name="web_search">…</xai:function_call> as
+    TEXT when it wants a tool this system doesn't wire — Rosco drives side effects
+    through the ACTION protocol, not native tool-calls, so that markup is garbage
+    in the reply. Strip whole blocks, then any stray tags left by a truncated one.
+    """
+    t = re.sub(r"<[\w:]*function_call\b.*?</[\w:]*function_call>", "", text or "",
+               flags=re.S | re.I)
+    t = re.sub(r"</?[\w:]*(?:function_call|tool_call|parameter|invoke|antml)\b[^>]*>",
+               "", t, flags=re.I)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
 # When an agent grounds, inject only the lessons relevant to the task at hand, up
 # to this many characters — not the whole vault. Rosco (business '*') reads across
 # everything, so once its own code is ingested the vault is large; dumping all of
@@ -274,6 +289,7 @@ class Agent:
                 "one JSON action the system will carry out:\n"
                 "ACTION: {\"type\":\"gmail_draft\",\"to\":\"\",\"subject\":\"\",\"body\":\"\",\"reply_to_email\":<the list number they named, or omit>}\n"
                 "ACTION: {\"type\":\"calendar_create\",\"summary\":\"\",\"start\":\"<local datetime like 2026-08-19T15:00:00, no offset>\",\"end\":\"<same>\",\"location\":\"\"}\n"
+                "ACTION: {\"type\":\"calendar_series\",\"events\":[{\"summary\":\"\",\"start\":\"<local datetime>\",\"end\":\"<same>\",\"location\":\"\"}, ...]}  — a WHOLE set of events at once (e.g. a biweekly plan), confirmed together. Use this instead of many calendar_create when they want a recurring/multi-date plan; give every date explicitly in `events`.\n"
                 "ACTION: {\"type\":\"chat_post\",\"space\":\"<space display name>\",\"text\":\"\"}\n"
                 "ACTION: {\"type\":\"github_pr\",\"repo\":\"<repo name>\",\"path\":\"<file path>\",\"content\":\"<the FULL new file contents>\",\"message\":\"<commit message>\",\"title\":\"<PR title>\"}\n"
                 "ACTION: {\"type\":\"ingest\",\"drive\":\"<a Drive file name>\"}  (or \"repo\"+\"path\" for a GitHub file, or \"text\" for a short note)\n"
@@ -291,10 +307,16 @@ class Agent:
                 "the COMPLETE new file in 'content' - best for a new or small file; "
                 "for a big edit, say what you'd change and let them point you at it.\n"
                 "A gmail_draft becomes a DRAFT in their Gmail (you never send); "
-                "calendar_create and chat_post the system asks them to confirm first. "
-                "Use the current date/time from LIVE DATA to resolve 'Tuesday 3pm'. "
-                "Only emit an ACTION when they actually asked you to do it.")
-        text = (self.think(system, question) or "").strip()
+                "calendar_create/calendar_series and chat_post the system asks them to "
+                "confirm first. Use the current date/time from LIVE DATA to resolve "
+                "'Tuesday 3pm'. Only emit an ACTION when they actually asked you to do it.\n"
+                "\nNO TOOL-CALLS: you have NO native tools or function-calling. NEVER emit "
+                "<function_call>, <xai:function_call>, <tool_call>, <parameter> or any such "
+                "markup — none of it runs and it just leaks into your reply as garbage. To "
+                "DO something, use an ACTION above. To look up something you don't have "
+                "(an address, a fact on the web), say plainly that you can't look it up "
+                "yet — don't fake a search.")
+        text = _strip_toolcalls((self.think(system, question) or "").strip())
         # The read path runs the same hard guardrails as a draft. An answer is
         # lower-stakes than published copy, but a FORTIFIED or radon-free claim
         # said to a person is still a claim, so it is flagged in-line rather than
