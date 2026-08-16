@@ -74,6 +74,7 @@ class TelegramBot:
         self.token = token
         self._send = send or self._http_send
         self.offset_path = Path(console.home) / "telegram.offset"
+        self._seen_path = Path(console.home) / "telegram.seen"   # read file_ids
 
     # ---- construction from the console ----------------------------------
 
@@ -283,7 +284,17 @@ class TelegramBot:
         and reply. A read, but it spends a model call, so only for a recognised
         sender. Ross's caption, if any, is the prompt."""
         if not self._known(sender_id):
-            self.send(chat_id, _REPLIES.get(ASK, "I don't recognise this account."))
+            # _REPLIES.get(ASK, …) always returned "Passed to Ross" (ASK is a live
+            # key), so an image from a stranger got a false promise AND was never
+            # recorded — unlike the text path, which logs the stranger and is
+            # honest. Mirror that: record them, and don't over-promise.
+            try:
+                self.people.saw_stranger(CHANNEL, sender_id, detail=(caption or "image")[:400])
+            except Exception:
+                pass
+            self.send(chat_id, "I don't recognise this account, so I can't help "
+                               "here. If you should have access, ask Ross to send "
+                               "you an invite.")
             return
         self.send(chat_id, "\U0001f4e5 Got it — reading the image, one sec…")   # quick ack; the read follows
         try:
@@ -294,6 +305,10 @@ class TelegramBot:
         if not b64:
             self.send(chat_id, "I couldn't download that image.")
             return
+        if self._already_seen(file_id):
+            return                    # a redelivered photo — already read once
+        self._mark_seen(file_id)      # at-most-once: mark BEFORE the slow read, so a
+        #                               crash mid-read can't re-spend the model on redelivery
         b64, media = self._shrink(b64, media)   # a multi-MB screenshot is what times the read out
         from ..llm import NoModel, see
         from ..meter import Meter
@@ -325,15 +340,52 @@ class TelegramBot:
         return any(h.channel == CHANNEL and str(h.address) == str(sender_id)
                    for h in self.people.handles())
 
+    def _already_seen(self, key: str) -> bool:
+        """Has this image been read before? A crash mid vision-read leaves the
+        update un-acked, so Telegram redelivers it; without this the image would be
+        read (and billed) and captured again. At-most-once via a small file_id log."""
+        if not key:
+            return False
+        try:
+            return key in self._seen_path.read_text().split()
+        except OSError:
+            return False
+
+    def _mark_seen(self, key: str) -> None:
+        if not key:
+            return
+        try:
+            seen = self._seen_path.read_text().split()
+        except OSError:
+            seen = []
+        if key in seen:
+            return
+        seen.append(key)
+        try:
+            self._seen_path.write_text(" ".join(seen[-500:]))   # cap the log
+        except OSError:
+            pass
+
     def _queue_capture(self, text, source) -> int:
         """Drop content Ross sent the bot into the ingest hopper for review. A NODE
-        write (ingest.proposed) — no learning happens until he reviews it."""
+        write (ingest.proposed) — no learning happens until he reviews it.
+
+        Deduped: the asks subsystem collapses a repeated request onto one ask, but
+        capture used to append one proposal per send, so an enrolled sender could
+        flood the review queue by resending. Skip if the same text+source is
+        already pending."""
         text = (text or "").strip()
         if not text:
             return 0
         try:
             from ..ingest import Ingest
-            return Ingest(self.console.open(self._passphrase)).add(
+            ing = Ingest(self.console.open(self._passphrase))
+            norm = " ".join(text.split()).lower()
+            for p in ing.pending():
+                if (p.get("source") == source
+                        and " ".join((p.get("text") or "").split()).lower() == norm):
+                    return 0                      # already queued — don't flood
+            return ing.add(
                 [{"text": text, "business": "", "confidence": 0.0,
                   "why": "from telegram", "summary": ""}], source=source)
         except Exception:

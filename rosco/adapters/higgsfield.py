@@ -68,9 +68,12 @@ def _image_urls(obj) -> list[str]:
 
     walk(obj)
     imgs = [u for u in out if re.search(r"\.(png|jpe?g|webp|gif)(\?|$)", u, re.I)]
-    # de-dupe, keep order
+    # Image-extension urls ONLY. The old 'imgs or out' fallback returned ANY url
+    # when none looked like an image — so a status/self/webhook/billing link got
+    # handed back as the finished image. Better to find nothing (caller waits or
+    # errors) than to present a broken link as success.
     seen, ordered = set(), []
-    for u in (imgs or out):
+    for u in imgs:
         if u not in seen:
             seen.add(u)
             ordered.append(u)
@@ -101,9 +104,11 @@ def generate(key: str, prompt: str, *, num_images: int = 1,
         if state in ("failed", "error", "canceled", "cancelled", "rejected"):
             raise RuntimeError("higgsfield generation " + state)
         urls = _image_urls(st)
+        # Only a terminal-success (or state-less) poll that carries a real image
+        # url is the result. The removed 'if urls: return urls' used to end the
+        # loop on the FIRST poll that merely echoed a self/status url while still
+        # 'processing' — returning a non-image link and abandoning the real job.
         if urls and state in ("", "completed", "succeeded", "success", "done", "finished", "ready"):
-            return urls
-        if urls:                                 # url present even without a clean state word
             return urls
         time.sleep(every)
     raise RuntimeError("higgsfield is still working — try again in a moment")
