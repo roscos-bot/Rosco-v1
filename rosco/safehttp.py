@@ -23,7 +23,7 @@ import json
 import socket
 import urllib.parse
 import urllib.request
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 MAX_RESPONSE = 8 * 1024 * 1024      # 8 MB
 
@@ -168,6 +168,19 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
             detail = "authentication rejected"
         raise ValueError(f"HTTP {e.code} from {parsed.hostname}: "
                          f"{detail[:400] or e.reason}") from None
+    except (TimeoutError, URLError) as e:
+        # A transport failure - connect/read timeout, connection refused, DNS.
+        # urllib raises a raw URLError on the connect phase (a read timeout comes
+        # up as socket.timeout == TimeoutError), and letting either escape raw
+        # broke the docstring's promise that callers only handle ValueError, and
+        # crashed `rosco run` on a transient blip. Normalize to a consistent
+        # contract: timeouts as TimeoutError (see() retries these), every other
+        # transport failure as ValueError. HTTPError is handled above (it, too,
+        # subclasses URLError), so only genuine transport errors reach here.
+        reason = getattr(e, "reason", e)
+        if isinstance(e, TimeoutError) or isinstance(reason, (TimeoutError, socket.timeout)):
+            raise TimeoutError(f"timed out reaching {parsed.hostname}") from None
+        raise ValueError(f"could not reach {parsed.hostname}: {reason}") from None
     if len(body) > max_bytes:
         raise ValueError(f"reply larger than {max_bytes} bytes; refused")
     if raw:

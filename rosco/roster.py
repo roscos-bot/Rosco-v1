@@ -51,7 +51,7 @@ class Business:
     title: str
     captain: str
     account: str          # the Google account its mail actually lives in
-    own_domain: bool      # False means it shares rossfusz@gmail.com with five others
+    own_domain: bool      # False means it shares rossfusz@gmail.com with six others
     code: str = ""        # a 3-letter tag (SSH, RUM, RCE…) shown beside the name
 
 
@@ -71,7 +71,10 @@ BUSINESSES = (
     Business("system", "Rosco's Vault (code & system)", "Rosco", "rossfusz@gmail.com", False, "SYS"),
 )
 
-# name -> (rank, business, role, reports_to)
+# slug -> (law, marketing, books, it) bench-member NAMES; None = that seat is empty.
+# rank/role/reports_to are DERIVED in roster() from _ROLES + the business, NOT
+# stored here - populating this with (rank, business, role, reports_to) would make
+# roster() mint four bogus agents.
 _BENCH = {
     "steelhaven":    ("Steele", "Forge", "Nate Plumb", "Gage"),
     "rum":           ("Remington", "Flint", "Nate Chambers", "Bolt"),
@@ -100,7 +103,10 @@ def roster() -> list[Agent]:
         # agent, so it stays correct however the hats fall.
         if biz.captain != "Rosco":
             out.append(Agent(biz.captain, CAPTAIN, biz.slug, "commands the business", "Rosco"))
-        names = _BENCH[biz.slug]
+        # .get so a newly-added Business without a _BENCH entry simply gets an
+        # empty bench (the `if name` below drops the None seats) instead of a
+        # KeyError that would crash roster() -> mesh/agents/find on the next edit.
+        names = _BENCH.get(biz.slug, (None, None, None, None))
         for (role, rank), name in zip(_ROLES, names):
             if name:
                 out.append(Agent(name, rank, biz.slug, role, biz.captain))
@@ -136,7 +142,7 @@ def business(slug: str) -> Business | None:
 
 
 def shared_mailbox_businesses() -> list[str]:
-    """The six that share one inbox.
+    """The seven that share one inbox.
 
     This list is why routing reads content rather than the account it arrived
     on - and why getting that wrong put a healthcare directive under a

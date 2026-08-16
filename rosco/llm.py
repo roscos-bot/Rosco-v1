@@ -174,6 +174,18 @@ def _provider_vision(provider, model, key, prompt, image_b64, media_type,
         u = d.get("usageMetadata") or {}
         return (text, int(u.get("promptTokenCount", 0)),
                 int(u.get("candidatesTokenCount", 0)))
+    if provider == OLLAMA:
+        # Local vision (llava etc.): ollama's own shape carries the image as
+        # base64 in `images` on the message. No key, no internet — it must NOT
+        # fall through to the OpenAI URL below, which would ship a local, offline
+        # read out to api.openai.com with an empty bearer.
+        d = safehttp.call("http://localhost:11434/api/chat", method="POST",
+                          timeout=timeout,
+                          payload={"model": model, "stream": False,
+                                   "messages": [{"role": "user", "content": prompt,
+                                                 "images": [image_b64]}]})
+        return ((d.get("message") or {}).get("content", ""),
+                int(d.get("prompt_eval_count", 0)), int(d.get("eval_count", 0)))
     # openrouter / openai — content array with an image_url data URI
     url = ("https://openrouter.ai/api/v1/chat/completions" if provider == OPENROUTER
            else "https://api.x.ai/v1/chat/completions" if provider == XAI

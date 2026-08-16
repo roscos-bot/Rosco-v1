@@ -57,4 +57,9 @@ def load(home, source: str) -> str | None:
 
 
 def have(home, source: str) -> bool:
-    return bool(source) and (_dir(home) / _safe(source)).exists()
+    if not source:
+        return False
+    try:                              # match save()/load(): a cache miss/unusable
+        return (_dir(home) / _safe(source)).exists()   # home is never fatal
+    except OSError:
+        return False

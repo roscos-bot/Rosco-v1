@@ -152,7 +152,13 @@ class Log:
         if self.ross is not None and self.trust.bootstrapping:
             self.trust.ross = self.ross.public
 
-        self.db = sqlite3.connect(str(self.path), isolation_level=None)
+        # check_same_thread=False: the web console is a ThreadingHTTPServer, and a
+        # background writer (an inbox watcher) runs off the request threads. Writes
+        # are already serialized by _APPEND_LOCK, so sharing the connection across
+        # threads is safe; without this a cached Log or a background thread hits
+        # "SQLite objects created in a thread can only be used in that same thread".
+        self.db = sqlite3.connect(str(self.path), isolation_level=None,
+                                  check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         # WAL so a reader (the employee site, say) never blocks the writer, and
         # a power cut at the shop cannot half-write a bound-book entry.
