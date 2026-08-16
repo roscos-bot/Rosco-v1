@@ -103,3 +103,72 @@ def _provider_call(provider, model, key, system, user, max_tokens, temperature,
     choices = d.get("choices") or []
     text = (choices[0].get("message") or {}).get("content", "") if choices else ""
     return text, int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
+
+
+def see(models: Models, prompt: str, image_b64: str, media_type: str = "image/jpeg",
+        *, meter=None, max_tokens: int = 700) -> str:
+    """Read an image with the VISION model — the same key/no-key discipline as
+    complete(). Returns the model's text, or raises NoModel if vision has no key."""
+    from .models import VISION
+    choice = models.pick(VISION)
+    key = models.key_for(choice)
+    if key is None:
+        raise NoModel(
+            f"no key for {choice.provider}; the vision model cannot run. "
+            f"rosco secret set system {secret_name(choice.provider)}")
+    text, pt, ct = _provider_vision(choice.provider, choice.model, key, prompt,
+                                    image_b64, media_type, max_tokens)
+    if meter is not None:
+        try:
+            meter.record(choice.provider, choice.model, VISION, pt, ct)
+        except Exception:
+            pass
+    return text
+
+
+def _provider_vision(provider, model, key, prompt, image_b64, media_type,
+                     max_tokens, *, timeout=60):
+    """One image + prompt to a vision model. Each provider wants the image in its
+    own message shape; all go over safehttp (https, no redirect, size cap)."""
+    if provider == ANTHROPIC:
+        d = safehttp.call(
+            "https://api.anthropic.com/v1/messages", method="POST", timeout=timeout,
+            headers={"x-api-key": key.strip(), "anthropic-version": "2023-06-01"},
+            payload={"model": model, "max_tokens": max_tokens, "messages": [
+                {"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64",
+                     "media_type": media_type, "data": image_b64}},
+                    {"type": "text", "text": prompt}]}]})
+        text = "".join(p.get("text", "") for p in (d.get("content") or [])
+                       if isinstance(p, dict))
+        u = d.get("usage") or {}
+        return text, int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0))
+    if provider == GEMINI:
+        d = safehttp.call(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            method="POST", timeout=timeout, headers={"x-goog-api-key": key.strip()},
+            payload={"contents": [{"role": "user", "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": media_type, "data": image_b64}}]}]})
+        cand = d.get("candidates") or []
+        text = ""
+        if cand:
+            parts = ((cand[0].get("content") or {}).get("parts") or [])
+            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        u = d.get("usageMetadata") or {}
+        return (text, int(u.get("promptTokenCount", 0)),
+                int(u.get("candidatesTokenCount", 0)))
+    # openrouter / openai — content array with an image_url data URI
+    url = ("https://openrouter.ai/api/v1/chat/completions" if provider == OPENROUTER
+           else "https://api.openai.com/v1/chat/completions")
+    d = safehttp.call(
+        url, method="POST", bearer=key, timeout=timeout,
+        payload={"model": model, "max_tokens": max_tokens, "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{media_type};base64,{image_b64}"}}]}]})
+    u = d.get("usage") or {}
+    choices = d.get("choices") or []
+    text = (choices[0].get("message") or {}).get("content", "") if choices else ""
+    return text, int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))

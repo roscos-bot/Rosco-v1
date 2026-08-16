@@ -211,9 +211,17 @@ class TelegramBot:
         sender_id = sender.get("id")
         chat_id = (msg.get("chat") or {}).get("id", sender_id)
         text = msg.get("text") or ""
-        if sender_id is None or not text.strip():
+        photos = msg.get("photo") or []
+        if sender_id is None:
             return
         sender_id = str(sender_id)
+        if not text.strip():
+            # A photo gets READ by the vision model rather than silently dropped —
+            # that empty-text return is why an image sent to the bot used to get no
+            # reply at all. Anything else we don't handle (sticker, voice) is ignored.
+            if photos:
+                self._handle_photo(sender_id, chat_id, photos, msg.get("caption") or "")
+            return
 
         # Pairing handshake. If Ross has a pairing open at the console and this
         # message is just the code, complete it. The console did the deciding;
@@ -248,6 +256,56 @@ class TelegramBot:
             return True
         self.send(chat_id, "Paired. This account is now recognised as Ross.")
         return True
+
+    def _handle_photo(self, sender_id, chat_id, photos, caption) -> None:
+        """Read an image with the vision model and reply. A read, but it spends a
+        model call, so only for a recognised sender (a stranger's image is ignored
+        the same as any ungranted request). Ross's caption, if any, is the prompt."""
+        known = any(h.channel == CHANNEL and str(h.address) == sender_id
+                    for h in self.people.handles())
+        if not known:
+            self.send(chat_id, _REPLIES.get(ASK, "I don't recognise this account."))
+            return
+        try:
+            b64, media = self._download_photo((photos[-1] or {}).get("file_id", ""))
+        except Exception:
+            b64, media = "", ""
+        if not b64:
+            self.send(chat_id, "I couldn't download that image.")
+            return
+        from ..llm import NoModel, see
+        from ..meter import Meter
+        from ..models import Models
+        from ..vault import Vault
+        log = self.console.open(self._passphrase)
+        models = Models(log, Vault(log, key=self.console._vault_key(self._passphrase)))
+        prompt = caption.strip() or ("Read this image and tell me what it is and the "
+                                     "key details, briefly.")
+        try:
+            answer = see(models, prompt, b64, media, meter=Meter(log))
+        except NoModel:
+            self.send(chat_id, "I can see you sent an image, but no vision model is set up.")
+            return
+        except Exception as e:
+            self.send(chat_id, "I couldn't read the image — " + str(e)[:120])
+            return
+        self.send(chat_id, (answer or "").strip() or "(the vision model returned nothing)")
+
+    def _download_photo(self, file_id):
+        """(base64, media_type) for a Telegram photo, or ('', '') if unavailable.
+        Two hops: getFile for the path, then the file endpoint for the bytes."""
+        import base64
+        if not file_id:
+            return "", ""
+        info = self._api("getFile", {"file_id": file_id})
+        path = ((info.get("result") or {}).get("file_path") or "")
+        if not path:
+            return "", ""
+        url = f"https://api.telegram.org/file/bot{self.token}/{path}"
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as r:
+            data = r.read(8_000_000)          # cap ~8MB
+        media = "image/png" if path.lower().endswith(".png") else "image/jpeg"
+        return base64.b64encode(data).decode(), media
 
     def _notify_ross(self, handling) -> None:
         ross = [h for h in self.people.handles(person="ross")
