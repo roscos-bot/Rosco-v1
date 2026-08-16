@@ -49,6 +49,10 @@ from .vault import Vault
 APP = (Path(__file__).parent / "web_app.html")
 APP_JS = (Path(__file__).parent / "web_app.js")
 
+# A POST body is read into memory before auth, so cap it: an unauthenticated
+# cross-origin page can otherwise drive an unbounded read (memory-exhaustion DoS).
+MAX_BODY = 4 * 1024 * 1024
+
 # script-src is 'self' with NO 'unsafe-inline': the page's script is served as a
 # separate file, so an injected inline handler (an <img onerror=...> smuggled
 # through log data) cannot execute even if an escaping sink is ever missed. This
@@ -479,8 +483,14 @@ class ConsoleServer(ThreadingHTTPServer):
                                                  "event", "appointment"))
         if not (wants_drive or wants_mail or wants_cal or wants_contact or wants_chat):
             return ""
-        account = "personal"
-        if f"{account}:{g.REFRESH_TOKEN}" not in set(Vault(log).secret_names()):
+        # Which account to read. If the message names an own-domain business
+        # (RUM, SteelHaven) read THAT account; otherwise the shared personal
+        # inbox. Fall back to personal when the named account isn't connected.
+        held = set(Vault(log).secret_names())
+        account = _account_for_msg(msg + " " + (recent or ""))
+        if f"{account}:{g.REFRESH_TOKEN}" not in held:
+            account = "personal"
+        if f"{account}:{g.REFRESH_TOKEN}" not in held:
             return ""
         vault = Vault(log, key=self.console._vault_key(passphrase))
         try:
@@ -587,7 +597,9 @@ class ConsoleServer(ThreadingHTTPServer):
                     parts.append("GOOGLE CHAT: no spaces found.")
             except Exception as e:
                 parts.append(f"GOOGLE CHAT: couldn't read ({str(e)[:140]}).")
-        return "\n\n".join(parts)
+        if not parts:
+            return ""
+        return f"[reading the {account} Google account]\n" + "\n\n".join(parts)
 
     def _do_google_action(self, log, passphrase, a):
         """Carry out one proposed write on the personal Google account. gmail_draft
@@ -645,13 +657,28 @@ class ConsoleServer(ThreadingHTTPServer):
                     return "(couldn't add any of those events — check the dates.)"
                 return f"\U0001f4c5 Added {made} events to your calendar."
             if t == "chat_post":
-                space = str(a.get("space", ""))
+                space = str(a.get("space", "")).strip()
+                if not space:
+                    # '' is a substring of every display name, so a blank used to
+                    # resolve to the FIRST space and post there. Refuse instead.
+                    return "(no Chat space named — say which space to post to.)"
+                resolved = space
                 if not space.startswith("spaces/"):
-                    match = next((sp for sp in g.chat_spaces(token)
-                                  if sp.get("display") and space.lower() in sp["display"].lower()), None)
-                    space = match["name"] if match else space
+                    spaces = g.chat_spaces(token)
+                    low = space.lower()
+                    exact = [sp for sp in spaces if (sp.get("display") or "").lower() == low]
+                    hits = exact or [sp for sp in spaces
+                                     if sp.get("display") and low in sp["display"].lower()]
+                    if not hits:
+                        return f"(no Chat space matches {space!r}.)"
+                    if len(hits) > 1:
+                        names = ", ".join(sp.get("display", "?") for sp in hits)
+                        return (f"(more than one space matches {space!r}: {names} "
+                                f"— name it exactly.)")
+                    space = hits[0]["name"]
+                    resolved = hits[0].get("display", space)
                 g.chat_post(token, space, str(a.get("text", "")))
-                return "\U0001f4ac Posted to Google Chat."
+                return "\U0001f4ac Posted to Google Chat: " + str(resolved) + "."
         except Exception as e:
             return f"(couldn't complete that — {str(e)[:150]})"
         return "(I didn't recognise that action.)"
@@ -1383,20 +1410,26 @@ class ConsoleServer(ThreadingHTTPServer):
         log = self.console.open(s.passphrase)
         ing = Ingest(log, Vault(log, key=self.console._vault_key(s.passphrase)))
         placed = skipped = 0
+        errors = []
         for it in (body.get("items") or []):
             cand = it.get("cand", "")
             biz = (it.get("business") or "").strip()
             sh = it.get("shorthand") or ""
+            proposed = it.get("proposed")   # what Rosco suggested in the preview
             try:
                 if not biz:
                     ing.decide(cand, "", "skip")
                     skipped += 1
                 else:
-                    ing.decide(cand, biz, "ingest", learn_text=sh or None)
+                    ing.decide(cand, biz, "ingest", learn_text=sh or None,
+                               proposed=proposed)
                     placed += 1
-            except Exception:
-                pass
-        return {"ok": True, "placed": placed, "skipped": skipped}
+            except Exception as e:
+                # A bad slug or already-decided item used to be swallowed and still
+                # reported ok:True, leaving the item silently unfiled. Surface it.
+                errors.append({"cand": cand, "reason": str(e)[:160]})
+        return {"ok": not errors, "placed": placed, "skipped": skipped,
+                "errors": errors}
 
     def ingest_read(self, s, body):
         """On-demand: what does Rosco make of one item? Used for queued items that
@@ -1703,10 +1736,18 @@ def _salvage_objects(raw):
         bm = re.search(r'"business"\s*:\s*"([^"]*)"', block)
         cm = re.search(r'"confidence"\s*:\s*([0-9.]+)', block)
         wm = re.search(r'"why"\s*:\s*"([^"]*)"', block)
+        # [0-9.]+ can match malformed numbers ('0.8.5', '.') that float() rejects;
+        # this is the LAST-DITCH rescue path, so it must never itself raise.
+        conf = 0.5
+        if cm:
+            try:
+                conf = float(cm.group(1))
+            except ValueError:
+                conf = 0.5
         out.append({
             "i": int(im.group(1)) if im else len(out) + 1,
             "business": bm.group(1) if bm else "",
-            "confidence": float(cm.group(1)) if cm else 0.5,
+            "confidence": conf,
             "why": wm.group(1) if wm else "salvaged",
             "summary": sm.group(1).strip(),
         })
@@ -1775,13 +1816,20 @@ def _route_ingest(models, meter, chunks):
         return blank
     valid = {b.slug for b in BUSINESSES}
     props = [dict(p) for p in blank]
-    for o in arr if isinstance(arr, list) else []:
+    for pos, o in enumerate(arr if isinstance(arr, list) else []):
         if not isinstance(o, dict):
             continue
-        try:
-            i = int(o.get("i", 0)) - 1
-        except (TypeError, ValueError):
-            continue
+        # Map the object to its chunk by the prompted 'i' index; but a perfectly
+        # valid array returned IN ORDER may simply omit 'i' — fall back to the
+        # object's position so well-formed output isn't handled worse than the
+        # malformed output _salvage_objects rescues.
+        if o.get("i") is None:
+            i = pos
+        else:
+            try:
+                i = int(o["i"]) - 1
+            except (TypeError, ValueError):
+                i = pos
         if not 0 <= i < len(props):
             continue
         b = str(o.get("business", "")).strip().lower()
@@ -1795,6 +1843,21 @@ def _route_ingest(models, meter, chunks):
                     "why": str(o.get("why", ""))[:120],
                     "summary": str(o.get("summary", ""))[:240]}
     return props
+
+
+def _account_for_msg(text):
+    """Which Google account a chat message is about. Own-domain businesses (RUM,
+    SteelHaven) get their own account when clearly named; everything else reads
+    the shared personal inbox. Distinctive tokens only, and 'rum' on a word
+    boundary, so 'forum'/'premium' don't misroute a question to RUM's mailbox."""
+    low = (text or "").lower()
+    if (re.search(r"\brum\b", low) or "romann" in low or "rumachines" in low
+            or "captain morgan" in low or "captainmorgan" in low):
+        return "rum"
+    if ("steelhaven" in low or "steel haven" in low or "permahaven" in low
+            or "havenmind" in low):
+        return "steelhaven"
+    return "personal"
 
 
 def _mime_short(mime):
@@ -2103,12 +2166,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._send(421, {"error": "bad host"})
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return self._send(400, {"error": "bad Content-Length"})
+        if length < 0 or length > MAX_BODY:
+            return self._send(413, {"error": "request too large"})
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw or b"{}")
         except ValueError:
             return self._send(400, {"error": "bad json"})
+        # json.loads happily returns a non-dict for '[]' / 'null' / '5'; every
+        # handler below does body.get(...), so reject non-objects here rather than
+        # let an AttributeError crash the thread before auth (the /api/unlock
+        # branch runs pre-session, so this must precede it).
+        if not isinstance(body, dict):
+            return self._send(400, {"error": "expected a JSON object"})
 
         if self.path == "/api/unlock":
             pw = body.get("passphrase", "")

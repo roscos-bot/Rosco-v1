@@ -142,19 +142,29 @@ def seed(vault: Vault, business: str) -> int:
     return len(fs)
 
 
-def _is_heading(block: str) -> bool:
-    """A block that titles what follows, rather than being content itself.
+def _is_md_heading(block: str) -> bool:
+    """An explicit markdown heading line ('# Heading' from an exported Doc)."""
+    return "\n" not in block and bool(re.match(r"^#{1,6}\s+\S", block))
 
-    Reliable on an exported Doc (a markdown '#'/'##' line); for pasted plain text
-    a conservative fallback - a single short line, few words, no sentence-ending
-    punctuation. Kept tight so a real one-line fact isn't mistaken for a title.
+
+def _looks_titlish(block: str) -> bool:
+    """A single short, few-word, punctuation-free line that COULD be a title.
+
+    On its own this is ambiguous: 'Governing Principle' is a title, but so is the
+    shape of a real one-line fact ('Radon measured 0.3 pCi/L', 'John Donati',
+    '4075 W Outer Rd'). _chunks resolves the ambiguity with a lookahead - it only
+    treats such a line as a heading when a real body actually follows it.
     """
     if "\n" in block:                              # a multi-line block is content
         return False
-    if re.match(r"^#{1,6}\s+\S", block):
-        return True
     return (len(block) <= 60 and len(block.split()) <= 8
             and not re.search(r"[.!?:,;]$", block))
+
+
+def _is_heading(block: str) -> bool:
+    """Kept for callers that ask in isolation: a markdown heading, or a titlish
+    line. _chunks does NOT use this - it needs the lookahead in _looks_titlish."""
+    return _is_md_heading(block) or _looks_titlish(block)
 
 
 def _chunks(text: str, *, cap: int = 1000) -> list[str]:
@@ -163,17 +173,31 @@ def _chunks(text: str, *, cap: int = 1000) -> list[str]:
     Docs export with headings on their own line ('# Heading' from a Google Doc,
     a short title-like line from pasted notes). Splitting purely on blank lines
     turned every heading into its own contentless item - '# Governing Principle'
-    with nothing under it read as 'a vague heading, no content'. So a heading is
-    NEVER emitted alone: it is held and prefixed onto the next real content block,
-    so the lesson keeps the section it belongs to.
+    with nothing under it read as 'a vague heading, no content'. So a markdown
+    heading is NEVER emitted alone: it is held and prefixed onto the next real
+    content block, so the lesson keeps the section it belongs to.
+
+    A PLAIN short line is trickier - it has the shape of both a title and a real
+    one-line fact. Treating every one as a heading silently dropped a trailing
+    fact and merged runs of short facts into one garbled lesson. So a plain
+    titlish line is only treated as a heading when the NEXT block is real content
+    (not itself another titlish/heading line); otherwise it is emitted as its own
+    fact. And any heading still pending at the end is emitted rather than dropped.
     """
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text or "") if b.strip()]
     out: list[str] = []
     pending = ""                                   # the heading waiting for its body
-    for block in re.split(r"\n\s*\n", text or ""):
-        block = block.strip()
-        if not block:
-            continue
-        if _is_heading(block):
+    for idx, block in enumerate(blocks):
+        if _is_md_heading(block):
+            is_heading = True
+        elif _looks_titlish(block):
+            nxt = blocks[idx + 1] if idx + 1 < len(blocks) else None
+            # a title only if a real body follows - not the end, not another title
+            is_heading = nxt is not None and not (
+                _is_md_heading(nxt) or _looks_titlish(nxt))
+        else:
+            is_heading = False
+        if is_heading:
             h = re.sub(r"^#+\s*", "", block).strip()
             pending = (pending + " › " + h) if pending else h   # chain sub-headings
             continue
@@ -190,7 +214,7 @@ def _chunks(text: str, *, cap: int = 1000) -> list[str]:
             out.append((prefix + re.sub(r"^#+\s*", "", block))[:500])
         if len(out) >= cap:
             break
-    if pending and not out:                        # a paste of only a heading isn't lost
+    if pending:                                    # a trailing/only heading isn't lost
         out.append(pending[:500])
     return out[:cap]
 

@@ -113,7 +113,8 @@ class Ingest:
     # ---- deciding --------------------------------------------------------
 
     def decide(self, cand: str, business: str, action: str, *,
-               by: str = "ross", learn_text: str | None = None) -> dict:
+               by: str = "ross", learn_text: str | None = None,
+               proposed: str | None = None) -> dict:
         """Ross's call on one item. 'ingest' LEARNS a distilled shorthand into
         `business` (a SIGNED vault.learned via the captain), NOT the raw doc -
         ingesting means understanding it and keeping a compact form, not dumping
@@ -121,7 +122,16 @@ class Ingest:
         showed as 'reads as'), falling back to the stored summary, and only to the
         raw text if there is no shorthand at all. 'skip' just clears it. Either
         way a NODE ingest.decided records whether the proposal was accepted
-        unchanged - the signal readiness() reads."""
+        unchanged - the signal readiness() reads.
+
+        `proposed` is what Rosco ACTUALLY suggested for this item at decision
+        time. The batch-review preview re-routes each item and shows a fresh
+        suggestion, so scoring the acceptance against the stale queue-time
+        proposal (blank for triage/drive-bulk, hard-'system' for github-bulk)
+        wrongly excluded every bulk placement from the trust ladder. When the
+        caller passes the previewed suggestion, `accepted`/readiness compare
+        against what Ross was actually shown; a manual one-at-a-time decide passes
+        nothing and falls back to the stored proposal, as before."""
         if action not in ("ingest", "skip"):
             raise ValueError("action must be ingest or skip")
         prop = self._proposals().get(cand)
@@ -130,8 +140,9 @@ class Ingest:
         if cand in self._decided_ids():
             raise ValueError("that item was already decided")
         business = (business or "").strip()
+        suggested = prop.get("business", "") if proposed is None else (proposed or "")
         accepted = bool(action == "ingest" and business
-                        and business == prop.get("business"))
+                        and business == suggested)
         if action == "ingest":
             captain = knowledge._captain(business)
             if captain is None:
@@ -146,7 +157,7 @@ class Ingest:
         self.log.append(
             "ingest.decided",
             {"cand": cand, "action": action, "business": business,
-             "proposed": prop.get("business", ""), "accepted": accepted},
+             "proposed": suggested, "accepted": accepted},
             subject=business or prop.get("source", "ingest"), actor=by)
         return {"ok": True, "accepted": accepted}
 

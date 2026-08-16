@@ -213,8 +213,11 @@ class Vault:
         # makes the result independent of arrival order, which is the property
         # that actually matters across three machines.
         pending = [ev for ev in events if ev["kind"] == "vault.corrected"]
-        rounds = 0
-        while pending and rounds <= len(pending):
+        budget = len(pending)     # fixed up front: `pending` SHRINKS as corrections
+        rounds = 0                # resolve, so `rounds <= len(pending)` used to run
+        while pending and rounds <= budget:   # out before a reverse-ordered chain of
+            # depth >= 3 reached its newest link — serving a stale correction. Each
+            # pass resolves at least one, so <= len(pending) passes are ever needed.
             # Bounded. A compromised node can plant thousands of corrections
             # pointing at ids that do not exist, and an unbounded retry over
             # them is quadratic work an attacker chooses the size of.
