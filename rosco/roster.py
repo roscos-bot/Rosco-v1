@@ -52,22 +52,23 @@ class Business:
     captain: str
     account: str          # the Google account its mail actually lives in
     own_domain: bool      # False means it shares rossfusz@gmail.com with five others
+    code: str = ""        # a 3-letter tag (SSH, RUM, RCE…) shown beside the name
 
 
 BUSINESSES = (
-    Business("steelhaven", "SteelHaven Homes", "HavenMind", "ross@steelhaven.homes", True),
-    Business("rum", "Romann Utility Machines", "CaptainMorgan", "ross@rumachines.com", True),
-    Business("river-city", "River City Enterprises", "Twain", "rossfusz@gmail.com", False),
-    Business("sugar-creek", "Sugar Creek Drones", "Harrier", "rossfusz@gmail.com", False),
-    Business("4x4-explorers", "4x4 Explorers", "Scout", "rossfusz@gmail.com", False),
-    Business("spring-valley", "Spring Valley", "Argus", "rossfusz@gmail.com", False),
-    Business("finance", "Finance", "Ledger", "rossfusz@gmail.com", False),
-    Business("personal", "Personal & Home", "Hearth", "rossfusz@gmail.com", False),
+    Business("steelhaven", "SteelHaven Homes", "HavenMind", "ross@steelhaven.homes", True, "SSH"),
+    Business("rum", "Romann Utility Machines", "CaptainMorgan", "ross@rumachines.com", True, "RUM"),
+    Business("river-city", "River City Enterprises", "Twain", "rossfusz@gmail.com", False, "RCE"),
+    Business("sugar-creek", "Sugar Creek Drones", "Harrier", "rossfusz@gmail.com", False, "SCD"),
+    Business("4x4-explorers", "4x4 Explorers", "Scout", "rossfusz@gmail.com", False, "4XE"),
+    Business("spring-valley", "Spring Valley", "Argus", "rossfusz@gmail.com", False, "SVP"),
+    Business("finance", "Finance", "Ledger", "rossfusz@gmail.com", False, "FIN"),
+    Business("personal", "Personal & Home", "Hearth", "rossfusz@gmail.com", False, "PSN"),
     # The system's own code and architecture - its own silo so ingesting Rosco-v1
     # to make Rosco a code expert never muddies a real business's brain. Captained
     # by Rosco (no duplicate agent, see roster()), and Rosco-the-chief reads it via
     # business '*', so what lands here is exactly what grounds Rosco on its code.
-    Business("system", "Rosco's Vault (code & system)", "Rosco", "rossfusz@gmail.com", False),
+    Business("system", "Rosco's Vault (code & system)", "Rosco", "rossfusz@gmail.com", False, "SYS"),
 )
 
 # name -> (rank, business, role, reports_to)

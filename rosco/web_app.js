@@ -243,7 +243,7 @@ function showNode(n){
   ctx.innerHTML="<div class='back' id='back'>&larr; back to the queue</div>"
     +"<div class='node-ctx'>"
     +"<div class='nm'>"+esc(n.label)+"</div>"
-    +"<div class='rk' style='color:"+col+"'>"+esc(n.rank||n.type)+"</div>"
+    +"<div class='rk' style='color:"+col+"'>"+esc(n.rank||n.type)+(n.code?" · "+esc(n.code):"")+"</div>"
     +(n.type==="file"?("<div class='kv'><div class='k'>Source</div><div class='v'>"+esc(n.source||"")+"</div></div>"
        +"<div class='kv'><div class='k'>Status</div><div class='v'>"+(n.learned?"learned into "+esc(n.business||""):"queued — not learned yet")+"</div></div>"
        +"<div class='kv'><div class='k'>Detail</div><div class='v'>full copy cached locally — read without the internet</div></div>"):"")
@@ -800,6 +800,16 @@ function loadIngest(){
       if(r.ok){gpath.value="";gmsg.className="ksst g";gmsg.textContent="queued "+r.j.added+" from "+(r.j.file||rp);loadIngest();}
       else{gmsg.className="ksst r";gmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
   grow.appendChild(grepo);grow.appendChild(gpath);grow.appendChild(gbtn);grow.appendChild(gmsg);host.appendChild(grow);
+  // or triage the inbox — pull recent personal Gmail into the hopper for Rosco to route
+  var trow=document.createElement("div");trow.className="ing-row";
+  var tl=document.createElement("label");tl.textContent="or inbox";trow.appendChild(tl);
+  var tbtn=document.createElement("button");tbtn.className="ing-go";tbtn.textContent="Triage inbox (10)";
+  var tmsg=document.createElement("span");tmsg.className="ksst";
+  tbtn.addEventListener("click",function(){tbtn.disabled=true;tmsg.className="ksst";tmsg.textContent="pulling inbox…";
+    post("/api/ingest/triage",{n:10}).then(function(r){tbtn.disabled=false;
+      if(r.ok){tmsg.className="ksst g";tmsg.textContent="queued "+r.j.added+" emails — review below";loadIngest();}
+      else{tmsg.className="ksst r";tmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
+  trow.appendChild(tbtn);trow.appendChild(tmsg);host.appendChild(trow);
   Promise.all([api("/api/ingest/queue"),api("/api/ingest/readiness")]).then(function(res){
     var q=(res[0].ok&&res[0].j&&res[0].j.items)||[];
     var rd=(res[1].ok&&res[1].j)||{};

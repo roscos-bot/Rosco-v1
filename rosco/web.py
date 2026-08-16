@@ -144,9 +144,10 @@ class ConsoleServer(ThreadingHTTPServer):
             seen.add(nid)
             nodes.append({"id": nid, "label": label, "type": typ, **extra})
 
+        codes = {b.slug: b.code for b in BUSINESSES}
         for a in roster():
             node(a.name, a.name, "agent", rank=a.rank, business=a.business,
-                 reports=a.reports_to)
+                 reports=a.reports_to, code=codes.get(a.business, ""))
             if a.reports_to and a.reports_to != "ross":
                 edges.append({"a": a.name, "b": a.reports_to, "kind": "command"})
         # people, linked to the businesses they can reach (from live grants)
@@ -908,7 +909,8 @@ class ConsoleServer(ThreadingHTTPServer):
             "budgets": [{"scope": b.scope, "cap": b.monthly_usd}
                         for b in Meter(log).budgets().values()],
             "businesses": [b.slug for b in BUSINESSES],
-            "businessTitles": {b.slug: b.title for b in BUSINESSES},
+            "businessTitles": {b.slug: (b.code + " · " + b.title if b.code else b.title)
+                               for b in BUSINESSES},
             "capabilities": sorted({c.name for c in caps.CATALOGUE}),
             "tools": [{"name": t.name, "businesses": list(t.businesses)}
                       for t in Tools(log).all()],
@@ -1266,6 +1268,39 @@ class ConsoleServer(ThreadingHTTPServer):
         if not added:
             raise ValueError(f"no readable files pulled from {repo['full']}")
         return {"ok": True, "added": added, "file": f"{repo['full']} — {added} files"}
+
+    def triage_inbox(self, s, body):
+        """Pull recent inbound (personal Gmail) into the hopper so Rosco routes each
+        — the 'anything coming in flows to Rosco to decide where + what' step. Each
+        email becomes a hopper item; the batch report card then classifies it (which
+        captain) and Ross ✓/redirects. Nothing is learned or acted on until he does."""
+        from .adapters import google as g
+        from .ingest import Ingest
+        log = self.console.open(s.passphrase)
+        account = "personal"
+        if f"{account}:{g.REFRESH_TOKEN}" not in set(Vault(log).secret_names()):
+            raise ValueError("personal Google isn't connected")
+        token = g.access_for(Vault(log, key=self.console._vault_key(s.passphrase)), account)
+        if not token:
+            raise ValueError("couldn't sign in to Google")
+        try:
+            n = max(1, min(int(body.get("n") or 10), 25))
+        except (TypeError, ValueError):
+            n = 10
+        ms = g.gmail_recent(token, body.get("q") or "in:inbox", n)
+        ing = Ingest(log)
+        added = 0
+        for m in ms:
+            frm, subj, snip = m.get("from", ""), m.get("subject", ""), m.get("snippet", "")
+            text = f"From: {frm}\nSubject: {subj}\n\n{snip}".strip()
+            if not text:
+                continue
+            added += ing.add([{"text": text, "business": "", "confidence": 0.0,
+                               "why": "inbound email", "summary": ""}],
+                             source=f"gmail:{(subj or frm)[:60]}")
+        if not added:
+            raise ValueError("no inbound email found to triage")
+        return {"ok": True, "added": added}
 
     def ingest_queue(self, s):
         from .ingest import Ingest
@@ -2107,6 +2142,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.server.ingest_drive(s, body))
             if self.path == "/api/ingest/github":
                 return self._send(200, self.server.ingest_github(s, body))
+            if self.path == "/api/ingest/triage":
+                return self._send(200, self.server.triage_inbox(s, body))
             if self.path == "/api/ingest/read":
                 return self._send(200, self.server.ingest_read(s, body))
             if self.path == "/api/ingest/decide":
