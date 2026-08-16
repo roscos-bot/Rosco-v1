@@ -294,6 +294,7 @@ class TelegramBot:
         if not b64:
             self.send(chat_id, "I couldn't download that image.")
             return
+        b64, media = self._shrink(b64, media)   # a multi-MB screenshot is what times the read out
         from ..llm import NoModel, see
         from ..meter import Meter
         from ..models import Models
@@ -303,7 +304,7 @@ class TelegramBot:
         prompt = caption.strip() or ("Read this image and tell me what it is and the "
                                      "key details, briefly.")
         try:
-            answer = see(models, prompt, b64, media, meter=Meter(log))
+            answer = see(models, prompt, b64, media, meter=Meter(log), timeout=120)
         except NoModel:
             self.send(chat_id, "I can see you sent an image, but no vision model is set up.")
             return
@@ -337,6 +338,39 @@ class TelegramBot:
                   "why": "from telegram", "summary": ""}], source=source)
         except Exception:
             return 0
+
+    def _shrink(self, b64, media, max_side=1600, png_cap=1_400_000):
+        """Downscale an oversized image before it goes to the vision model.
+
+        A phone screenshot sent as a *document* is uncompressed and can be several
+        MB — ~11MB of base64 to a slow vision endpoint is exactly what timed the
+        read out. Cap the long side (text stays legible at 1600px) and keep it as
+        PNG while that's still small (lossless is best for screenshots of text),
+        else fall back to JPEG. Uses Pillow when present; if it's missing or
+        anything goes wrong, the original bytes are sent unchanged — no hard
+        dependency, and shrinking is an optimisation, never a gate."""
+        try:
+            import base64
+            import io
+
+            from PIL import Image
+        except Exception:
+            return b64, media
+        try:
+            im = Image.open(io.BytesIO(base64.b64decode(b64)))
+            im.load()
+            if max(im.size) > max_side:
+                im.thumbnail((max_side, max_side))   # Pillow's default resample is fine
+            buf = io.BytesIO()
+            im.convert("RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB").save(
+                buf, "PNG", optimize=True)
+            if buf.tell() <= png_cap:                 # a UI/text shot stays small as PNG
+                return base64.b64encode(buf.getvalue()).decode(), "image/png"
+            buf = io.BytesIO()                         # a photo balloons as PNG -> JPEG it
+            im.convert("RGB").save(buf, "JPEG", quality=88)
+            return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+        except Exception:
+            return b64, media
 
     def _download_photo(self, file_id):
         """(base64, media_type) for a Telegram photo, or ('', '') if unavailable.

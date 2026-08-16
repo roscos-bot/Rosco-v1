@@ -107,9 +107,15 @@ def _provider_call(provider, model, key, system, user, max_tokens, temperature,
 
 
 def see(models: Models, prompt: str, image_b64: str, media_type: str = "image/jpeg",
-        *, meter=None, max_tokens: int = 700) -> str:
+        *, meter=None, max_tokens: int = 700, timeout: int = 90) -> str:
     """Read an image with the VISION model — the same key/no-key discipline as
-    complete(). Returns the model's text, or raises NoModel if vision has no key."""
+    complete(). Returns the model's text, or raises NoModel if vision has no key.
+
+    A vision read is slow (a whole image in, a slow model out), so the timeout is
+    generous and a single timed-out read is retried with more room before it gives
+    up — a cold call to grok's vision endpoint often lands on the second try. The
+    caller should also shrink an oversized image; a 60s read timeout on a multi-MB
+    screenshot is exactly what surfaced as 'The read operation timed out'."""
     from .models import VISION
     choice = models.pick(VISION)
     key = models.key_for(choice)
@@ -117,8 +123,17 @@ def see(models: Models, prompt: str, image_b64: str, media_type: str = "image/jp
         raise NoModel(
             f"no key for {choice.provider}; the vision model cannot run. "
             f"rosco secret set system {secret_name(choice.provider)}")
-    text, pt, ct = _provider_vision(choice.provider, choice.model, key, prompt,
-                                    image_b64, media_type, max_tokens)
+    text = pt = ct = None
+    for attempt in (1, 2):
+        try:
+            text, pt, ct = _provider_vision(choice.provider, choice.model, key, prompt,
+                                            image_b64, media_type, max_tokens,
+                                            timeout=timeout)
+            break
+        except TimeoutError:              # socket read timeout — the model was just slow
+            if attempt == 2:
+                raise
+            timeout = int(timeout * 1.6)  # give the retry noticeably more room
     if meter is not None:
         try:
             meter.record(choice.provider, choice.model, VISION, pt, ct)
@@ -128,7 +143,7 @@ def see(models: Models, prompt: str, image_b64: str, media_type: str = "image/jp
 
 
 def _provider_vision(provider, model, key, prompt, image_b64, media_type,
-                     max_tokens, *, timeout=60):
+                     max_tokens, *, timeout=90):
     """One image + prompt to a vision model. Each provider wants the image in its
     own message shape; all go over safehttp (https, no redirect, size cap)."""
     if provider == ANTHROPIC:
