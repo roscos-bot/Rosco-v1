@@ -85,7 +85,7 @@ var SENS={"bound-book":1,"books":1,"payroll":1,"taxes":1,"transfers":1,"budget":
 var ingCount=0;                          // pending ingest items, kept fresh by the pip poll
 function ingestBanner(){
   return ingCount>0 ? "<div class='ask ingbanner' style='cursor:pointer;border-left:3px solid var(--teal)'>"
-    +"<div class='said'>\U0001f4e5 <b>"+ingCount+"</b> item(s) in the ingest queue — click to review</div></div>" : "";
+    +"<div class='said'>📥 <b>"+ingCount+"</b> item(s) in the ingest queue — click to review</div></div>" : "";
 }
 function loadQueue(){ api("/api/queue").then(function(res){
   var q=(res.ok&&Array.isArray(res.j))?res.j:[];
@@ -173,7 +173,7 @@ function layout(){ // simple 3D force: repel all pairs, spring edges, center pul
   N.forEach(function(n){n.x/=mx;n.y/=mx;n.z/=mx;});
 }
 
-var yaw=-.5,pitch=-.26,tYaw=yaw,tPitch=pitch,drag=false,lx=0,ly=0,auto=!reduce,hover=-1,selected=-1;
+var yaw=-.5,pitch=-.26,tYaw=yaw,tPitch=pitch,drag=false,lx=0,ly=0,downx=0,downy=0,auto=!reduce,hover=-1,selected=-1;
 // Camera focus point: clicking a node flies IT to screen center (the graph orbits
 // the selection instead of its own midpoint). tf* is the target, f* eases toward it.
 var fx=0,fy=0,fz=0,tfx=0,tfy=0,tfz=0;
@@ -234,9 +234,11 @@ cv.addEventListener("mousemove",function(e){var b=cv.getBoundingClientRect(),mx=
   hover=pick(mx,my);if(hover>=0){var n=N[hover];tip.innerHTML=esc(n.label)+"<br><span class='r'>"+esc(((n.rank||n.type)+"").toUpperCase())+(n.biz?" · "+esc((n.biz+"").toUpperCase()):"")+"</span>";
     tip.style.left=n.px+"px";tip.style.top=n.py+"px";tip.style.opacity=1;cv.style.cursor="pointer";}
   else{tip.style.opacity=0;cv.style.cursor=drag?"grabbing":"grab";}});
-cv.addEventListener("mousedown",function(e){drag=true;auto=false;var b=cv.getBoundingClientRect();lx=e.clientX-b.left;ly=e.clientY-b.top;});
+cv.addEventListener("mousedown",function(e){drag=true;auto=false;var b=cv.getBoundingClientRect();lx=e.clientX-b.left;ly=e.clientY-b.top;downx=lx;downy=ly;});
 window.addEventListener("mouseup",function(){drag=false;});
-cv.addEventListener("click",function(e){var b=cv.getBoundingClientRect(),p=pick(e.clientX-b.left,e.clientY-b.top);
+cv.addEventListener("click",function(e){var b=cv.getBoundingClientRect(),mx=e.clientX-b.left,my=e.clientY-b.top;
+  if(Math.hypot(mx-downx,my-downy)>5)return;   // released far from press = a rotate, not a click — don't hijack the camera
+  var p=pick(mx,my);
   if(p>=0){selected=p;focusOn(p);N[p].pulse=1;showNode(N[p]);}});
 cv.addEventListener("mouseleave",function(){tip.style.opacity=0;hover=-1;});
 
@@ -294,7 +296,7 @@ function buildAgentModel(n, host){
       } else {var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";inp.autocomplete="off";
         if(preselect)inp.value=preselect;
         mwrap.appendChild(inp); modelEl=inp;
-        if(r.j&&r.j.error){var e=document.createElement("div");e.className="n";e.textContent=esc(r.j.error);mwrap.appendChild(e);}
+        if(r.j&&r.j.error){var e=document.createElement("div");e.className="n";e.textContent=r.j.error;mwrap.appendChild(e);}
       }
     }).catch(function(){mwrap.innerHTML="";var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";mwrap.appendChild(inp);modelEl=inp;});
   }
@@ -613,7 +615,7 @@ function buildForms(){var host=document.getElementById("cfgForms");host.innerHTM
           } else {var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";inp.autocomplete="off";
             if(onCur)inp.value=cur.model;
             wrap.appendChild(inp);inputs.model=inp;
-            if(r.j&&r.j.error){var e=document.createElement("div");e.className="n";e.textContent=esc(r.j.error);wrap.appendChild(e);}
+            if(r.j&&r.j.error){var e=document.createElement("div");e.className="n";e.textContent=r.j.error;wrap.appendChild(e);}
           }
         }).catch(function(){wrap.innerHTML="";var inp=document.createElement("input");inp.type="text";inp.placeholder="type a model id";wrap.appendChild(inp);inputs.model=inp;});
       };
@@ -879,7 +881,7 @@ function ingestCard(item){
         if(Array.prototype.some.call(sel.options,function(o){return o.value===r.j.business;}))sel.value=r.j.business;
         showProp(r.j.business,r.j.confidence,r.j.why);
       }
-    } else if(v){v.textContent="(couldn't read — "+esc((r.j&&(r.j.why||r.j.error))||"no reason given")+")";}
+    } else if(v){v.textContent="(couldn't read — "+((r.j&&(r.j.why||r.j.error))||"no reason given")+")";}
   }).catch(function(){var v=rd.querySelector(".rv");if(v)v.textContent="(couldn't read — server unreachable)";});}
   var go=document.createElement("button");go.className="ing-go";go.textContent="Ingest here";
   go.addEventListener("click",function(){lastIngestBiz=sel.value;decideIngest(item.cand,sel.value,"ingest",card,shorthand);});
@@ -934,7 +936,7 @@ function renderReportCard(host,items,confidence){
   tbl.appendChild(th);
   var rows=[];
   items.forEach(function(it){
-    var st={cand:it.cand,shorthand:it.summary,business:it.business};rows.push(st);
+    var st={cand:it.cand,shorthand:it.summary,business:it.business,proposed:it.business};rows.push(st);
     var tr=document.createElement("div");tr.className="rc-tr ok";
     // col 1 — shorthand (with a small filename tag)
     var c1=document.createElement("div");c1.className="rc-c1";
@@ -947,7 +949,10 @@ function renderReportCard(host,items,confidence){
     why.innerHTML="→ <b>"+esc(bizTitle(it.business)||"unplaced")+"</b><br>"+esc(it.why||"")+" · "+it.confidence+"%";
     var fix=document.createElement("select");fix.className="karole rc-fix";fix.style.display="none";
     var sk=document.createElement("option");sk.value="";sk.textContent="— skip —";fix.appendChild(sk);
-    ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bizTitle(bz);if(bz===it.business)o.selected=true;fix.appendChild(o);});
+    // NOTE: do NOT pre-select it.business — on ✗ the picker must default to
+    // "— skip —" so an untouched "wrong" skips rather than silently re-filing
+    // into the very business Ross just rejected (which also mis-scored the ladder).
+    ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bizTitle(bz);fix.appendChild(o);});
     fix.addEventListener("change",function(){st.business=fix.value;});
     c2.appendChild(why);c2.appendChild(fix);
     // col 3 — ✓ / ✗
@@ -963,7 +968,7 @@ function renderReportCard(host,items,confidence){
   var foot=document.createElement("div");foot.className="rc-foot";
   var place=document.createElement("button");place.className="ing-go";place.textContent="Place all "+items.length;
   place.addEventListener("click",function(){place.disabled=true;place.textContent="placing…";
-    post("/api/ingest/autoplace",{items:rows.map(function(st){return {cand:st.cand,business:st.business,shorthand:st.shorthand};})})
+    post("/api/ingest/autoplace",{items:rows.map(function(st){return {cand:st.cand,business:st.business,shorthand:st.shorthand,proposed:st.proposed};})})
       .then(function(){loadIngest();}).catch(function(){place.disabled=false;place.textContent="Place all";alert("server unreachable");});});
   var back=document.createElement("button");back.className="ing-skip";back.textContent="Cancel";
   back.addEventListener("click",loadIngest);
