@@ -1293,6 +1293,7 @@ class ConsoleServer(ThreadingHTTPServer):
                           "name": (p.get("source") or p.get("text", "")[:40]),
                           "business": pr.get("business", ""),
                           "confidence": round(c * 100),
+                          "why": pr.get("why", ""),
                           "summary": pr.get("summary", "")})
         return {"items": items, "count": len(items),
                 "confidence": round(sum(confs) / len(confs) * 100) if confs else 0}

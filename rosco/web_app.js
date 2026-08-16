@@ -906,26 +906,38 @@ function renderReportCard(host,items,confidence){
   var head=document.createElement("div");head.className="rc-head";
   head.innerHTML="I read the next <b>"+items.length+"</b> — about <b>"+confidence+"%</b> confident where they go. Green ✓ if I'm right, red ✗ if I'm wrong (then pick the real home, or skip). That correction is how I learn.";
   host.appendChild(head);
+  var tbl=document.createElement("div");tbl.className="rc-tbl";
+  var th=document.createElement("div");th.className="rc-tr rc-th";
+  th.innerHTML="<div>Shorthand</div><div>Why it's going where</div><div>OK?</div>";
+  tbl.appendChild(th);
   var rows=[];
   items.forEach(function(it){
     var st={cand:it.cand,shorthand:it.summary,business:it.business};rows.push(st);
-    var row=document.createElement("div");row.className="rc-row ok";
-    var top=document.createElement("div");top.className="rc-top";
-    top.innerHTML="<span class='rc-name'>"+esc((it.name||"").split("/").pop()||"item")+"</span><span class='rc-conf'>"+it.confidence+"%</span>";
+    var tr=document.createElement("div");tr.className="rc-tr ok";
+    // col 1 — shorthand (with a small filename tag)
+    var c1=document.createElement("div");c1.className="rc-c1";
+    var nm=document.createElement("span");nm.className="rc-name";nm.textContent=(it.name||"").split("/").pop()||"item";
     var gist=document.createElement("div");gist.className="rc-gist";gist.textContent=it.summary||"(no shorthand)";
-    var line=document.createElement("div");line.className="rc-line";
-    var pick=document.createElement("span");pick.className="rc-pick";pick.innerHTML="→ <b>"+esc(bizTitle(it.business)||"unplaced")+"</b>";
-    var yes=document.createElement("button");yes.className="rc-yes on";yes.textContent="✓";yes.title="right";
-    var no=document.createElement("button");no.className="rc-no";no.textContent="✗";no.title="wrong";
+    c1.appendChild(nm);c1.appendChild(gist);
+    // col 2 — why it's going where (turns into a picker on ✗)
+    var c2=document.createElement("div");c2.className="rc-c2";
+    var why=document.createElement("div");why.className="rc-why";
+    why.innerHTML="→ <b>"+esc(bizTitle(it.business)||"unplaced")+"</b><br>"+esc(it.why||"")+" · "+it.confidence+"%";
     var fix=document.createElement("select");fix.className="karole rc-fix";fix.style.display="none";
     var sk=document.createElement("option");sk.value="";sk.textContent="— skip —";fix.appendChild(sk);
     ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bizTitle(bz);if(bz===it.business)o.selected=true;fix.appendChild(o);});
-    yes.addEventListener("click",function(){st.business=it.business;fix.style.display="none";row.className="rc-row ok";yes.className="rc-yes on";no.className="rc-no";});
-    no.addEventListener("click",function(){st.business=fix.value;fix.style.display="";row.className="rc-row wrong";no.className="rc-no on";yes.className="rc-yes";});
     fix.addEventListener("change",function(){st.business=fix.value;});
-    line.appendChild(pick);line.appendChild(yes);line.appendChild(no);line.appendChild(fix);
-    row.appendChild(top);row.appendChild(gist);row.appendChild(line);host.appendChild(row);
+    c2.appendChild(why);c2.appendChild(fix);
+    // col 3 — ✓ / ✗
+    var c3=document.createElement("div");c3.className="rc-c3";
+    var yes=document.createElement("button");yes.className="rc-yes on";yes.textContent="✓";yes.title="right";
+    var no=document.createElement("button");no.className="rc-no";no.textContent="✗";no.title="wrong — pick the real home";
+    yes.addEventListener("click",function(){st.business=it.business;fix.style.display="none";why.style.display="";tr.className="rc-tr ok";yes.className="rc-yes on";no.className="rc-no";});
+    no.addEventListener("click",function(){st.business=fix.value;fix.style.display="";why.style.display="none";tr.className="rc-tr wrong";no.className="rc-no on";yes.className="rc-yes";});
+    c3.appendChild(yes);c3.appendChild(no);
+    tr.appendChild(c1);tr.appendChild(c2);tr.appendChild(c3);tbl.appendChild(tr);
   });
+  host.appendChild(tbl);
   var foot=document.createElement("div");foot.className="rc-foot";
   var place=document.createElement("button");place.className="ing-go";place.textContent="Place all "+items.length;
   place.addEventListener("click",function(){place.disabled=true;place.textContent="placing…";
