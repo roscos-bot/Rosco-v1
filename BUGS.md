@@ -2,9 +2,9 @@
 
 An end-to-end review of Rosco (my 6 hands-on findings + a 9-agent subsystem
 sweep, deduped). 24 distinct issues, 26 proven by actually running the code.
-22 fixed across commits `3b5575d`, `119ff47`, `840367e`, `404652a`; 2 held for a
-design decision (below). Every fix was re-verified with an isolated repro or the
-test suite before commit.
+23 fixed across commits `3b5575d`, `119ff47`, `840367e`, `404652a`, `1df16b0`; #20
+deferred by Ross (decide when it actually surfaces). Every fix was re-verified
+with an isolated repro or the test suite before commit.
 
 ## Fixed
 
@@ -45,16 +45,19 @@ test suite before commit.
 - **#24** `ingest_autoplace` swallowed errors (false `ok:true`); `sources.have()` raised
   where save/load degrade; stale roster inbox counts + `_BENCH` comment.
 
-## Held for a decision (NOT yet changed)
-- **#18 `ACTION:gmail_draft` / `ingest` auto-execute from a model marker**, and
-  connector-fetched Gmail/Drive/Chat bodies are fed to the model without a
-  "data, not instructions" guard — a prompt-injection payload in a read email
-  could steer the model to emit a draft that fires autonomously. Contradicts
-  "agents propose, humans ship." `web.py` ~378. *Recommended:* gate gmail_draft
-  behind the same confirm step as other writes + wrap connector content.
+### Security (Ross chose "gate drafts + sandbox reads")
+- **#18 `ACTION:gmail_draft` auto-executed from a model marker** — `web.py`. Now
+  `gmail_draft` is PROPOSED and parked for an explicit 'yes' like every other
+  outward write (only internal `ingest` still runs immediately), AND all
+  connector-fetched Google/GitHub content is wrapped with a data-not-instructions
+  guard, so an injected "ACTION:" in a fetched email can neither fire on its own
+  nor even reliably steer the reply.
+
+## Deferred (Ross's call)
 - **#20 `_relevant` lets low-trust INFERRED lessons crowd out firm TOLD facts**
-  once the vault exceeds the 12k grounding cap — `agent.py` ~143. *Recommended:*
-  reserve part of the budget for TOLD, or make the trust weight dominant.
+  once the vault exceeds the 12k grounding cap — `agent.py` ~143. Left unchanged;
+  Ross wants to decide the ranking strategy (reserve-budget vs trust-dominant)
+  when a real case surfaces. Flag it when a vault first crosses the cap.
 
 ## Follow-ups noted (not bugs)
 - Telegram vision read still blocks the poll loop while it runs; now safe to move
