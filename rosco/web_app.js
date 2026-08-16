@@ -150,13 +150,13 @@ function loadMesh(retry){ api("/api/mesh").then(function(res){
   var m=(res.ok&&res.j&&res.j.nodes)?res.j:{nodes:[],edges:[]};
   if(!m.nodes.length&&!retry){setTimeout(function(){loadMesh(true);},800);return;} // transient empty -> one retry
   byId={};N=m.nodes.map(function(n,i){byId[n.id]=i;
-    return {id:n.id,label:n.label,type:n.type,rank:n.rank,biz:n.business,reports:n.reports,
+    return {id:n.id,label:n.label,type:n.type,rank:n.rank,biz:n.business,code:n.code||"",reports:n.reports,
       x:(Math.random()-.5)*1.6,y:(Math.random()-.5)*1.6,z:(Math.random()-.5)*1.6,
       vx:0,vy:0,vz:0,r:n.type==="agent"?(n.rank==="Admiral"?16:n.rank==="Commander"?14:n.rank==="Captain"?10:6.5):(n.type==="file"?4.5:8),
       core:(n.label==="Rosco"||n.label==="Ross"),links:0,pulse:0,tw:Math.random()*6.28};});
   E=m.edges.map(function(e){return[byId[e.a],byId[e.b],e.kind];}).filter(function(e){return e[0]!=null&&e[1]!=null;});
   E.forEach(function(e){N[e[0]].links++;N[e[1]].links++;});
-  layout(); if(N.length){ selected=byId["Rosco"]!=null?byId["Rosco"]:0; resize(); }
+  layout(); if(N.length){ selected=byId["Rosco"]!=null?byId["Rosco"]:0; focusOn(selected);fx=tfx;fy=tfy;fz=tfz; resize(); }
 });}
 
 function layout(){ // simple 3D force: repel all pairs, spring edges, center pull
@@ -174,7 +174,11 @@ function layout(){ // simple 3D force: repel all pairs, spring edges, center pul
 }
 
 var yaw=-.5,pitch=-.26,tYaw=yaw,tPitch=pitch,drag=false,lx=0,ly=0,auto=!reduce,hover=-1,selected=-1;
-function rot(p){var cy=Math.cos(yaw),sy=Math.sin(yaw),x=p.x*cy-p.z*sy,z=p.x*sy+p.z*cy,y=p.y,cx=Math.cos(pitch),sx=Math.sin(pitch);
+// Camera focus point: clicking a node flies IT to screen center (the graph orbits
+// the selection instead of its own midpoint). tf* is the target, f* eases toward it.
+var fx=0,fy=0,fz=0,tfx=0,tfy=0,tfz=0;
+function focusOn(i){if(i>=0&&N[i]){tfx=N[i].x;tfy=N[i].y;tfz=N[i].z;}}
+function rot(p){var X=p.x-fx,Y=p.y-fy,Z=p.z-fz,cy=Math.cos(yaw),sy=Math.sin(yaw),x=X*cy-Z*sy,z=X*sy+Z*cy,y=Y,cx=Math.cos(pitch),sx=Math.sin(pitch);
   return{x:x,y:y*cx-z*sx,z:y*sx+z*cx};}
 var cv=document.getElementById("cv"),ctx=cv.getContext("2d"),W=0,H=0,DPR=1;
 function resize(){DPR=Math.min(window.devicePixelRatio||1,2);var b=cv.getBoundingClientRect();W=b.width;H=b.height;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);}
@@ -191,7 +195,7 @@ function frame(){var T=performance.now();
   // Self-heal a stale 0x0 canvas (measured while hidden): if it now has a real
   // size, adopt it; if still zero, keep the loop alive but skip the dead draw.
   if(!W||!H){resize();if(!W||!H){return requestAnimationFrame(frame);}}
-  if(auto&&!drag)tYaw+=.0015;yaw+=(tYaw-yaw)*.08;pitch+=(tPitch-pitch)*.08;ctx.clearRect(0,0,W,H);
+  if(auto&&!drag)tYaw+=.0015;yaw+=(tYaw-yaw)*.08;pitch+=(tPitch-pitch)*.08;fx+=(tfx-fx)*.08;fy+=(tfy-fy)*.08;fz+=(tfz-fz)*.08;ctx.clearRect(0,0,W,H);
   for(var i=0;i<N.length;i++){var r=rot(N[i]),p=project(r);N[i].px=p.x;N[i].py=p.y;N[i].pf=p.f;N[i].pz=r.z;
     N[i].pr=N[i].r*p.f*(1+Math.min(N[i].links,10)*.03);if(N[i].pulse>0)N[i].pulse*=.955;}
   var sel=null;if(selected>=0&&N[selected]){sel={};E.forEach(function(e){if(e[0]===selected)sel[e[1]]=1;if(e[1]===selected)sel[e[0]]=1;});sel[selected]=1;}
@@ -216,7 +220,9 @@ function frame(){var T=performance.now();
     if(n.waiting&&!dim){var pw=base+7+2*Math.sin(T/300+n.tw);ctx.beginPath();ctx.arc(n.px,n.py,pw,0,7);
       ctx.strokeStyle="#c9a227";ctx.globalAlpha=.5+.3*Math.sin(T/300+n.tw);ctx.lineWidth=1.4;ctx.stroke();}
     ctx.globalAlpha=1;
-    if((n.r>=10||hi)&&!dim){ctx.font="700 "+(n.r>=14?12:10.5)+"px ui-monospace,Consolas,monospace";ctx.fillStyle="#e8efeb";ctx.textAlign="center";ctx.fillText(n.label,n.px,n.py-base-7);}
+    if(!dim&&(n.type==="agent"||n.r>=10||hi)){var big=n.r>=14;ctx.textAlign="center";
+      if(n.code&&n.r>=10){ctx.font="700 9px ui-monospace,Consolas,monospace";ctx.fillStyle="#37b0a0";ctx.fillText(n.code,n.px,n.py-base-7-(big?13:11.5));}
+      ctx.font="700 "+(big?12:n.r>=10?10.5:9.5)+"px ui-monospace,Consolas,monospace";ctx.fillStyle="#e8efeb";ctx.fillText(n.label,n.px,n.py-base-7);}
     ctx.globalCompositeOperation="lighter";}
   ctx.globalCompositeOperation="source-over";requestAnimationFrame(frame);
 }
@@ -231,7 +237,7 @@ cv.addEventListener("mousemove",function(e){var b=cv.getBoundingClientRect(),mx=
 cv.addEventListener("mousedown",function(e){drag=true;auto=false;var b=cv.getBoundingClientRect();lx=e.clientX-b.left;ly=e.clientY-b.top;});
 window.addEventListener("mouseup",function(){drag=false;});
 cv.addEventListener("click",function(e){var b=cv.getBoundingClientRect(),p=pick(e.clientX-b.left,e.clientY-b.top);
-  if(p>=0){selected=p;N[p].pulse=1;showNode(N[p]);}});
+  if(p>=0){selected=p;focusOn(p);N[p].pulse=1;showNode(N[p]);}});
 cv.addEventListener("mouseleave",function(){tip.style.opacity=0;hover=-1;});
 
 // ---- context panel: click a node -> its details; "back" -> the queue ----
@@ -253,7 +259,7 @@ function showNode(n){
     +"</div>";
   document.getElementById("back").addEventListener("click",restoreQueue);
   ctx.querySelectorAll("[data-jump]").forEach(function(el){el.addEventListener("click",function(){
-    var i=byId[el.getAttribute("data-jump")]; if(i!=null){selected=i;N[i].pulse=1;showNode(N[i]);}});});
+    var i=byId[el.getAttribute("data-jump")]; if(i!=null){selected=i;focusOn(i);N[i].pulse=1;showNode(N[i]);}});});
   // Agents (graph nodes) can be pinned to their own model, right here. People,
   // sites and tools have no model, so the picker is agents-only.
   if(n.type==="agent") buildAgentModel(n, ctx.querySelector(".node-ctx"));
@@ -337,7 +343,7 @@ var TOOLS=[["Mesh","M12 3v4M12 17v4M3 12h4M17 12h4M12 8a4 4 0 100 8 4 4 0 000-8z
   ["Tools","M14 7l3 3-8 8-3-3zM3 21l4-1"],["Spend","M4 18l5-6 4 4 7-9"],["Verify","M20 6L9 17l-5-5"]];
 function showTool(name){
   // Mesh = the graph (always centre) with the default queue on the right; Queue = the same list.
-  if(name==="Mesh"||name==="Queue"){selected=byId["Rosco"]!=null?byId["Rosco"]:selected;restoreQueue();return;}
+  if(name==="Mesh"||name==="Queue"){selected=byId["Rosco"]!=null?byId["Rosco"]:selected;focusOn(selected);restoreQueue();return;}
   var ctx=document.getElementById("ctx");
   // note: no #rhead/#qwrap ids here, so the 15s queue poll won't clobber this view
   ctx.innerHTML="<div class='rhead'>"+esc(name)+"</div><div class='stream' id='toolbody'><div class='empty'>Loading…</div></div>";
