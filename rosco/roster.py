@@ -62,7 +62,7 @@ BUSINESSES = (
     Business("4x4-explorers", "4x4 Explorers", "Scout", "rossfusz@gmail.com", False),
     Business("spring-valley", "Spring Valley", "Argus", "rossfusz@gmail.com", False),
     Business("finance", "Finance", "Ledger", "rossfusz@gmail.com", False),
-    Business("personal", "Personal & Home", "Rosco", "rossfusz@gmail.com", False),
+    Business("personal", "Personal & Home", "Hearth", "rossfusz@gmail.com", False),
     # The system's own code and architecture - its own silo so ingesting Rosco-v1
     # to make Rosco a code expert never muddies a real business's brain. Captained
     # by Rosco (no duplicate agent, see roster()), and Rosco-the-chief reads it via
@@ -91,10 +91,12 @@ def roster() -> list[Agent]:
     """Everyone, in order of precedence."""
     out = [Agent("Rosco", ADMIRAL, "*", "chief of staff", "ross")]
     for biz in BUSINESSES:
-        # Rosco wears two hats: Chief of Staff, and Captain of Personal. That is
-        # deliberate - the personal business is the one Ross is himself in - but
-        # it is the only doubling, and it is why the enrichment check in
-        # grants.py runs against the READER rather than the agent.
+        # Rosco (the Admiral) is chief of staff over '*' and also holds the 'system'
+        # code vault as captain - so skip minting a duplicate agent when a business's
+        # captain IS Rosco. Every real business gets its own captain now, including
+        # Personal -> Hearth (inbound to rossfusz@gmail is Hearth's, but flows to
+        # Rosco to route). The grants.py enrichment runs against the READER, not the
+        # agent, so it stays correct however the hats fall.
         if biz.captain != "Rosco":
             out.append(Agent(biz.captain, CAPTAIN, biz.slug, "commands the business", "Rosco"))
         names = _BENCH[biz.slug]
