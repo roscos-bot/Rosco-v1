@@ -1219,7 +1219,7 @@ function nextEmailCard(item,moreCount){
   tsave.addEventListener("click",function(){var t=tin.value.trim();if(!t){tin.focus();return;}
     card.querySelectorAll("button,textarea,input").forEach(function(b){b.disabled=true;});msg.className="ksst";msg.textContent="making task…";
     post("/api/task",{ref:item.ref,text:t}).then(function(r){
-      if(r.ok){msg.className="ksst g";msg.textContent="✓ task made"+(r.j.archived?" + archived":"");setTimeout(loadNext,700);}
+      if(r.ok){msg.className="ksst g";msg.textContent="✓ task made"+(r.j.gtask?" · in Google Tasks":"")+(r.j.archived?" + archived":"");setTimeout(loadNext,700);}
       else{card.querySelectorAll("button,textarea,input").forEach(function(b){b.disabled=false;});msg.className="ksst r";msg.textContent=(r.j&&r.j.error)||"failed";}
     }).catch(function(){card.querySelectorAll("button,textarea,input").forEach(function(b){b.disabled=false;});msg.className="ksst r";msg.textContent="unreachable";});});
   // Talk it through with Rosco — grounded in THIS email. A read: it explains or

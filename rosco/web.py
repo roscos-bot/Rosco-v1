@@ -1850,25 +1850,36 @@ class ConsoleServer(ThreadingHTTPServer):
             "from": ref.get("from", ""), "subject": ref.get("subject", ""),
             "source": "email" if ref.get("id") else "manual"},
             subject=tid, actor="ross")
-        archived = False
+        # One token (the email's account, else personal), used for BOTH the archive
+        # and the Google Tasks push.
+        archived, gtask = False, False
+        try:
+            token = g.access_for(Vault(log, key=self.console._vault_key(s.passphrase)),
+                                 ref.get("account") or "personal")
+        except Exception:
+            token = ""
         mid = (ref.get("id") or "").strip()
-        if mid and re.match(r"^[A-Za-z0-9_-]+$", mid):
+        if token and mid and re.match(r"^[A-Za-z0-9_-]+$", mid):
             try:
-                token = g.access_for(Vault(log, key=self.console._vault_key(s.passphrase)),
-                                     ref.get("account") or "personal")
-                if token:
-                    g.gmail_modify(token, mid, remove=["INBOX"])
-                    archived = True
-                    dom = _email_domain(ref.get("from", ""))
-                    if dom:
-                        try:
-                            log.append("inbox.acted", {"domain": dom, "action": "archive"},
-                                       subject=dom, actor="ross")
-                        except Exception:
-                            pass
+                g.gmail_modify(token, mid, remove=["INBOX"])
+                archived = True
+                dom = _email_domain(ref.get("from", ""))
+                if dom:
+                    try:
+                        log.append("inbox.acted", {"domain": dom, "action": "archive"},
+                                   subject=dom, actor="ross")
+                    except Exception:
+                        pass
             except Exception:
                 pass
-        return {"ok": True, "task": tid, "archived": archived}
+        # Also push it to Google Tasks so it syncs to the phone. Best-effort: needs
+        # the tasks scope; if that's not granted yet it just returns '' and the
+        # Rosco-side task above still stands (the to-do is never lost).
+        if token:
+            frm, subj = ref.get("from", ""), ref.get("subject", "")
+            notes = ("From " + frm + (" · " + subj if subj else "")) if frm else (subj or "")
+            gtask = bool(g.gtasks_insert(token, text, notes=notes.strip()))
+        return {"ok": True, "task": tid, "archived": archived, "gtask": gtask}
 
     def tasks(self, s):
         """Open to-dos — created and not yet marked done, newest first. Read

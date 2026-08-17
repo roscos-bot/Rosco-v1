@@ -40,6 +40,7 @@ SCOPES = (
     "https://www.googleapis.com/auth/chat.spaces",     # Chat spaces
     "https://www.googleapis.com/auth/chat.messages",   # Chat messages (post)
     "https://www.googleapis.com/auth/contacts",        # Contacts
+    "https://www.googleapis.com/auth/tasks",           # Google Tasks (read/write)
     "openid", "email", "profile",                      # who authorized
 )
 
@@ -534,6 +535,26 @@ def gmail_trash(token: str, message_id: str) -> dict:
     return safehttp.call(
         f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/trash",
         method="POST", bearer=token, timeout=15, payload={})
+
+
+def gtasks_insert(token: str, title: str, notes: str = "") -> str:
+    """Create a task in the user's DEFAULT Google Tasks list, so a '→ Task' in the
+    console also lands in the phone's Tasks app. Returns the new task's id, or ''.
+    Needs the tasks scope — without it the API 403s and this returns '' (the caller
+    keeps the Rosco-side task regardless, so a missing scope never loses the to-do).
+    """
+    title = (title or "").strip()
+    if not title:
+        return ""
+    body = {"title": title[:1024]}
+    if notes:
+        body["notes"] = notes[:8000]
+    try:
+        d = safehttp.call("https://tasks.googleapis.com/tasks/v1/lists/@default/tasks",
+                          method="POST", bearer=token, payload=body, timeout=15)
+    except Exception:
+        return ""
+    return (d.get("id", "") if isinstance(d, dict) else "") or ""
 
 
 # Ross is in the St. Louis metro - Central. Calendar rejects a naive dateTime
