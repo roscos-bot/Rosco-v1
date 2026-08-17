@@ -133,6 +133,21 @@ KINDS: dict[str, str] = {
     # a forged one plants no knowledge - it grants nothing and stores nothing.
     "ingest.proposed": NODE,
     "ingest.decided": NODE,
+
+    # Inbox triage in Next: Ross acted on an email (archive/reply/trash/...). A
+    # plain node fact — it grants nothing — and it is the domain->action signal
+    # the importance ranker learns from; a batch sweep records one per domain.
+    "inbox.acted": NODE,
+
+    # A to-do Rosco captured from an email Ross closed out. NODE — a task grants
+    # nothing; it is a reminder, read defensively like every node body.
+    "task.created": NODE,
+    "task.done": NODE,
+
+    # A shipment tracking number Rosco captured from the inbox, and its close-out.
+    # NODE — it grants nothing; it's a note Ross can verify against the carrier.
+    "tracking.recorded": NODE,
+    "tracking.closed": NODE,
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -207,6 +222,11 @@ REQUIRED: dict[str, tuple[str, ...]] = {
 
     "ingest.proposed": ("cand", "text"),
     "ingest.decided": ("cand", "action"),
+    "inbox.acted": ("domain", "action"),
+    "task.created": ("id", "text"),
+    "task.done": ("id",),
+    "tracking.recorded": ("number",),
+    "tracking.closed": ("number",),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a
@@ -224,9 +244,13 @@ ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     # absorb() and replay(), before it can reach any screen. The dashboard also
     # escapes it and forbids inline script, so it is three layers deep.
     ("ask.raised", "verb"): ("get", "do"),
-    # A routing decision is 'ingest' (learn it into the chosen business) or
-    # 'skip'. A malformed action from a compromised node is dropped at absorb().
-    ("ingest.decided", "action"): ("ingest", "skip"),
+    # A routing decision is 'ingest'/'skip'; the inbox tidy verbs also land here
+    # via Ingest.acted (they clear a card without learning). A malformed action
+    # from a compromised node is dropped at absorb().
+    ("ingest.decided", "action"): ("ingest", "skip", "archive", "star", "keep",
+                                   "done", "markread", "trash", "spam", "reply"),
+    ("inbox.acted", "action"): ("archive", "star", "keep", "done", "markread",
+                                "trash", "spam", "reply"),
 }
 
 

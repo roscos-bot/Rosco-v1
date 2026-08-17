@@ -399,6 +399,63 @@ def gmail_draft(token: str, to: str = "", subject: str = "", body: str = "",
                          payload={"message": message})
 
 
+def _addr_domains(value: str) -> set:
+    """The email domains in a header value ('A <a@x.com>, b@y.org' -> {x.com,y.org})."""
+    import re
+    return {m.group(1).lower() for m in
+            re.finditer(r"@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})", value or "")}
+
+
+def gmail_sent_to_domains(token: str, n: int = 25) -> set:
+    """Domains Ross has SENT mail to - the 'people I actually reply to' signal the
+    importance ranker seeds on. Reads recent Sent, pulls each To header, returns
+    the set of recipient domains. Bounded (n messages) and cache it - it's the
+    slow part of building the queue."""
+    lst = safehttp.call(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages?" + _q({
+            "maxResults": n, "q": "in:sent"}),
+        method="GET", bearer=token, timeout=15)
+    doms = set()
+    for m in (lst.get("messages") or [])[:n]:
+        mid = m.get("id")
+        if not mid:
+            continue
+        try:
+            md = safehttp.call(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}?" + _q({
+                    "format": "metadata"}) + "&metadataHeaders=To",
+                method="GET", bearer=token, timeout=10)
+        except Exception:
+            continue
+        for h in ((md.get("payload") or {}).get("headers") or []):
+            if h.get("name", "").lower() == "to":
+                doms |= _addr_domains(h.get("value", ""))
+    return doms
+
+
+def gmail_modify(token: str, message_id: str, *, add: list | None = None,
+                 remove: list | None = None) -> dict:
+    """Add/remove Gmail label ids on one message - the reversible primitive under
+    archive (remove INBOX), star (add STARRED), mark-read (remove UNREAD) and
+    spam (add SPAM, remove INBOX). A label change, never a delete."""
+    if not message_id:
+        return {}
+    return safehttp.call(
+        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/modify",
+        method="POST", bearer=token, timeout=15,
+        payload={"addLabelIds": add or [], "removeLabelIds": remove or []})
+
+
+def gmail_trash(token: str, message_id: str) -> dict:
+    """Move a message to Trash - recoverable for 30 days. The permanent-delete
+    endpoint (messages/{id} DELETE) is deliberately never wired here."""
+    if not message_id:
+        return {}
+    return safehttp.call(
+        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/trash",
+        method="POST", bearer=token, timeout=15, payload={})
+
+
 # Ross is in the St. Louis metro - Central. Calendar rejects a naive dateTime
 # ("Missing time zone"), so every event carries the zone explicitly; a bare
 # "3pm" is then read as 3pm Central, and a dateTime that already has an offset

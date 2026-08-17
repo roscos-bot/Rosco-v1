@@ -98,6 +98,11 @@ CATALOGUE: tuple[Capability, ...] = (
     Capability("house", "personal", "home automation and the alarm"),
     Capability("calendar", "personal", "Ross's calendar"),
     Capability("family", "personal", "family logistics"),
+
+    # --- Triage: not a real capability anyone is granted. It exists so an
+    # unclassifiable message from someone we KNOW still lands in Ross's queue
+    # (never silently dropped or misfiled as a stranger) for him to read himself.
+    Capability("unclear", "triage", "a message Rosco couldn't place — read it yourself"),
 )
 
 

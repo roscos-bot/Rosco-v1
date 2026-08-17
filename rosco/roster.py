@@ -17,6 +17,7 @@ which refuses any other author.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # Ranks, senior first. The ladder is deliberately short: four rungs is enough to
@@ -124,6 +125,79 @@ def find(name: str) -> Agent | None:
 def bench(business: str) -> list[Agent]:
     """A Captain's own bench. It may convene these and nobody else's."""
     return [a for a in roster() if a.business == business and a.rank != CAPTAIN]
+
+
+# The four domains a bench seat can own, matching _ROLES. A captain leans on the
+# specialist whose domain a task falls in - THIS is what makes the bench real
+# rather than a picture: delegation resolves a task to one of these, or (None)
+# stays with the captain.
+DOMAINS = ("law", "marketing", "books", "it")
+
+
+def specialist_for(business: str, domain: str) -> Agent | None:
+    """The bench member who owns `domain` in `business`, or None.
+
+    None means either an unknown domain or an EMPTY seat (a business with no
+    'marketing' bench, say) - and an empty seat is not an error, it just means
+    the captain keeps that work itself. So a caller treats None as 'no delegate,
+    the captain handles it', never as a failure. The captain is never returned
+    here: delegation is one rung DOWN, and returning the captain would let a
+    caller think it had delegated when it had not.
+    """
+    d = (domain or "").strip().lower()
+    if d not in DOMAINS:
+        return None
+    for a in roster():
+        if a.business == business and a.role == d and a.rank != CAPTAIN:
+            return a
+    return None
+
+
+# The words that tip a task into one bench domain. Curated to be low-collision:
+# multi-character, business-specific terms, matched on word boundaries so 'ad'
+# never fires on 'add' and 'api' never on 'apiece'. Not exhaustive - it only has
+# to catch the clear cases, because an unclear one deliberately stays with the
+# captain.
+_DOMAIN_HINTS = {
+    "law": ("legal", "lawyer", "attorney", "contract", "lease", "permit",
+            "license", "licence", "compliance", "atf", "ffl", "nfa", "form 4",
+            "form 3", "form 1", "stamp", "easement", "zoning", "liability",
+            "warranty", "insurance", "regulation", "ordinance", "part 137",
+            "44807"),
+    "marketing": ("post", "campaign", "social", "advert", "advertising", "copy",
+                  "brand", "blog", "newsletter", "launch", "promo", "promotion",
+                  "seo", "content", "flyer", "facebook", "instagram", "linkedin",
+                  "tagline", "audience", "hashtag"),
+    "books": ("invoice", "payment", "budget", "costing", "margin", "quote",
+              "pricing", "payroll", "taxes", "qbo", "quickbooks", "bookkeeping",
+              "receivable", "payable", "profit", "expense", "reconcile"),
+    "it": ("website", "webpage", "deploy", "server", "database", "integration",
+           "webhook", "dashboard", "netlify", "endpoint", "software", "codebase",
+           "api"),
+}
+
+
+def domain_of(text: str) -> str | None:
+    """Which bench domain a task falls in - law/marketing/books/it - or None.
+
+    Deterministic and conservative on purpose: it delegates only on a clear,
+    single-domain signal. Zero hits, or a TIE across domains, returns None so an
+    ambiguous task stays with the captain rather than a coin-flip handing NFA
+    paperwork to the marketing seat. Same discipline as the capability
+    classifier: match by whole word, and when two readings are equally strong,
+    refuse. A refusal here is not a failure - it just means the captain keeps it.
+    """
+    low = (text or "").lower()
+    scored: dict[str, int] = {}
+    for domain, hints in _DOMAIN_HINTS.items():
+        n = sum(1 for kw in hints if re.search(rf"\b{re.escape(kw)}\b", low))
+        if n:
+            scored[domain] = n
+    if not scored:
+        return None
+    top = max(scored.values())
+    winners = [d for d, n in scored.items() if n == top]
+    return winners[0] if len(winners) == 1 else None
 
 
 def escalates_to(name: str) -> str:

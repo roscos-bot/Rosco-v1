@@ -34,6 +34,57 @@ def chunk(text: str) -> list[str]:
     return knowledge._chunks(text or "")
 
 
+# The autonomy ladder. Rosco earns a rung by getting placements right in a row;
+# a single wrong one snaps the streak (see readiness) and can drop it back. The
+# names are what Ross reads; the gates are computed purely from the review
+# history already tracked - no new telemetry. Entry needs a real sample first
+# (a few decided) so one lucky guess never vaults it up the ladder. The top rung
+# only ever automates the SAFE, REVERSIBLE, INTERNAL act (placing a lesson);
+# nothing outbound, destructive or spending is ever automated at any rung.
+STAGES = ("learning", "crawling", "walking", "running", "auto")
+# stage -> (min streak, min DISTINCT businesses placed correctly, must be 'confident').
+# The distinct-business gate is the anti-gaming rule: a 40-long streak of a bulk
+# repo dumped into ONE bucket proves volume, not judgement. Earning the upper
+# rungs takes correctly sorting items across SEVERAL real businesses - the actual
+# skill the autonomy would exercise. Discernment, not a monotone pile.
+_STAGE_GATE = {
+    "learning": (0, 0, False), "crawling": (2, 1, False), "walking": (5, 2, False),
+    "running": (10, 3, True), "auto": (20, 4, True)}
+_MIN_SAMPLE = 3                     # decisions before anything above 'learning'
+
+
+def _stage_for(streak: int, decided: int, distinct: int,
+               confident: bool) -> tuple[str, str]:
+    """(stage, one-line 'what earns the next rung'). The highest rung whose gate
+    - streak AND business-variety AND (for the top two) recent accuracy - is met."""
+    reached = "learning"
+    for name in STAGES:
+        min_s, min_d, need_c = _STAGE_GATE[name]
+        if name != "learning" and decided < _MIN_SAMPLE:
+            break
+        if streak >= min_s and distinct >= min_d and (confident if need_c else True):
+            reached = name
+        else:
+            break
+    i = STAGES.index(reached)
+    if i == len(STAGES) - 1:
+        return reached, "top rung - Rosco may pre-place routine items; you still see every one"
+    nxt = STAGES[i + 1]
+    if decided < _MIN_SAMPLE:
+        return reached, f"place {_MIN_SAMPLE - decided} more to get going"
+    min_s, min_d, need_c = _STAGE_GATE[nxt]
+    needs = []
+    if streak < min_s:
+        needs.append(f"{min_s - streak} more right in a row")
+    if distinct < min_d:
+        needs.append(f"correct placements in {min_d - distinct} more business(es)")
+    if need_c and not confident:
+        needs.append("a solid recent rate")
+    if not needs:
+        return reached, f"one more clean batch to reach {nxt}"
+    return reached, " + ".join(needs) + f" to reach {nxt}"
+
+
 class Ingest:
     """The review queue over the append-only log. No state of its own."""
 
@@ -58,12 +109,15 @@ class Ingest:
                 conf = max(0.0, min(1.0, float(it.get("confidence", 0) or 0)))
             except (TypeError, ValueError):
                 conf = 0.0
+            ref = it.get("ref")
             self.log.append(
                 "ingest.proposed",
                 {"cand": cand, "text": text[:8000], "source": source,
                  "business": biz, "confidence": conf,
                  "why": (it.get("why") or "")[:200],
-                 "summary": (it.get("summary") or "")[:1200]},   # the shorthand — what gets learned
+                 "summary": (it.get("summary") or "")[:1200],   # the shorthand — what gets learned
+                 "kind": (it.get("kind") or "").strip()[:20],   # email|doc|code|… drives the card's verbs
+                 "ref": ref if isinstance(ref, dict) else {}},   # the handle to act on (gmail id+account, …)
                 subject=source or "paste", actor=by)
             n += 1
         return n
@@ -102,8 +156,33 @@ class Ingest:
                         "business": b.get("business", ""),
                         "confidence": b.get("confidence", 0),
                         "why": b.get("why", ""),
-                        "summary": b.get("summary", "")})
+                        "summary": b.get("summary", ""),
+                        "kind": b.get("kind", ""),
+                        "ref": b.get("ref") if isinstance(b.get("ref"), dict) else {}})
         return out
+
+    def ref_of(self, cand: str) -> dict:
+        """The stored kind + actionable handle for a candidate — what the email
+        (and later calendar/chat) verbs need to touch the real object."""
+        p = self._proposals().get(cand) or {}
+        return {"kind": p.get("kind", ""), "source": p.get("source", ""),
+                "ref": p.get("ref") if isinstance(p.get("ref"), dict) else {}}
+
+    def acted(self, cand: str, action: str, *, by: str = "ross") -> dict:
+        """Record a NON-learning decision on an item (an email tidy verb like
+        archive/trash, a reference-keep) so the card clears and the act is on the
+        log. Deliberately NOT a placement: proposed='' means readiness ignores it,
+        so processing your inbox never moves the routing ladder."""
+        prop = self._proposals().get(cand)
+        if prop is None:
+            raise ValueError(f"unknown candidate {cand!r}")
+        if cand in self._decided_ids():
+            raise ValueError("that item was already decided")
+        return self.log.append(
+            "ingest.decided",
+            {"cand": cand, "action": action, "business": "",
+             "proposed": "", "accepted": False},
+            subject=prop.get("source", "ingest"), actor=by)
 
     def text_of(self, cand: str) -> str:
         """The raw text queued for a candidate - so a shorthand can be distilled
@@ -189,13 +268,21 @@ class Ingest:
         means a solid recent streak on a decent sample; deliberately not a single
         lucky guess."""
         hits = []
+        placed = []                     # businesses of ACCEPTED placements, in order
         for ev in self.log.replay(kind="ingest.decided"):
             b = ev["body"]
             if b.get("action") != "ingest" or not b.get("proposed"):
                 continue
-            hits.append(bool(b.get("accepted")))
+            ok = bool(b.get("accepted"))
+            hits.append(ok)
+            if ok:
+                placed.append(b.get("business", ""))
         total = len(hits)
         accepted = sum(hits)
+        # Discernment: how many DISTINCT businesses the recent accepted placements
+        # spanned. This is what the upper rungs gate on, so a bulk pile into one
+        # bucket can't buy autonomy over the real, varied sorting task.
+        distinct = len(set(b for b in placed[-20:] if b))
         recent = hits[-10:]
         rate = accepted / total if total else 0.0
         recent_rate = sum(recent) / len(recent) if recent else 0.0
@@ -211,7 +298,10 @@ class Ingest:
         next_batch = (1 if streak < 1 else 2 if streak < 2 else 5 if streak < 5
                       else 10 if streak < 10 else 20 if streak < 20 else 40)
         confident = total >= 8 and recent_rate >= 0.8
+        stage, to_next = _stage_for(streak, total, distinct, confident)
         return {"decided": total, "accepted": accepted,
                 "rate": round(rate, 2), "recentRate": round(recent_rate, 2),
                 "confident": confident, "streak": streak, "nextBatch": next_batch,
-                "pending": len(self.pending())}
+                "pending": len(self.pending()), "distinct": distinct,
+                "stage": stage, "stageIndex": STAGES.index(stage),
+                "stages": list(STAGES), "toNext": to_next}

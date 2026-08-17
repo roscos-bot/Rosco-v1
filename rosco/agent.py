@@ -110,16 +110,24 @@ class Agent:
     # ---- grounding -------------------------------------------------------
 
     def knows(self):
-        """What this agent has learned about its business. Its grounding.
+        """What this agent can ground on: its business's shared knowledge.
+
+        The silo is the BUSINESS, not the individual - see vault.py. A lesson
+        belongs to 'rum', and every RUM agent stands on the same corpus: the
+        captain AND the bench specialists it leans on. So grounding filters by
+        business only. Who LEARNED each lesson is kept on the lesson (for
+        attribution and the readable per-agent page), but it is never a wall
+        between a captain and its own bench - a wall there would leave a
+        delegated specialist blind, grounding on nothing, because the starter
+        facts are all seeded under the captain's name.
 
         Rosco (business '*') is the one agent that reads across everything - the
         chief-of-staff enrichment role from the design - so it grounds on the
-        whole vault rather than a single business's slice. Every other agent sees
-        only its own business, which is the silo.
+        whole vault rather than a single business's slice.
         """
         if self.business == "*":
             return self.vault.recall()
-        return self.vault.recall(business=self.business, agent=self.name)
+        return self.vault.recall(business=self.business)
 
     def _relevant(self, lessons, query, cap: int = GROUNDING_CAP):
         """The lessons most worth grounding on for THIS query, up to a char budget.

@@ -447,10 +447,36 @@ class Console:
             captain = biz.captain if biz else None
             if not captain:
                 return "You're cleared for that."
-            agent = Agent(captain, log, think=think, meter=meter)
+            # Rosco leans on the bench, for real. Route the task to the
+            # specialist whose domain it falls in (law / marketing / books / it);
+            # the captain keeps anything ambiguous or with an empty seat. The
+            # specialist grounds on the SAME business silo (the silo is the
+            # business, not the individual) and records the work under its own
+            # name, so the ledger and the mesh show who actually did it -
+            # captain -> specialist, not a captain doing everything alone. The
+            # OUTBOUND reply never names an internal agent to an outsider; the
+            # delegation is visible to Ross, not to the person who wrote in.
+            specialist = roster.specialist_for(
+                req.business, roster.domain_of(req.detail))
+            agent = Agent(specialist.name if specialist else captain,
+                          log, think=think, meter=meter)
             if req.verb == GET:
-                # A read: the captain answers directly.
-                return agent.answer(req.detail, for_person=req.person)
+                # SUBJECT-scope enforcement, fail-closed. A grant limited to the
+                # person's OWN rows (decide() -> scope=subject) must never serve
+                # the owner's whole account. We can't yet filter the live Google
+                # digest down to one subject, so a subject-scoped read gets NO
+                # digest and a plain cleared-message - returning the lot "because
+                # the filter is inconvenient" is exactly the breach filtered_by warns of.
+                if decision.filtered_by(req.person) is not None:
+                    return ("You're cleared for that - but only the parts about you, "
+                            "and that filtered view isn't wired yet, so I can't pull "
+                            "it here. Ask Ross if you need it now.")
+                # A read: the captain answers directly, grounded in live Google
+                # data when THIS business is connected. Best-effort - a Workspace
+                # hiccup or an unconnected business degrades to knowledge alone,
+                # never a crash. Reads only; the digest carries no way to send.
+                ctx = _google_context(self, log, passphrase, req.business, req.detail)
+                return agent.answer(req.detail, for_person=req.person, context=ctx)
             # An action: the captain DRAFTS it. Nothing is executed or sent from
             # an inbound message - the draft is a proposal for Ross to ship.
             r = agent.work(req.detail)
@@ -597,6 +623,68 @@ class Console:
             out.append(f"  !! rejected: {ev.get('node')}#{ev.get('seq')} "
                        f"{ev.get('kind')} ({ev.get('problem')})")
         return "\n".join(out)
+
+
+_GOOGLE_HINTS = ("email", "gmail", "inbox", " mail", "unread", "drive", "file",
+                 "document", " doc", "folder", "spreadsheet", "sheet", "calendar",
+                 "schedule", "meeting", "event", "appointment", "upcoming")
+
+
+def _google_context(console, log, passphrase: str, business: str, text: str) -> str:
+    """Live Google digest for a connected business on the doorway/Telegram read
+    path - the console chat has its own richer version in web.py; this is the one
+    a captain gets when a request arrives over a channel.
+
+    Account-aware BY BUSINESS: an own-domain business (rum, steelhaven) reads its
+    own account; the six that share rossfusz@gmail.com read 'personal'. So a RUM
+    request grounds in RUM's mail and never SteelHaven's. Best effort throughout:
+    not connected, not relevant, or a Workspace hiccup all resolve to '' and the
+    captain answers from knowledge alone. Reads only - no send/change path here.
+    """
+    low = (text or "").lower()
+    if not any(h in low for h in _GOOGLE_HINTS):
+        return ""
+    try:
+        from . import roster
+        from .adapters import google as g
+        b = roster.business(business)
+        if not b:
+            return ""
+        account = business if b.own_domain else "personal"
+        if f"{account}:{g.REFRESH_TOKEN}" not in set(Vault(log).secret_names()):
+            return ""
+        token = g.access_for(Vault(log, key=console._vault_key(passphrase)), account)
+        if not token:
+            return ""
+        parts = []
+        try:
+            ms = g.gmail_recent(token, "", 8)
+            if ms:
+                parts.append("RECENT MAIL:\n" + "\n".join(
+                    f"- {m.get('from','')} — {m.get('subject','') or '(no subject)'}: "
+                    f"{(m.get('snippet') or '')[:120]}" for m in ms))
+        except Exception:
+            pass
+        try:
+            evs = g.calendar_upcoming(token, 6)
+            if evs:
+                parts.append("UPCOMING EVENTS:\n" + "\n".join(
+                    f"- {(e.get('when') or '')[:16]} {e.get('title','')}" for e in evs))
+        except Exception:
+            pass
+        try:
+            fs = g.drive_recent(token, 8)
+            if fs:
+                parts.append("RECENT DRIVE FILES:\n" + "\n".join(
+                    f"- {f.get('name','')} [{(f.get('modifiedTime') or '')[:10]}]" for f in fs))
+        except Exception:
+            pass
+        if not parts:
+            return ""
+        return (f"LIVE {account.upper()} GOOGLE (real, current — answer FROM it, "
+                f"cite specifics):\n" + "\n\n".join(parts))
+    except Exception:
+        return ""
 
 
 def _epoch() -> int:

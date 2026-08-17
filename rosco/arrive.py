@@ -36,6 +36,7 @@ a forgery.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -260,16 +261,24 @@ class Doorway:
             channel=arrival.channel, detail=detail)
         dec = decision or Decision(ASK, why)
 
-        # An unclassified arrival has no capability to queue against, and
+        # An unclassified arrival has no real capability to queue against, and
         # queuing it under a placeholder would let Ross answer ALLOW_ALWAYS and
-        # write a grant for the string "unknown". Those are recorded and shown
-        # to him, not turned into questions with answers.
+        # write a grant for the string "unknown".
         if not caps.declared(req.business, req.capability):
-            self.people.saw_stranger(arrival.channel, arrival.address, detail=detail)
-            return Handling(
-                ASK,
-                "I've passed that to Ross - I wasn't sure what you needed.",
-                who, dec, proposal)
+            # A person we KNOW whose message we couldn't place must still reach
+            # Ross - retarget to the reserved triage bucket so it raises a REAL ask
+            # (lands in the queue, attributed to them, a follow-up not silently
+            # deduped) instead of being recorded as a stranger and dropped. Only a
+            # genuinely unrecognised sender is a stranger.
+            if who.known:
+                req = Request(person=who.person, business="triage", capability="unclear",
+                              verb=req.verb, channel=arrival.channel, detail=detail)
+            else:
+                self.people.saw_stranger(arrival.channel, arrival.address, detail=detail)
+                return Handling(
+                    ASK,
+                    "I've passed that to Ross - I wasn't sure what you needed.",
+                    who, dec, proposal)
 
         queued = Request(
             person=req.person, business=req.business, capability=req.capability,
@@ -303,19 +312,30 @@ class Keywords:
             return None
         verb = DO if any(f" {a} " in f" {low} " for a in self.ACTIONS) else GET
 
-        best, score = None, 0.0
+        scored = []
         for c in caps.CATALOGUE:
             hit = 0.0
-            if c.name.replace("-", " ") in low or c.name in low:
+            # Word-boundary match so 'house' doesn't fire inside 'warehouse' and a
+            # bare substring can't misroute.
+            nm = re.escape(c.name.replace("-", " "))
+            if re.search(rf"\b{nm}\b", low) or re.search(rf"\b{re.escape(c.name)}\b", low):
                 hit = 0.8
             for phrase in c.phrases:
                 if phrase in low:
                     hit = max(hit, 0.9)
             if hit and c.business.replace("-", " ") in low:
                 hit += 0.1
-            if hit > score:
-                best, score = c, hit
-        if best is None:
+            if hit > 0:
+                scored.append((hit, c))
+        if not scored:
             return None
-        return Proposal(best.business, best.name, verb, min(score, 1.0),
+        top = max(h for h, _ in scored)
+        winners = [c for h, c in scored if h == top]
+        # A bare name shared by two businesses (schedule, invoices) is AMBIGUOUS,
+        # not a confident route. Return None so the doorway asks Ross rather than
+        # silently picking whichever catalogue entry came first.
+        if len({(c.business, c.name) for c in winners}) > 1:
+            return None
+        best = winners[0]
+        return Proposal(best.business, best.name, verb, min(top, 1.0),
                         "matched by name, not by understanding")

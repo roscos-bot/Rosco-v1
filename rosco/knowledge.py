@@ -119,6 +119,22 @@ def facts(business: str) -> list[str]:
 
 
 def guardrails(business: str) -> list[tuple]:
+    """The hard rules to check a draft against. For Rosco ('*' - the console and
+    per-email chat, the surfaces Ross actually drafts on) this is the UNION of
+    every business's guardrails, deduped. Without this, guardrails('*') was empty
+    and a FORTIFIED / radon-free / NFA-paperwork claim drafted in chat sailed
+    through unflagged, while the same request routed through the doorway to a
+    captain was caught. The forbid needles are business-agnostic; the pair rules
+    are conditional on their trigger, so unioning them only ever ADDS a check."""
+    if business == "*":
+        out, seen = [], set()
+        for biz in KNOWLEDGE:
+            for rule in KNOWLEDGE[biz].get("guardrails", []):
+                key = tuple(rule[:3])
+                if key not in seen:
+                    seen.add(key)
+                    out.append(rule)
+        return out
     return list(KNOWLEDGE.get(business, {}).get("guardrails", []))
 
 
