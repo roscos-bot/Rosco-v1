@@ -34,10 +34,12 @@ import urllib.request
 from pathlib import Path
 from urllib.error import HTTPError
 
+from .. import inbox_watch
 from ..arrive import Arrival
 from ..asks import Asks
 from ..grants import ANSWER, ASK, DECLINE, SELF
 from ..identity import People
+from ..keys import ROSS
 from ..models import SYSTEM
 from ..store import now
 
@@ -243,6 +245,19 @@ class TelegramBot:
         # this only carries the code back with the sender's real id attached.
         if self._maybe_pair(sender_id, chat_id, text):
             return
+
+        # Ross bracketing an email session from his phone ("about to check my email"
+        # / "done"). This is the ONE action the Telegram bot runs, and only because
+        # it's a pure READ of Ross's OWN inbox — no approval, no outward write — so it
+        # honours "Telegram is not an approval surface". Gated to Ross by his paired
+        # id (never the message body). The console chat understands arbitrary wording
+        # via the model; here it's a deliberately conservative phrase match, and a
+        # miss just falls through to the doorway below.
+        if self.people.resolve(CHANNEL, sender_id, at=now()).person == ROSS:
+            want = inbox_watch.intent(text)
+            if want:
+                self.send(chat_id, inbox_watch.run(self.console, self._passphrase, want))
+                return
 
         arrival = Arrival(CHANNEL, sender_id, text, at=now())
         handling = self.doorway.handle(arrival)
