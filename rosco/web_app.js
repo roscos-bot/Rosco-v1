@@ -1214,7 +1214,23 @@ function nextEmailCard(item,moreCount){
   var tsave=document.createElement("button");tsave.className="ing-go";tsave.textContent="Make task + archive";
   var tcancel=document.createElement("button");tcancel.className="ing-skip";tcancel.textContent="Cancel";
   tc.appendChild(tsave);tc.appendChild(tcancel);tcomp.appendChild(tin);tcomp.appendChild(tc);card.appendChild(tcomp);
-  taskBtn.addEventListener("click",function(){var open=tcomp.style.display==="none";tcomp.style.display=open?"block":"none";if(open){tin.focus();tin.select();}});
+  // On open, have Rosco READ the email and pre-fill a brief, specific to-do — so
+  // the task reads as an action, not just the subject line. Distilled once; Ross
+  // sees it and can tweak before saving. Falls back to the subject on any hiccup.
+  var suggested=false;
+  taskBtn.addEventListener("click",function(){
+    var open=tcomp.style.display==="none";tcomp.style.display=open?"block":"none";
+    if(!open)return;
+    tin.focus();tin.select();
+    if(suggested||!(item.ref&&item.ref.id))return;
+    suggested=true;
+    var fallback=tin.value||item.subject||"";
+    tin.value="";tin.disabled=true;tin.placeholder="Rosco is reading the email…";
+    post("/api/task/suggest",{ref:item.ref}).then(function(r){
+      tin.disabled=false;tin.placeholder="What's the follow-up?";
+      tin.value=(r.ok&&r.j&&r.j.text)?r.j.text:fallback;tin.focus();tin.select();
+    }).catch(function(){tin.disabled=false;tin.placeholder="What's the follow-up?";tin.value=fallback;});
+  });
   tcancel.addEventListener("click",function(){tcomp.style.display="none";});
   tsave.addEventListener("click",function(){var t=tin.value.trim();if(!t){tin.focus();return;}
     card.querySelectorAll("button,textarea,input").forEach(function(b){b.disabled=true;});msg.className="ksst";msg.textContent="making task…";
