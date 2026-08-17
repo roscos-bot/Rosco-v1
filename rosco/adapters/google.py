@@ -228,6 +228,81 @@ def gmail_recent(token: str, query: str = "", n: int = 6) -> list[dict]:
     return out
 
 
+def gmail_history_id(token: str) -> str:
+    """The mailbox's current historyId — the sync cursor for a watch window. One
+    call to users.getProfile; it says nothing ABOUT the mail, just where the
+    change-log is right now. Rosco stashes this when Ross says 'about to check
+    email', and diffs from it when he says 'done'."""
+    d = safehttp.call("https://gmail.googleapis.com/gmail/v1/users/me/profile",
+                      method="GET", bearer=token, timeout=15)
+    return str((d or {}).get("historyId", "") or "")
+
+
+def gmail_changes(token: str, start_id: str, cap: int = 300) -> dict | None:
+    """What changed since `start_id`, folded to a net label-delta per message.
+
+    Returns {'transitions': {msg_id: {'added': set(labels), 'removed': set(labels),
+    'arrived': bool}}, 'historyId': <new cursor>}. Returns None if the cursor is
+    too old — Gmail keeps only ~a week of history, and a stale one 404s; the caller
+    then re-baselines rather than guessing. Follows nextPageToken up to `cap`
+    records so a big session isn't silently truncated without bound.
+
+    A NET delta collapses churn: a message read then archived shows removed
+    {UNREAD, INBOX} once, not three separate records. Only Ross's own mailbox is
+    read — this is his behaviour in his account, the forgery-resistant signal the
+    ranker is built on."""
+    base = "https://gmail.googleapis.com/gmail/v1/users/me/history"
+    trans, newid, page, seen = {}, start_id, "", 0
+    while True:
+        params = {"startHistoryId": start_id,
+                  "historyTypes": "messageAdded,labelAdded,labelRemoved"}
+        if page:
+            params["pageToken"] = page
+        try:
+            d = safehttp.call(base + "?" + _q(params), method="GET", bearer=token, timeout=20)
+        except ValueError as e:
+            if "HTTP 404" in str(e):
+                return None                       # cursor too old — re-baseline
+            raise
+        newid = str((d or {}).get("historyId", newid) or newid)
+        for h in (d.get("history") or []):
+            for ma in h.get("messagesAdded", []):
+                mid = (ma.get("message") or {}).get("id")
+                if mid:
+                    trans.setdefault(mid, {"added": set(), "removed": set(), "arrived": False})["arrived"] = True
+            for la in h.get("labelsAdded", []):
+                mid = (la.get("message") or {}).get("id")
+                if mid:
+                    trans.setdefault(mid, {"added": set(), "removed": set(), "arrived": False})["added"].update(la.get("labelIds", []))
+            for lr in h.get("labelsRemoved", []):
+                mid = (lr.get("message") or {}).get("id")
+                if mid:
+                    trans.setdefault(mid, {"added": set(), "removed": set(), "arrived": False})["removed"].update(lr.get("labelIds", []))
+            seen += 1
+            if seen >= cap:
+                break
+        page = d.get("nextPageToken", "")
+        if not page or seen >= cap:
+            break
+    return {"transitions": trans, "historyId": newid}
+
+
+def gmail_from(token: str, message_id: str) -> str:
+    """The From header of one message (metadata only — no body). Used to attribute
+    an observed read/archive/star to a sender/domain."""
+    try:
+        d = safehttp.call(
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?" + _q(
+                {"format": "metadata", "metadataHeaders": "From"}),
+            method="GET", bearer=token, timeout=12)
+    except Exception:
+        return ""
+    for h in ((d.get("payload") or {}).get("headers") or []):
+        if h.get("name", "").lower() == "from":
+            return h.get("value", "")
+    return ""
+
+
 def _b64url(data: str) -> str:
     import base64
     try:

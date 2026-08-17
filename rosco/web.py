@@ -561,6 +561,8 @@ class ConsoleServer(ThreadingHTTPServer):
             t = a.get("type")
             if t == "ingest":   # internal queue-for-review — no outward effect
                 shown += "\n\n" + self._do_action(log, s.passphrase, a)
+            elif t == "email_watch":   # read-only: bracket/observe Ross's own inbox
+                shown += "\n\n" + self._do_action(log, s.passphrase, a)
             elif t in ("gmail_draft", "calendar_create", "calendar_series", "chat_post",
                        "github_pr", "browser", "image"):
                 self._pending = a
@@ -876,6 +878,8 @@ class ConsoleServer(ThreadingHTTPServer):
             return self._do_github_action(log, passphrase, a)
         if a.get("type") == "ingest":
             return self._do_ingest_action(log, passphrase, a)
+        if a.get("type") == "email_watch":
+            return self._do_email_watch(log, passphrase, a)
         if a.get("type") == "browser":
             return self._do_browser_action(a)
         if a.get("type") == "image":
@@ -905,6 +909,83 @@ class ConsoleServer(ThreadingHTTPServer):
         if not urls:
             return "(Higgsfield returned no image.)"
         return "\U0001f5bc️ Generated \"" + prompt[:80] + "\":\n" + urls[0]
+
+    def _do_email_watch(self, log, passphrase, a):
+        """Bracket a Gmail session so Rosco learns from what Ross ACTUALLY does in
+        his inbox — not just the handful of actions he takes inside this dashboard.
+        'start' stashes the mailbox history cursor; 'stop' diffs from it and folds
+        each read / archive / star / trash into the engagement signal (inbox.acted),
+        then reports what it saw. Read-only against Ross's OWN account — no confirm,
+        no outward effect. This is the forgery-resistant behaviour the ranker wants:
+        only Ross's real actions move a sender's score."""
+        from .adapters import google as g
+        account = "personal"
+        if f"{account}:{g.REFRESH_TOKEN}" not in set(Vault(log).secret_names()):
+            return "(personal Google isn't connected — connect it in Settings first.)"
+        try:
+            token = g.access_for(Vault(log, key=self.console._vault_key(passphrase)), account)
+        except Exception as e:
+            return "(couldn't reach Google — " + str(e)[:120] + ")"
+        if not token:
+            return "(couldn't sign in to Google.)"
+        state = (a.get("state") or "").strip().lower()
+
+        if state == "start":
+            hid = g.gmail_history_id(token)
+            if not hid:
+                return "(couldn't read the mailbox cursor — try again in a moment.)"
+            log.append("email.watch", {"state": "open", "historyId": hid},
+                       subject="email", actor="ross")
+            return ("\U0001f440 Watching your inbox — go ahead. Tell me when you're "
+                    "done and I'll note what you read, archived and starred.")
+
+        # stop: find the latest still-open watch (a later 'closed' cancels an 'open')
+        start_hid = ""
+        for ev in log.replay(kind="email.watch"):
+            b = ev.get("body") or {}
+            if b.get("state") == "open":
+                start_hid = str(b.get("historyId") or "")
+            elif b.get("state") == "closed":
+                start_hid = ""
+        if not start_hid:
+            return ("I wasn't watching — say \"about to check my email\" first, then "
+                    "\"done\" when you finish, and I'll learn from what you did.")
+        try:
+            changes = g.gmail_changes(token, start_hid)
+        except Exception as e:
+            return "(couldn't read the changes back — " + str(e)[:120] + ")"
+        log.append("email.watch", {"state": "closed"}, subject="email", actor="ross")
+        if changes is None:
+            return ("That window was open too long for Gmail's change log, so I "
+                    "couldn't read it back. I've closed the watch — next time, say "
+                    "'done' within the day and I'll catch it.")
+        from collections import Counter
+        tally, recorded = Counter(), 0
+        for mid, delta in list((changes.get("transitions") or {}).items())[:120]:
+            added, removed = delta.get("added", set()), delta.get("removed", set())
+            if "TRASH" in added:      action = "trash"
+            elif "SPAM" in added:     action = "spam"
+            elif "STARRED" in added:  action = "star"
+            elif "INBOX" in removed:  action = "archive"      # cleared from the inbox
+            elif "UNREAD" in removed: action = "read"         # opened / marked read, kept
+            else:                     continue
+            dom = _email_domain(g.gmail_from(token, mid))
+            if not dom:
+                continue
+            try:
+                log.append("inbox.acted", {"domain": dom, "action": action, "via": "gmail"},
+                           subject=dom, actor="ross")
+                recorded += 1
+                tally[action] += 1
+            except Exception:
+                pass
+        if not recorded:
+            return "Done — I didn't spot anything to note (nothing read, archived or starred)."
+        order = (("read", "read"), ("archive", "archived"), ("star", "starred"),
+                 ("trash", "trashed"), ("spam", "marked spam"))
+        bits = [f"{tally[a]} {lab}" for a, lab in order if tally[a]]
+        return ("✓ Noted what you did in email — " + ", ".join(bits)
+                + ". I'll rank those senders by how you actually treat them.")
 
     def _do_browser_action(self, a):
         """One approved browser step: navigate/read (looking) or click/type (acting).
@@ -2722,8 +2803,8 @@ def _engagement(log):
     importance model growing from Ross's own behaviour — the more he acts, the
     sharper 'what to do next' gets, and no email can talk its way up by claiming
     to be urgent because only Ross's actions move the number."""
-    W = {"reply": 2, "star": 2, "done": 1, "learn": 2, "keep": 0, "markread": 0,
-         "archive": -1, "trash": -2, "spam": -3}
+    W = {"reply": 2, "star": 2, "done": 1, "learn": 2, "read": 1, "keep": 0,
+         "markread": 0, "archive": -1, "trash": -2, "spam": -3}
     out = {}
     for ev in log.replay(kind="inbox.acted"):
         b = ev["body"]

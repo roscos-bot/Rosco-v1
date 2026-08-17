@@ -148,6 +148,11 @@ KINDS: dict[str, str] = {
     # NODE — it grants nothing; it's a note Ross can verify against the carrier.
     "tracking.recorded": NODE,
     "tracking.closed": NODE,
+
+    # A Gmail 'watch window': Ross said 'about to check email' (open, stashes the
+    # history cursor) / 'done' (closed). NODE — it only bookmarks and observes
+    # Ross's own mailbox; what he did in the window is folded into inbox.acted.
+    "email.watch": NODE,
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -227,6 +232,7 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "task.done": ("id",),
     "tracking.recorded": ("number",),
     "tracking.closed": ("number",),
+    "email.watch": ("state",),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a
@@ -249,8 +255,12 @@ ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     # from a compromised node is dropped at absorb().
     ("ingest.decided", "action"): ("ingest", "skip", "archive", "star", "keep",
                                    "done", "markread", "trash", "spam", "reply"),
+    # 'read' joins the tidy verbs: it's what a Gmail watch observes when Ross
+    # opens/marks a message (UNREAD removed) — a mild positive engagement signal,
+    # distinct from a dashboard 'markread'.
     ("inbox.acted", "action"): ("archive", "star", "keep", "done", "markread",
-                                "trash", "spam", "reply"),
+                                "trash", "spam", "reply", "read"),
+    ("email.watch", "state"): ("open", "closed"),
 }
 
 
