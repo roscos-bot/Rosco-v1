@@ -70,8 +70,8 @@ def main() -> int:
         print("\nLOCKED BY DEFAULT")
         st, j, _ = req(port, "GET", "/api/overview")
         fails += not check("overview reports locked before unlock", j.get("unlocked"), False)
-        st, j, _ = req(port, "GET", "/api/queue")
-        fails += not check("the queue is refused while locked", st, 401)
+        st, j, _ = req(port, "GET", "/api/needs")
+        fails += not check("the needs surface is refused while locked", st, 401)
 
         print("\nHOST ALLOW-LIST")
         st, j, _ = req(port, "GET", "/api/overview", host="evil.example.com")
@@ -87,15 +87,15 @@ def main() -> int:
         sess = cookie.split(";")[0]        # rosco_session=...
 
         print("\nREADS, ONCE UNLOCKED")
-        st, q, _ = req(port, "GET", "/api/queue", headers={"Cookie": sess})
-        fails += not check("the queue reads with the session", st, 200)
-        fails += not check("and shows the pending ask", len(q) >= 1, True)
+        st, q, _ = req(port, "GET", "/api/needs", headers={"Cookie": sess})
+        fails += not check("the needs surface reads with the session", st, 200)
+        fails += not check("and the pending ask is a gate in the band", len(q.get("band", [])) >= 1, True)
         st, m, _ = req(port, "GET", "/api/mesh", headers={"Cookie": sess})
         fails += not check("the mesh is the real roster", len(m.get("nodes", [])) > 30, True)
         fails += not check("Rosco is in it", any(n["label"] == "Rosco" for n in m["nodes"]), True)
 
         print("\nWRITES NEED THE CSRF TOKEN")
-        aid = q[0]["id"]
+        aid = q["band"][0]["id"]
         st, j, _ = req(port, "POST", "/api/answer", {"id": aid, "verdict": "allow-once"},
                        headers={"Cookie": sess})
         fails += not check("a write without the CSRF header is refused", st, 403)
@@ -184,8 +184,8 @@ def main() -> int:
                            req(port, "GET", "/api/activity")[0], 401)
 
         print("\nTHE LOOP CLOSED")
-        st, q2, _ = req(port, "GET", "/api/queue", headers={"Cookie": sess})
-        fails += not check("the answered ask left the queue", len(q2), len(q) - 1)
+        st, q2, _ = req(port, "GET", "/api/needs", headers={"Cookie": sess})
+        fails += not check("the answered ask left the band", len(q2["band"]), len(q["band"]) - 1)
 
         print("\nNO INLINE SCRIPT, EXTERNAL APP.JS")
         c = HTTPConnection("127.0.0.1", port, timeout=5)

@@ -50,9 +50,9 @@ api("/api/overview").then(function(res){
 var seenAct={}, actFirst=true;
 var booted=false;
 function boot(){ resize(); requestAnimationFrame(resize);   // app is visible now: size the canvas
-  refreshHud(); loadQueue(); loadMesh(); pollIngestPip();
+  refreshHud(); loadGates(); loadMesh(); pollIngestPip();
   if(booted)return; booted=true;                            // re-unlock must not stack a 2nd set of timers
-  setInterval(refreshHud,8000); setInterval(loadQueue,15000);
+  setInterval(refreshHud,8000); setInterval(loadGates,15000);
   setInterval(loadActivity,4000); setTimeout(loadActivity,1200);
   setInterval(pollIngestPip,20000); }
 
@@ -80,63 +80,144 @@ function refreshHud(){ api("/api/overview").then(function(res){var o=res.j;if(!r
 });}
 function stat(k,v){return "<div class='stat'><span class='k'>"+k+"</span><span class='v'>"+v+"</span></div>";}
 
-// ---- the queue ----
-var SENS={"bound-book":1,"books":1,"payroll":1,"taxes":1,"transfers":1,"budget":1};
+// ---- the "Needs you" surface: GATES in the always-on pane, the full band+lanes
+//      in the drawer. Ranking + sensitivity are decided server-side (/api/needs),
+//      because a security-relevant sort must not be gameable from a browser tab. ----
 var ingCount=0;                          // pending ingest items, kept fresh by the pip poll
-function ingestBanner(){
-  return ingCount>0 ? "<div class='ask ingbanner' style='cursor:pointer;border-left:3px solid var(--teal)'>"
-    +"<div class='said'>📥 <b>"+ingCount+"</b> item(s) in the ingest queue — click to review</div></div>" : "";
-}
-function loadQueue(){ api("/api/queue").then(function(res){
-  var q=(res.ok&&Array.isArray(res.j))?res.j:[];
-  markWaiting(q);                       // ring captains even while a node is shown
+// The always-visible pane shows the GATES band (grants + sensitive requests) only —
+// the 'is anyone blocked on me?' question. Cheap /api/needs poll: pure log replay,
+// no Google, no model. Email/docs/tasks live one click away in the drawer.
+function loadGates(){ api("/api/needs").then(function(res){
+  var d=(res.ok&&res.j)?res.j:{band:[],lanes:{},counts:{}};
+  var band=d.band||[], c=d.counts||{};
+  markWaiting(band.filter(function(b){return b.kind==="grant";}));   // ring captains even while a node is shown
+  setNeedsBadge(c.gates||0,c.work||0,!!c.sensitive);
   var el=document.getElementById("qwrap"),rh=document.getElementById("rhead");
-  if(!el||!rh) return;                  // a node's context is showing; queue is hidden
-  rh.textContent="Waiting on you · "+q.length;
-  el.innerHTML=(q.length?q.map(askCard).join(""):"<div class='empty'>Nothing waiting. You're clear.</div>")+ingestBanner();
-  q.forEach(function(a){ wireCard(a.id); });
-  var ib=el.querySelector(".ingbanner"); if(ib)ib.addEventListener("click",openIngest);
+  if(!el||!rh) return;                  // a node's context is showing; pane is hidden
+  if(cardBusy(el)) return;              // don't wipe a gate Ross is mid-decision on — retry next poll
+  var g=c.gates||0;
+  rh.innerHTML="Needs you"+(g?(" · <b"+(c.sensitive?" style='color:var(--red)'":"")+">"+g+"</b>"):"");
+  el.innerHTML="";
+  if(g){ renderBand(el,band);
+    if(c.bandOverflow>0){var mo=document.createElement("div");mo.className="empty";mo.textContent="+"+c.bandOverflow+" more gates in the drawer";el.appendChild(mo);}
+  } else { el.appendChild(gatesEmpty(d.ledgerDigest||[])); }
+  el.appendChild(needsOpener(c.work||0));   // the way into email / docs / tasks
 });}
+// Render a band (grants + sensitive requests) into a container, in P order, wiring
+// each grant AFTER it's in the DOM (wireCard looks it up by data-id). Shared by the
+// pane and the drawer.
+function renderBand(el,band){   // the band is grants only (requests are never banded)
+  band.forEach(function(it){
+    var w=document.createElement("div");w.innerHTML=askCard(it);var card=w.firstChild;el.appendChild(card);wireCard(card);
+  });
+}
+// The cheap pane poll never looks at email, so the opener must NOT claim the
+// inbox is clear — it can only speak to docs/tasks it actually counted. Email is
+// only surfaced (and counted) inside the drawer's full fetch.
+// Is Ross actively deciding a gate inside this container? A background re-render
+// (the 15s poll, or a drawer refresh) must not blow away a card that holds live
+// state: a half-typed deny-why note, a ticked sensitive-ack, or keyboard focus
+// inside a grant card. If so, skip the rebuild and catch it on the next tick.
+function cardBusy(el){
+  if(!el)return false;
+  var cards=el.querySelectorAll(".ask"), a=document.activeElement;
+  for(var i=0;i<cards.length;i++){var c=cards[i];
+    var vd=c.querySelector(".verdict");
+    if(vd&&vd.style.display!=="none")continue;         // already answered — not busy
+    if(c.querySelector(".deny-why[style*='block']"))return true;
+    if(c.querySelector(".sens-chk:checked"))return true;
+    if(a&&c.contains(a))return true;                   // focus/typing inside an unanswered gate
+  }
+  return false;
+}
+function needsOpener(work){
+  var op=document.createElement("div");op.className="needs-open";
+  op.innerHTML="<span>"+(work>0?(work+" waiting to review"):"Your inbox, docs &amp; tasks")+"</span><b>Open Needs you →</b>";
+  op.addEventListener("click",openNext);
+  return op;
+}
+// The empty/verify moment: nobody's blocked — so show what Rosco DID (trust but
+// verify), from the honest log, instead of a dead "nothing here".
+function gatesEmpty(digest){
+  var box=document.createElement("div");box.className="empty gates-clear";
+  if(!digest||!digest.length){box.textContent="Nothing waiting. You're clear.";return box;}
+  var h=document.createElement("div");h.className="gc-h";h.textContent="You're clear. Recently, Rosco:";box.appendChild(h);
+  digest.slice(0,5).forEach(function(r){var li=document.createElement("div");li.className="gc-li";
+    li.textContent="· "+(r.by||"Rosco")+" "+(r.what||"");box.appendChild(li);});
+  var lk=document.createElement("button");lk.className="gc-link";lk.textContent="See the full ledger →";
+  lk.addEventListener("click",function(){showTool("Ledger");});box.appendChild(lk);
+  return box;
+}
 
-// Ring the captain of any business with a request waiting on Ross. The captain
+// Ring the captain of any business with a grant-ask waiting on Ross. The captain
 // is the agent node for that business that reports to Rosco.
-function markWaiting(q){
-  var wanted={}; q.forEach(function(a){ wanted[a.business]=1; });
+function markWaiting(grants){
+  var wanted={}; (grants||[]).forEach(function(a){ wanted[a.business]=1; });
   N.forEach(function(n){
     n.waiting = (n.type==="agent" && n.reports==="Rosco" && wanted[n.business]) ? 1 : 0;
   });
 }
 function esc(s){return (s==null?"":""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
+// The grant gate. Sensitivity is now the SERVER'S call (a.sensitive, from
+// capabilities.is_sensitive) — not a client guess. Two frictions the old card
+// lacked: (1) Deny opens a "why" note the server already stores as the grant's
+// reason — the learning signal that stops the ask coming back; (2) a SENSITIVE
+// gate disables Allow until Ross ticks "I've read this" — sort-first, act-slowest.
 function askCard(a){
-  var sens=SENS[a.capability];
+  var sens=!!a.sensitive;
   return "<div class='ask"+(sens?" sens":"")+"' data-id='"+esc(a.id)+"'>"
     +"<div class='top'><span class='who'>"+esc(a.person)+"</span>"
     +"<span class='cap'>"+esc(a.business)+":"+esc(a.capability)+"</span>"
     +"<span class='verb"+(a.verb==="do"?" do":"")+"'>"+esc((a.verb||"").toUpperCase())+"</span>"
-    +(sens?"<span class='verb' style='color:var(--red);border-color:var(--red-dim)'>SENSITIVE</span>":"")+"</div>"
+    +(sens?"<span class='verb sensflag'>SENSITIVE</span>":"")+"</div>"
     +"<div class='said'>"+esc(a.detail)+"</div>"
+    +(sens?"<label class='sens-ack'><input type='checkbox' class='sens-chk'> I've read this sensitive request</label>":"")
     +"<div class='acts'>"
     +"<button class='btn ga' data-v='allow-once'>Allow once</button>"
     +"<button class='btn ga solid' data-v='allow-always'>Allow always</button>"
-    +"<button class='btn da' data-v='deny-once'>Deny once</button>"
-    +"<button class='btn da solid' data-v='deny-always'>Deny always</button>"
-    +"</div><div class='verdict' style='display:none'></div></div>";
+    +"<button class='btn da deny-open'>Deny…</button>"
+    +"</div>"
+    +"<div class='deny-why' style='display:none'>"
+      +"<textarea class='deny-note' placeholder='Why? Optional — but it teaches Rosco to stop asking.'></textarea>"
+      +"<div class='deny-row'>"
+        +"<button class='btn da' data-v='deny-once'>Deny once</button>"
+        +"<button class='btn da solid' data-v='deny-always'>Deny always</button>"
+      +"</div></div>"
+    +"<div class='verdict' style='display:none'></div></div>";
 }
-function wireCard(id){
-  var card=document.querySelector(".ask[data-id='"+id+"']"); if(!card)return;
-  card.querySelectorAll(".btn").forEach(function(b){ b.addEventListener("click",function(){
+// `card` is the ELEMENT (not an id): the same grant renders in BOTH the pane and
+// the drawer band with the same data-id, so a global document.querySelector would
+// wire only the first copy and leave the other dead. Scope everything to the node.
+function wireCard(card){
+  if(typeof card==="string"){card=document.querySelector(".ask[data-id='"+card+"']");}
+  if(!card)return;
+  var id=card.getAttribute("data-id");
+  var chk=card.querySelector(".sens-chk"), allow=card.querySelectorAll(".btn.ga");
+  if(chk){                              // sensitive: Allow is disabled until acknowledged
+    allow.forEach(function(b){b.disabled=true;});
+    chk.addEventListener("change",function(){allow.forEach(function(b){b.disabled=!chk.checked;});});
+  }
+  var open=card.querySelector(".deny-open"), why=card.querySelector(".deny-why");
+  if(open&&why){open.addEventListener("click",function(){
+    var show=why.style.display==="none";why.style.display=show?"block":"none";
+    if(show){var ta=why.querySelector(".deny-note");if(ta)ta.focus();}});}
+  card.querySelectorAll(".btn[data-v]").forEach(function(b){ b.addEventListener("click",function(){
     var v=b.getAttribute("data-v");
-    card.querySelectorAll(".btn").forEach(function(x){x.disabled=true;});
-    post("/api/answer",{id:id,verdict:v}).then(function(res){
+    var note="";var ta=card.querySelector(".deny-note");
+    if(ta&&v.indexOf("deny")===0)note=ta.value.trim();
+    card.querySelectorAll("button,input,textarea").forEach(function(x){x.disabled=true;});
+    post("/api/answer",{id:id,verdict:v,note:note}).then(function(res){
       var vd=card.querySelector(".verdict"); vd.style.display="block";
-      if(res.ok){var allow=v.indexOf("allow")===0;vd.className="verdict "+(allow?"a":"d");
-        vd.textContent=(allow?"✓ ":"✗ ")+v.replace("-"," ").toUpperCase();
-        setTimeout(function(){loadQueue();refreshHud();},700);}
+      if(res.ok){var ok=v.indexOf("allow")===0;vd.className="verdict "+(ok?"a":"d");
+        vd.textContent=(ok?"✓ ":"✗ ")+v.replace("-"," ").toUpperCase()+(note?" · noted":"");
+        setTimeout(function(){loadGates();refreshHud();if(needsDrawerOpen())loadNext();},700);}
       else{vd.className="verdict d";vd.textContent=(res.j&&res.j.error)||"failed";
-        card.querySelectorAll(".btn").forEach(function(x){x.disabled=false;});}
+        card.querySelectorAll("button,input,textarea").forEach(function(x){x.disabled=false;});
+        if(chk&&!chk.checked)allow.forEach(function(x){x.disabled=true;});}   // re-lock sensitive allow
     });
   });});
 }
+function needsDrawerOpen(){var d=document.getElementById("nextDrawer");return d&&d.style.display!=="none";}
 
 // ---- the mesh: force-directed 3D, star + fiber ----
 var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
@@ -151,6 +232,7 @@ function loadMesh(retry){ api("/api/mesh").then(function(res){
   if(!m.nodes.length&&!retry){setTimeout(function(){loadMesh(true);},800);return;} // transient empty -> one retry
   byId={};N=m.nodes.map(function(n,i){byId[n.id]=i;
     return {id:n.id,label:n.label,type:n.type,rank:n.rank,biz:n.business,code:n.code||"",reports:n.reports,
+      source:n.source||"",learned:n.learned,caution:n.caution||"",   // carried so the node panel can show them
       x:(Math.random()-.5)*1.6,y:(Math.random()-.5)*1.6,z:(Math.random()-.5)*1.6,
       vx:0,vy:0,vz:0,r:n.type==="agent"?(n.rank==="Admiral"?16:n.rank==="Commander"?14:n.rank==="Captain"?10:6.5):(n.type==="file"?4.5:8),
       core:(n.label==="Rosco"||n.label==="Ross"),links:0,pulse:0,tw:Math.random()*6.28};});
@@ -248,14 +330,15 @@ function showNode(n){
   var col=(n.core?"#e8efeb":(TYPEC[n.type]||"#8aa"));
   var neigh=[]; E.forEach(function(e){ if(e[0]===byId[n.id])neigh.push(N[e[1]]); if(e[1]===byId[n.id])neigh.push(N[e[0]]); });
   var links=neigh.slice(0,12).map(function(m){ return "<span class='lchip' data-jump='"+esc(m.id)+"'>"+esc(m.label)+"</span>"; }).join(" ");
-  ctx.innerHTML="<div class='back' id='back'>&larr; back to the queue</div>"
+  ctx.innerHTML="<div class='back' id='back'>&larr; back to Needs you</div>"
     +"<div class='node-ctx'>"
     +"<div class='nm'>"+esc(n.label)+"</div>"
     +"<div class='rk' style='color:"+col+"'>"+esc(n.rank||n.type)+(n.code?" · "+esc(n.code):"")+"</div>"
     +(n.type==="file"?("<div class='kv'><div class='k'>Source</div><div class='v'>"+esc(n.source||"")+"</div></div>"
-       +"<div class='kv'><div class='k'>Status</div><div class='v'>"+(n.learned?"learned into "+esc(n.business||""):"queued — not learned yet")+"</div></div>"
+       +"<div class='kv'><div class='k'>Status</div><div class='v'>"+(n.learned?"learned into "+esc(n.biz||""):"queued — not learned yet")+"</div></div>"
        +"<div class='kv'><div class='k'>Detail</div><div class='v'>full copy cached locally — read without the internet</div></div>"):"")
     +(n.biz?"<div class='kv'><div class='k'>Business</div><div class='v'>"+esc(n.biz)+"</div></div>":"")
+    +(n.type==="tool"&&n.caution?"<div class='kv'><div class='k'>Caution</div><div class='v' style='color:var(--amber)'>"+esc(n.caution)+"</div></div>":"")
     +(n.reports?"<div class='kv'><div class='k'>Reports to</div><div class='v'>"+esc(n.reports)+"</div></div>":"")
     +(links?"<div class='kv'><div class='k'>Linked</div><div class='v' style='display:flex;flex-wrap:wrap;gap:5px'>"+links+"</div></div>":"")
     +"</div>";
@@ -335,58 +418,125 @@ function buildAgentModel(n, host){
 }
 function restoreQueue(){
   document.getElementById("ctx").innerHTML=
-    "<div class='rhead' id='rhead'>Waiting on you</div><div class='qwrap' id='qwrap'></div>";
-  loadQueue();
+    "<div class='rhead' id='rhead'>Needs you</div><div class='qwrap' id='qwrap'></div>";
+  loadGates();
 }
 
 // ---- tools rail: each one shows its view in the right-panel context area ----
-var TOOLS=[["Mesh","M12 3v4M12 17v4M3 12h4M17 12h4M12 8a4 4 0 100 8 4 4 0 000-8z"],
-  ["Queue","M4 6h16M4 12h16M4 18h10"],["People","M9 11a3 3 0 100-6 3 3 0 000 6zm7 8a7 7 0 00-14 0"],
+var ledgerAll=false;   // Ledger: false = only Rosco/agent actions, true = include your clicks
+var TOOLS=[["Needs","M4 5h9M4 10h9M4 15h5M13 14l2.5 2.5L20 11"],
+  ["Ledger","M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h5"],
+  ["Track","M3 8l9-4 9 4v8l-9 4-9-4zM3 8l9 4 9-4M12 12v8"],
+  ["People","M9 11a3 3 0 100-6 3 3 0 000 6zm7 8a7 7 0 00-14 0"],
   ["Tools","M14 7l3 3-8 8-3-3zM3 21l4-1"],["Spend","M4 18l5-6 4 4 7-9"],["Verify","M20 6L9 17l-5-5"]];
+function card(title,sub){return "<div class='ask'><div class='top'><span class='who'>"+esc(title)+"</span></div>"+(sub?"<div class='said'>"+sub+"</div>":"")+"</div>";}
+// Every rail item is a shelf that pops out (like Needs). There is no 'Queue' tool:
+// the home pane IS the gates queue ('Needs you'), always visible — Needs opens its
+// full drawer, and the ROSCO brand is the way back to the home view + the graph.
+var SHELF={"People":["People · who's enrolled",renderPeople],
+  "Tools":["Tools · connectors & repos",renderTools],
+  "Spend":["Spend · model cost",renderSpend],
+  "Verify":["Verify · chain integrity",renderVerify],
+  "Track":["Track · shipments",renderTrack],
+  "Ledger":["Ledger · what Rosco did",renderLedger]};
 function showTool(name){
-  // Mesh = the graph (always centre) with the default queue on the right; Queue = the same list.
-  if(name==="Mesh"||name==="Queue"){selected=byId["Rosco"]!=null?byId["Rosco"]:selected;focusOn(selected);restoreQueue();return;}
-  var ctx=document.getElementById("ctx");
-  // note: no #rhead/#qwrap ids here, so the 15s queue poll won't clobber this view
-  ctx.innerHTML="<div class='rhead'>"+esc(name)+"</div><div class='stream' id='toolbody'><div class='empty'>Loading…</div></div>";
-  var body=document.getElementById("toolbody");
-  function card(title,sub){return "<div class='ask'><div class='top'><span class='who'>"+esc(title)+"</span></div>"+(sub?"<div class='said'>"+sub+"</div>":"")+"</div>";}
-  if(name==="People"){
-    Promise.all([api("/api/people"),api("/api/grants")]).then(function(res){
-      var ppl=(res[0].ok&&Array.isArray(res[0].j))?res[0].j:[], gr=(res[1].ok&&Array.isArray(res[1].j))?res[1].j:[];
-      if(!ppl.length){body.innerHTML="<div class='empty'>No one enrolled yet.</div>";return;}
-      body.innerHTML=ppl.map(function(p){
-        var acc=gr.filter(function(g){return g.person===p.person&&g.allow;}).map(function(g){return g.business+":"+g.capability;});
-        var ch=(p.handles||[]).map(function(h){return h.channel;}).join(", ");
-        return card(p.person, esc(ch||"no channels")+(acc.length?"<br><span style='color:var(--dim)'>can reach: "+esc(acc.join(", "))+"</span>":""));
-      }).join("");
-    }).catch(function(){body.innerHTML="<div class='empty'>couldn't load people</div>";});
-  } else if(name==="Spend"){
-    api("/api/spend").then(function(r){var d=(r.ok&&r.j)||{};
-      body.innerHTML="<pre class='mono' style='white-space:pre-wrap;font-size:11.5px;color:var(--text);padding:2px 4px;margin:0'>"+esc(d.report||"(no spend yet)")+"</pre>"
-        +"<div class='said' style='padding:0 4px;color:var(--dim)'>caps: "+esc((d.budgets||[]).map(function(b){return b.scope+" $"+b.cap;}).join(", ")||"none set")+"</div>";
-    }).catch(function(){body.innerHTML="<div class='empty'>couldn't load spend</div>";});
-  } else if(name==="Verify"){
-    api("/api/overview").then(function(r){var o=(r.ok&&r.j)||{};
-      var col=o.chains==="sound"?"var(--green)":"var(--amber)";
-      body.innerHTML=card("Chain integrity","<b style='color:"+col+"'>"+esc(o.chains||"?")+"</b> — every event's hash links to the prior")
-        +card("Spend","$"+esc(o.spend!=null?o.spend.toFixed(2):"?")+" over "+esc(o.spendCalls||0)+" model calls")
-        +card("Waiting on you",esc(o.waiting||0)+" request(s)");
-    }).catch(function(){body.innerHTML="<div class='empty'>couldn't verify</div>";});
-  } else if(name==="Tools"){
-    api("/api/cfg/state").then(function(r){var d=(r.ok&&r.j)||{};
-      var tools=d.tools||[], repos=d.repos||[];
-      var html=tools.length?tools.map(function(t){return card(t.name,esc((t.businesses||[]).join(", ")||"*"));}).join(""):"<div class='empty'>No external tools registered.</div>";
-      if(repos.length)html+="<div class='rhead' style='border-top:1px solid var(--line)'>Linked repos</div>"+repos.map(function(rp){return card(rp.slug||rp.repo||rp.business||JSON.stringify(rp),"");}).join("");
-      body.innerHTML=html;
-    }).catch(function(){body.innerHTML="<div class='empty'>couldn't load tools</div>";});
-  }
+  if(name==="Needs"){openNext();return;}
+  var sh=SHELF[name];if(sh){openShelf(sh[0],sh[1]);}
 }
+function focusMesh(){closeShelf();closeNext();selected=byId["Rosco"]!=null?byId["Rosco"]:selected;focusOn(selected);restoreQueue();
+  var on=document.querySelector(".tool.on");if(on)on.classList.remove("on");}
+function openShelf(title,render){var d=document.getElementById("shelfDrawer");if(!d)return;
+  var t=document.getElementById("shelfTitle");if(t)t.textContent=title;
+  var h=document.querySelector("header");if(h)d.style.top=Math.round(h.getBoundingClientRect().bottom)+"px";
+  d.style.display="flex";requestAnimationFrame(function(){d.classList.add("open");});
+  var body=document.getElementById("shelfBody");body.innerHTML="<div class='empty'>Loading…</div>";render(body);}
+function closeShelf(){var d=document.getElementById("shelfDrawer");if(!d)return;
+  d.classList.remove("open");setTimeout(function(){d.style.display="none";},200);
+  var on=document.querySelector(".tool.on");if(on)on.classList.remove("on");}
+function renderPeople(body){
+  Promise.all([api("/api/people"),api("/api/grants")]).then(function(res){
+    var ppl=(res[0].ok&&Array.isArray(res[0].j))?res[0].j:[], gr=(res[1].ok&&Array.isArray(res[1].j))?res[1].j:[];
+    if(!ppl.length){body.innerHTML="<div class='empty'>No one enrolled yet.</div>";return;}
+    body.innerHTML=ppl.map(function(p){
+      var acc=gr.filter(function(g){return g.person===p.person&&g.allow;}).map(function(g){return g.business+":"+g.capability;});
+      var ch=(p.handles||[]).map(function(h){return h.channel;}).join(", ");
+      return card(p.person, esc(ch||"no channels")+(acc.length?"<br><span style='color:var(--dim)'>can reach: "+esc(acc.join(", "))+"</span>":""));
+    }).join("");
+  }).catch(function(){body.innerHTML="<div class='empty'>couldn't load people</div>";});}
+function renderSpend(body){
+  api("/api/spend").then(function(r){var d=(r.ok&&r.j)||{};
+    body.innerHTML="<pre class='mono' style='white-space:pre-wrap;font-size:11.5px;color:var(--text);padding:2px 4px;margin:0'>"+esc(d.report||"(no spend yet)")+"</pre>"
+      +"<div class='said' style='padding:0 4px;color:var(--dim)'>caps: "+esc((d.budgets||[]).map(function(b){return b.scope+" $"+b.cap;}).join(", ")||"none set")+"</div>";
+  }).catch(function(){body.innerHTML="<div class='empty'>couldn't load spend</div>";});}
+function renderVerify(body){
+  api("/api/overview").then(function(r){var o=(r.ok&&r.j)||{};
+    var col=o.chains==="sound"?"var(--green)":"var(--amber)";
+    body.innerHTML=card("Chain integrity","<b style='color:"+col+"'>"+esc(o.chains||"?")+"</b> — every event's hash links to the prior")
+      +card("Spend","$"+esc(o.spend!=null?o.spend.toFixed(2):"?")+" over "+esc(o.spendCalls||0)+" model calls")
+      +card("Needs you",esc(o.waiting||0)+" gate(s) waiting");
+  }).catch(function(){body.innerHTML="<div class='empty'>couldn't verify</div>";});}
+function renderTools(body){
+  api("/api/cfg/state").then(function(r){var d=(r.ok&&r.j)||{};
+    var tools=d.tools||[], repos=d.repos||[];
+    var html=tools.length?tools.map(function(t){return card(t.name,esc((t.businesses||[]).join(", ")||"*"));}).join(""):"<div class='empty'>No external tools registered.</div>";
+    if(repos.length)html+="<div class='rhead' style='border-top:1px solid var(--line)'>Linked repos</div>"+repos.map(function(rp){return card(rp.slug||rp.repo||rp.business||JSON.stringify(rp),"");}).join("");
+    body.innerHTML=html;
+  }).catch(function(){body.innerHTML="<div class='empty'>couldn't load tools</div>";});}
+function renderLedger(body){
+  // Trust but verify — what Rosco and its agents DID, from the log. Defaults to
+  // Rosco's own actions (your clicks hidden) so it reads as "what Rosco did".
+  api("/api/ledger").then(function(r){var L=(r.ok&&Array.isArray(r.j&&r.j.ledger))?r.j.ledger:[];
+    var ros=L.filter(function(x){return x.by!=="ross";});
+    var view=ledgerAll?L:ros;
+    body.innerHTML="";
+    var tg=document.createElement("div");tg.className="lg-toggle";
+    [[false,"What Rosco did",ros.length],[true,"Everything",L.length]].forEach(function(c){
+      var b2=document.createElement("button");b2.className="ing-chip"+(ledgerAll===c[0]?" on":"");
+      b2.textContent=c[1]+" · "+c[2];
+      b2.addEventListener("click",function(){ledgerAll=c[0];renderLedger(body);});
+      tg.appendChild(b2);});
+    body.appendChild(tg);
+    if(!view.length){var e=document.createElement("div");e.className="empty";
+      e.textContent=ledgerAll?"Nothing logged yet.":"Rosco hasn't acted on its own yet — right now it proposes and you ship. As it earns trust, its actions land here.";
+      body.appendChild(e);return;}
+    view.forEach(function(x){var el=document.createElement("div");el.className="lg-row";
+      var by=document.createElement("span");by.className="lg-by"+(x.by==="ross"?" you":"");by.textContent=x.by==="ross"?"you":x.by;
+      var w=document.createElement("span");w.className="lg-what";w.textContent=x.what;
+      var wn=document.createElement("span");wn.className="lg-when";wn.textContent=(x.at||"").slice(5,16).replace("T"," ");
+      el.appendChild(by);el.appendChild(w);
+      if(x.undo){var u=document.createElement("button");u.className="lg-undo";u.textContent="undo";
+        u.addEventListener("click",function(){u.disabled=true;u.textContent="…";post("/api/ledger/undo",{undo:x.undo,id:x.id}).then(function(){renderLedger(body);});});el.appendChild(u);}
+      el.appendChild(wn);body.appendChild(el);});
+  }).catch(function(){body.innerHTML="<div class='empty'>couldn't load the ledger</div>";});}
+function renderTrack(body){
+  // From memory — Rosco captures the number + what's in the box as you PROCESS a
+  // shipping email in Next. No live inbox scan.
+  api("/api/tracking").then(function(r){
+    var T=(r.ok&&Array.isArray(r.j&&r.j.tracking))?r.j.tracking:[];
+    if(!T.length){body.innerHTML="<div class='empty'>No shipments yet. Rosco captures a tracking number — and what's in the box — whenever you process a shipping email in Next.</div>";return;}
+    body.innerHTML="";
+    T.forEach(function(x){var el=document.createElement("div");el.className="ask";
+      var top=document.createElement("div");top.className="top";
+      var who=document.createElement("span");who.className="who";who.textContent=x.item||x.carrier;
+      var cap=document.createElement("span");cap.className="cap";
+      var label=x.carrier+" "+x.number;
+      if(x.url){var a=document.createElement("a");a.href=x.url;a.target="_blank";a.rel="noopener";a.textContent=label+" ↗";a.style.color="var(--steel)";cap.appendChild(a);}
+      else cap.textContent=label;
+      top.appendChild(who);top.appendChild(cap);el.appendChild(top);
+      if(x.subject){var sd=document.createElement("div");sd.className="said";sd.textContent=x.subject;el.appendChild(sd);}
+      var d=document.createElement("button");d.className="btn";d.textContent="Delivered ✓";
+      d.addEventListener("click",function(){d.disabled=true;post("/api/tracking/close",{number:x.number}).then(function(){renderTrack(body);});});
+      el.appendChild(d);body.appendChild(el);});
+  }).catch(function(){body.innerHTML="<div class='empty'>couldn't load tracking</div>";});}
 var tel=document.getElementById("tools");
-TOOLS.forEach(function(t,i){var el=document.createElement("div");el.className="tool"+(i===0?" on":"");
+TOOLS.forEach(function(t,i){var el=document.createElement("div");el.className="tool";
   el.innerHTML="<svg viewBox='0 0 24 24'><path d='"+t[1]+"'/></svg><span class='t'>"+t[0]+"</span>";
   el.addEventListener("click",function(){tel.querySelectorAll(".tool").forEach(function(x){x.classList.remove("on");});el.classList.add("on");showTool(t[0]);});
   tel.appendChild(el);});
+// The ROSCO brand is the way back to the mesh (the graph is the canvas, not a rail item).
+var brand=document.querySelector(".brand");
+if(brand){brand.style.cursor="pointer";brand.title="Show the mesh";brand.addEventListener("click",focusMesh);}
+var shc=document.getElementById("shelfClose");if(shc)shc.addEventListener("click",closeShelf);
 
 // ---- chat with Rosco ----
 function bubble(cls,by,text){var m=document.createElement("div");m.className="msg "+cls;
@@ -433,9 +583,9 @@ document.getElementById("chatin").addEventListener("keydown",function(e){if(e.ke
 var CFG=[
  {t:"Models",a:"model",n:"Pick a role, a provider, then a model your key can serve.",
   f:[{k:"role",l:"Role",sel:"roles"},{k:"provider",l:"Provider",sel:"providers"},{k:"model",l:"Model",dyn:"models"}]},
- {t:"API keys",a:"secret",n:"Stored encrypted in the vault. A live green check means the provider accepts it. Model keys use scope 'system'; a connector credential (Google, GitHub) goes under its business. Click a row to fill its name.",
+ {t:"API keys",a:"secret",n:"Stored encrypted in the vault. A live green check means the provider accepts it. Model keys and the GitHub token use scope 'system'; only Google's client id/secret go under each account. Click a row to fill its name.",
   f:[{k:"business",l:"Scope",sel:"scopes"},{k:"name",l:"Key name",ph:"openrouter_api_key"},{k:"value",l:"Value",type:"password"}]},
- {t:"Google Workspace",google:true,n:"Connect each Google account by OAuth — full Gmail/Drive/Calendar/Docs/Sheets/Chat/Contacts. First store that account's google_client_id + google_client_secret above (scope = the business), then Authorize and consent as the right account in the tab that opens.",f:[]},
+ {t:"Google Workspace",google:true,n:"Connect each Google account by OAuth — full Gmail/Drive/Calendar/Docs/Sheets/Chat/Contacts. Set that account's Client ID + secret on its row below, then Authorize and consent as the right account in the tab that opens.",f:[]},
  {t:"GitHub",gh:true,n:"Paste a fine-grained token (Contents: Read on the repos you want Rosco to see; add Pull requests: Read+write for PRs). It's stored as github_token and Rosco can then browse and read your repos in chat.",f:[]},
  {t:"Test a model",a:"test",btn:"Test",n:"Pings the model a role actually uses and reports the raw reply — or the exact provider error. Use it right after pasting a key.",
   f:[{k:"role",l:"Role",sel:"roles"}]},
@@ -507,43 +657,23 @@ function loadKeyStatus(el,nameInput,scopeInput){
     });
   }).catch(function(){el.innerHTML="<div class='n'>(couldn't check keys)</div>";});
 }
-// Each provider row shows its live model catalogue as a dropdown right under the
-// status, AND lets you assign a model to a role from there. Only where there ARE
-// models: openrouter and ollama list without a key; anthropic/openai/gemini/xai
-// need a valid key, so a keyless provider shows none and its "not set" status
-// stands as the answer. Pick a model -> a "use for <role>" strip appears ->
-// Assign writes it via /api/cfg/model (the same choose() the Models form uses).
+// Each provider row shows, right under its key status, the live catalogue of
+// models that key can serve — a browse-only list, so you can confirm the key
+// works and see what's available. Assigning a model to a ROLE lives solely in the
+// 'Models' section (one place, no duplicate control). openrouter/ollama list
+// without a key; anthropic/openai/gemini/xai need a valid one, so a keyless
+// provider shows none and its "not set" status stands as the answer.
 function loadProviderModels(row,provider){
   api("/api/cfg/models?provider="+encodeURIComponent(provider)).then(function(r){
     var ids=(r.ok&&r.j&&r.j.models)||[];
     if(!ids.length) return;
     var sel=document.createElement("select");sel.className="ksmsel";
     var head=document.createElement("option");head.value="";
-    head.textContent=ids.length+" model"+(ids.length===1?"":"s")+" available — pick one to assign";
+    head.textContent=ids.length+" model"+(ids.length===1?"":"s")+" your key can serve — assign a role in Models";
     sel.appendChild(head);
     ids.forEach(function(id){var o=document.createElement("option");o.value=id;o.textContent=id;sel.appendChild(o);});
-    sel.addEventListener("click",function(e){e.stopPropagation();});   // don't trip the row's fill-key-name click
-    // the assign strip: hidden until a real model is chosen
-    var strip=document.createElement("div");strip.className="ksassign";strip.style.display="none";
-    strip.addEventListener("click",function(e){e.stopPropagation();});
-    var roleSel=document.createElement("select");roleSel.className="karole";
-    (cfgState.roles||["chat","workhorse","cheap","vision","local"]).forEach(function(rl){
-      var o=document.createElement("option");o.value=rl;o.textContent="use for "+rl;roleSel.appendChild(o);});
-    var apply=document.createElement("button");apply.className="go sm";apply.textContent="Assign";
-    var res=document.createElement("span");res.className="ksares";
-    sel.addEventListener("change",function(){strip.style.display=sel.value?"flex":"none";res.textContent="";res.className="ksares";});
-    apply.addEventListener("click",function(){
-      var model=sel.value; if(!model){res.className="ksares err";res.textContent="pick a model";return;}
-      apply.disabled=true;res.className="ksares";res.textContent="working…";
-      post("/api/cfg/model",{role:roleSel.value,model:model,provider:provider}).then(function(rr){
-        apply.disabled=false;
-        if(rr.ok){res.className="ksares ok";res.textContent=rr.j.msg||"set";
-          api("/api/cfg/state").then(function(x){if(x.ok&&x.j){cfgState=x.j;renderState();}});}
-        else{res.className="ksares err";res.textContent=(rr.j&&rr.j.error)||"failed";}
-      }).catch(function(){apply.disabled=false;res.className="ksares err";res.textContent="unreachable";});
-    });
-    strip.appendChild(roleSel);strip.appendChild(apply);strip.appendChild(res);
-    row.appendChild(sel);row.appendChild(strip);
+    sel.addEventListener("click",function(e){e.stopPropagation();});   // browse only — don't trip the row's fill-key-name click
+    row.appendChild(sel);
   }).catch(function(){});
 }
 // The bot-token line: green ● @name when Telegram's getMe accepts it, red when
@@ -757,14 +887,19 @@ function loadGithubStatus(wrap){
 }
 document.getElementById("gear").addEventListener("click",openSettings);
 document.getElementById("settingsClose").addEventListener("click",closeSettings);
+// Lock: end the session on demand (server drops the passphrase, chat + any pending
+// write), then fall to the lock screen. The passphrase lives only in server memory,
+// so this is the clean way to walk away without waiting for a restart.
+document.getElementById("lockBtn").addEventListener("click",function(){
+  post("/api/lock",{}).then(function(){relock("Locked. Unlock to continue.");})
+    .catch(function(){relock("Locked. Unlock to continue.");});});
 
 // ---- ingestion review: learn one item at a time ----
 function ingestBusinesses(){return (cfgState&&cfgState.businesses)||[];}
 function bizTitle(slug){return (cfgState&&cfgState.businessTitles&&cfgState.businessTitles[slug])||slug;}
 var lastIngestBiz="";   // remember the last "File into" pick so bulk-routing (e.g. a whole repo into Rosco's Vault) is Enter, Enter, Enter
-function setIngestPip(n){ingCount=n;var pip=document.getElementById("ingestPip");if(pip)pip.style.display=n>0?"inline-block":"none";
-  var ib=document.querySelector(".ingbanner");if((ib?1:0)!==(n>0?1:0)&&document.getElementById("qwrap"))loadQueue();}
-function pollIngestPip(){api("/api/ingest/queue").then(function(r){setIngestPip(((r.ok&&r.j&&r.j.items)||[]).length);});}
+function setIngestPip(n){ingCount=n;var pip=document.getElementById("ingestPip");if(pip)pip.style.display=n>0?"inline-block":"none";}
+function pollIngestPip(){api("/api/ingest/queue").then(function(r){setIngestPip(((r.ok&&r.j&&r.j.items)||[]).filter(function(x){return !isEmail(x);}).length);});}
 function openIngest(){document.getElementById("ingest").style.display="flex";
   api("/api/cfg/state").then(function(r){if(r.ok&&r.j&&r.j.businesses)cfgState=r.j;loadIngest();});}
 function closeIngest(){document.getElementById("ingest").style.display="none";}
@@ -808,22 +943,29 @@ function loadIngest(){
       if(r.ok){gpath.value="";gmsg.className="ksst g";gmsg.textContent="queued "+r.j.added+" from "+(r.j.file||rp);loadIngest();}
       else{gmsg.className="ksst r";gmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
   grow.appendChild(grepo);grow.appendChild(gpath);grow.appendChild(gbtn);grow.appendChild(gmsg);host.appendChild(grow);
-  // or triage the inbox — pull recent personal Gmail into the hopper for Rosco to route
-  var trow=document.createElement("div");trow.className="ing-row";
-  var tl=document.createElement("label");tl.textContent="or inbox";trow.appendChild(tl);
-  var tbtn=document.createElement("button");tbtn.className="ing-go";tbtn.textContent="Triage inbox (10)";
-  var tmsg=document.createElement("span");tmsg.className="ksst";
-  tbtn.addEventListener("click",function(){tbtn.disabled=true;tmsg.className="ksst";tmsg.textContent="pulling inbox…";
-    post("/api/ingest/triage",{n:10}).then(function(r){tbtn.disabled=false;
-      if(r.ok){tmsg.className="ksst g";tmsg.textContent="queued "+r.j.added+" emails — review below";loadIngest();}
-      else{tmsg.className="ksst r";tmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
-  trow.appendChild(tbtn);trow.appendChild(tmsg);host.appendChild(trow);
+  // (Inbox triage moved to Next — the hopper is documents/knowledge only.)
   Promise.all([api("/api/ingest/queue"),api("/api/ingest/readiness")]).then(function(res){
     var q=(res[0].ok&&res[0].j&&res[0].j.items)||[];
     var rd=(res[1].ok&&res[1].j)||{};
-    setIngestPip(q.length);
-    if(q.length){
-      var nb=Math.min(rd.nextBatch||1,q.length);
+    var docs=q.filter(function(x){return !isEmail(x);});   // the hopper is DOCS only — count what's actually reviewable
+    setIngestPip(docs.length);
+    host.appendChild(renderLadder(rd));            // the learning ladder — climbs as you approve
+    if(rd.emailLessons>0){                          // Fix #2 cleanup: forget email notifications learned as facts
+      var pw=document.createElement("div");pw.className="ing-prune";
+      var pb=document.createElement("button");pb.className="em-btn warn";
+      pb.textContent="Forget "+rd.emailLessons+" email-notification ‘facts’";
+      var pm=document.createElement("span");pm.className="ksst";
+      pb.addEventListener("click",function(){
+        if(!confirm("Forget "+rd.emailLessons+" lessons learned from inbound email (promos, alerts, safe-access logs)? They were never durable facts. History stays on the log; the claims leave memory."))return;
+        pb.disabled=true;pm.className="ksst";pm.textContent="forgetting…";
+        post("/api/lessons/prune",{}).then(function(r){
+          if(r.ok){pm.className="ksst g";pm.textContent="✓ forgot "+r.j.forgot;setTimeout(loadIngest,700);}
+          else{pb.disabled=false;pm.className="ksst r";pm.textContent=(r.j&&r.j.error)||"failed";}
+        }).catch(function(){pb.disabled=false;pm.className="ksst r";pm.textContent="unreachable";});});
+      pw.appendChild(pb);pw.appendChild(pm);host.appendChild(pw);
+    }
+    if(docs.length){
+      var nb=Math.min(rd.nextBatch||1,docs.length);
       var rb=document.createElement("div");rb.className="ing-ready";
       var msg=document.createElement("span");
       msg.textContent="Batch review — Rosco reads the next "+nb+", tells you how sure it is, you ✓/✗ each. Get them right and the batch grows (1→2→5→10→20); a wrong one snaps it back.";
@@ -832,22 +974,334 @@ function loadIngest(){
       rb.appendChild(msg);rb.appendChild(ab);host.appendChild(rb);
     }
     var bar=document.createElement("div");bar.className="ing-bar";
-    var l=document.createElement("span");l.textContent=q.length+" waiting";
+    var l=document.createElement("span");l.textContent=docs.length+" waiting";
     var rt=document.createElement("span");rt.textContent=(rd.decided||0)+" placed · "+Math.round((rd.rate||0)*100)+"% on target";
     bar.appendChild(l);bar.appendChild(rt);
-    if(q.length){var cl=document.createElement("button");cl.className="ing-clear";cl.textContent="Clear queue";
+    if(docs.length){var cl=document.createElement("button");cl.className="ing-clear";cl.textContent="Clear queue";
       cl.addEventListener("click",function(){
-        if(!confirm("Skip all "+q.length+" pending item(s)? They stay on the log as history but leave the queue, so you can re-ingest cleanly.")) return;
+        if(!confirm("Skip all "+docs.length+" pending item(s)? They stay on the log as history but leave the queue, so you can re-ingest cleanly.")) return;
         cl.disabled=true;cl.textContent="clearing…";
         post("/api/ingest/clear",{}).then(function(r){ if(r.ok){loadIngest();}
           else{cl.disabled=false;cl.textContent="Clear queue";alert((r.j&&r.j.error)||"couldn't clear");} })
           .catch(function(){cl.disabled=false;cl.textContent="Clear queue";alert("server unreachable");});});
       bar.appendChild(cl);}
     host.appendChild(bar);
-    if(!q.length){var e=document.createElement("div");e.className="ing-empty";e.textContent="Nothing to review. Paste something above to begin.";host.appendChild(e);return;}
-    host.appendChild(ingestCard(q[0]));
+    if(!docs.length){var e=document.createElement("div");e.className="ing-empty";e.textContent="Nothing to review. Paste something above to begin.";host.appendChild(e);return;}
+    host.appendChild(ingestCard(docs[0]));
   });
 }
+// ---- Next: the importance-ranked "what needs you" drawer, slid from the rail ----
+var NXLABEL={reply:"Reply",archive:"Archive",keep:"Keep",done:"Done ✓",trash:"Trash",star:"Star",spam:"Spam"};
+function nxLabel(a){return NXLABEL[a]||a;}
+function openNext(){var d=document.getElementById("nextDrawer");if(!d)return;
+  var h=document.querySelector("header");           // sit BELOW the main header, never over it
+  if(h)d.style.top=Math.round(h.getBoundingClientRect().bottom)+"px";
+  d.style.display="flex";requestAnimationFrame(function(){d.classList.add("open");});
+  // The doc lane's "File into" needs cfgState.businesses; only the Ingest modal
+  // loaded it before, so a cold session opening straight to Needs had an empty
+  // dropdown and filing failed. Load it once here if missing, THEN render.
+  if(cfgState&&cfgState.businesses){loadNext(true);}
+  else{api("/api/cfg/state").then(function(r){if(r.ok&&r.j&&r.j.businesses)cfgState=r.j;loadNext(true);}).catch(function(){loadNext(true);});}}
+function closeNext(){var d=document.getElementById("nextDrawer");if(!d)return;
+  d.classList.remove("open");setTimeout(function(){d.style.display="none";},200);
+  var on=document.querySelector(".tool.on");if(on)on.classList.remove("on");}
+// The full "Needs you": the GATES band on top, then the typed lanes (email, docs,
+// tasks, non-sensitive requests) — one /api/needs?full=1 fetch (Google + model),
+// cached so re-focusing an email doesn't re-hit the inbox. Every card renderer and
+// its post-action reload still call loadNext, so they keep working unchanged.
+var lastNeeds=null, emailFocus=0;
+function loadNext(force){var body=document.getElementById("nextBody");if(!body)return;
+  // A background reload (after acting on any lane) must not rebuild the drawer
+  // under a gate Ross is mid-decision on — his deny-why note would vanish. Skip
+  // and let the gate's own resolve refresh. `force` (the initial open) bypasses.
+  if(!force && cardBusy(body))return;
+  body.innerHTML="<div class='ing-empty'>ranking what needs you…</div>";
+  api("/api/needs?full=1").then(function(res){
+    if(!res.ok||!res.j){body.innerHTML="<div class='ing-empty'>couldn't load</div>";return;}
+    emailFocus=0; renderNeeds(res.j);
+  }).catch(function(){body.innerHTML="<div class='ing-empty'>server unreachable</div>";});}
+function laneHead(title,sub){var h=document.createElement("div");h.className="nx-lane";
+  h.innerHTML="<span class='nx-lane-t'>"+esc(title)+"</span>"+(sub?"<span class='nx-lane-s'>"+esc(sub)+"</span>":"");return h;}
+function renderNeeds(d){
+  lastNeeds=d;
+  var body=document.getElementById("nextBody");if(!body)return;
+  body.innerHTML="";
+  var band=d.band||[], lanes=d.lanes||{}, c=d.counts||{};
+  setNeedsBadge(c.gates||0,c.work||0,!!c.sensitive);
+  markWaiting(band.filter(function(b){return b.kind==="grant";}));
+  // BAND — the gates
+  if(band.length){
+    body.appendChild(laneHead("⚠ Gates ("+band.length+")",
+      c.sensitive?"someone's blocked — a SENSITIVE one is here":"someone is blocked on you"));
+    renderBand(body,band);
+  }
+  // EMAIL — a scannable list with the top one expanded for full triage. It gets
+  // its OWN container so re-focusing a row re-renders only this lane (no refetch,
+  // and the band's in-progress deny-note / ack survive).
+  var em=lanes.email||[];
+  if(em.length){
+    body.appendChild(laneHead("Email ("+em.length+")","most important first — who you reply to, not what a mail claims"));
+    var elane=document.createElement("div");elane.className="nx-email-lane";body.appendChild(elane);
+    renderEmailLane(elane,em);
+  } else if(d.emailNote){
+    body.appendChild(laneHead("Email",""));
+    var nn=document.createElement("div");nn.className="ing-empty";nn.textContent=d.emailNote;body.appendChild(nn);
+  }
+  // DOCS — the hopper, quick file/skip; deep review stays in the Ingest modal
+  var docs=lanes.doc||[];
+  if(docs.length){
+    var lad=(d.ladder&&d.ladder.stage)?("autonomy: "+d.ladder.stage):"";
+    body.appendChild(laneHead("Docs to review ("+docs.length+")",lad));
+    docs.slice(0,6).forEach(function(dc){body.appendChild(needsDocCard(dc));});
+    if(docs.length>6){var mo=document.createElement("div");mo.className="nx-more";
+      mo.textContent="+"+(docs.length-6)+" more — open Ingest to review in depth →";
+      mo.addEventListener("click",openIngest);body.appendChild(mo);}
+  }
+  // TASKS
+  var tks=lanes.task||[];
+  if(tks.length){body.appendChild(laneHead("Tasks ("+tks.length+")",""));
+    tks.forEach(function(tk){body.appendChild(taskCard(tk));});}
+  // REQUESTS — Rosco's non-sensitive proactive suggestions (sensitive ones band above)
+  var rqs=lanes.request||[];
+  if(rqs.length){body.appendChild(laneHead("Rosco suggests ("+rqs.length+")",""));
+    rqs.forEach(function(rq){body.appendChild(requestCard(rq));});}
+  // Whole-surface empty → the verify digest (what Rosco did)
+  if(!band.length&&!em.length&&!docs.length&&!tks.length&&!rqs.length){
+    body.innerHTML="";body.appendChild(gatesEmpty(d.ledgerDigest||[]));}
+}
+// The email lane: the focused email is the full triage card; the rest are compact
+// rows you can click to focus (re-render from cache — no re-hit of the inbox).
+function renderEmailLane(host,em){
+  if(emailFocus>=em.length)emailFocus=0;
+  host.innerHTML="";
+  host.appendChild(nextEmailCard(em[emailFocus], em.length-1));
+  em.forEach(function(it,idx){ if(idx===emailFocus)return;
+    var r=document.createElement("div");r.className="em-row";
+    r.innerHTML="<span class='em-row-f'>"+esc((it.from||"").replace(/\s*<.*$/,""))+"</span>"
+      +"<span class='em-row-s'>"+esc(it.subject||"(no subject)")+"</span>"
+      +"<span class='em-row-c'>"+esc(nxLabel(it.suggest))+"</span>";
+    r.addEventListener("click",function(){emailFocus=idx;renderEmailLane(host,em);});   // re-render THIS lane only
+    host.appendChild(r);
+  });
+}
+// A lean doc card for the drawer — quick File-into / Ingest / Skip, reloading the
+// drawer (not the Ingest modal). Deep review + batch stay in the Ingest modal.
+function needsDocCard(item){
+  var card=document.createElement("div");card.className="ing-card";
+  var txt=document.createElement("div");txt.className="ing-text";
+  txt.textContent=(item.summary||item.text||"").slice(0,240);card.appendChild(txt);
+  var row=document.createElement("div");row.className="ing-row";
+  var lab=document.createElement("label");lab.textContent="File into";row.appendChild(lab);
+  var sel=document.createElement("select");
+  ingestBusinesses().forEach(function(bz){var o=document.createElement("option");o.value=bz;o.textContent=bizTitle(bz);if(bz===item.business)o.selected=true;sel.appendChild(o);});
+  row.appendChild(sel);
+  var go=document.createElement("button");go.className="ing-go";go.textContent="Ingest";
+  go.addEventListener("click",function(){decideIngest(item.cand,sel.value,"ingest",card,item.summary||"",false,loadNext);});
+  var skip=document.createElement("button");skip.className="ing-skip";skip.textContent="Skip";
+  skip.addEventListener("click",function(){decideIngest(item.cand,"","skip",card,"",false,loadNext);});
+  row.appendChild(go);row.appendChild(skip);card.appendChild(row);
+  return card;
+}
+// A proactive request from Rosco — propose-only. Approve runs the safe/reversible
+// act it named; Not now suppresses that type this session.
+function requestCard(rq){
+  var c=document.createElement("div");c.className="rq-card";
+  var h=document.createElement("div");h.className="rq-title";h.textContent="Rosco suggests: "+(rq.title||"");
+  var w=document.createElement("div");w.className="rq-why";w.textContent=rq.why||"";
+  var acts=document.createElement("div");acts.className="rq-acts";
+  var msg=document.createElement("span");msg.className="ksst";
+  var yes=document.createElement("button");yes.className="em-btn primary";yes.textContent="Approve";
+  var no=document.createElement("button");no.className="em-btn";no.textContent="Not now";
+  yes.addEventListener("click",function(){
+    c.querySelectorAll("button").forEach(function(b){b.disabled=true;});msg.className="ksst";msg.textContent="working…";
+    post("/api/requests",{id:rq.id,business:rq.business,cands:rq.cands}).then(function(r){
+      if(r.ok){msg.className="ksst g";
+        msg.textContent="✓ "+(r.j.filed!=null?("filed "+r.j.filed+" into "+(r.j.business||"")):(r.j.forgot!=null?("forgot "+r.j.forgot):"done"));
+        setTimeout(loadNext,850);}
+      else{c.querySelectorAll("button").forEach(function(b){b.disabled=false;});msg.className="ksst r";msg.textContent=(r.j&&r.j.error)||"failed";}
+    }).catch(function(){c.querySelectorAll("button").forEach(function(b){b.disabled=false;});msg.className="ksst r";msg.textContent="unreachable";});});
+  no.addEventListener("click",function(){yes.disabled=true;no.disabled=true;post("/api/requests",{id:rq.id,decline:true}).then(function(){loadNext();});});
+  acts.appendChild(yes);acts.appendChild(no);
+  c.appendChild(h);c.appendChild(w);
+  // See exactly what will happen before approving — the items + where each goes.
+  if(rq.preview&&rq.preview.length){
+    var verb=rq.verb||"do";
+    var lab=function(open){return (open?"▾":"▸")+" Review "+rq.preview.length+(rq.more?("+"+rq.more):"")+" to "+verb;};
+    var tg=document.createElement("button");tg.className="rq-toggle";tg.textContent=lab(false);
+    var lst=document.createElement("div");lst.className="rq-preview";lst.style.display="none";
+    rq.preview.forEach(function(p){var pr=document.createElement("div");pr.className="rq-pv";
+      var b=document.createElement("span");b.className="rq-pv-b";b.textContent=bizTitle(p.business||"");
+      var tx=document.createElement("span");tx.className="rq-pv-t";tx.textContent=p.text||"";
+      pr.appendChild(b);pr.appendChild(tx);lst.appendChild(pr);});
+    if(rq.more){var mo=document.createElement("div");mo.className="rq-pv rq-more";mo.textContent="+ "+rq.more+" more";lst.appendChild(mo);}
+    tg.addEventListener("click",function(){var open=lst.style.display==="none";lst.style.display=open?"block":"none";tg.textContent=lab(open);});
+    c.appendChild(tg);c.appendChild(lst);
+  }
+  c.appendChild(acts);c.appendChild(msg);return c;
+}
+function taskCard(tk){
+  var c=document.createElement("div");c.className="tk-card";
+  var main=document.createElement("div");main.className="tk-main";
+  var t=document.createElement("div");t.className="tk-text";t.textContent=tk.text||"";main.appendChild(t);
+  if(tk.from||tk.subject){var m=document.createElement("div");m.className="tk-meta";
+    m.textContent=(tk.from?("from "+tk.from):"")+(tk.subject?("  ·  "+tk.subject):"");main.appendChild(m);}
+  var d=document.createElement("button");d.className="em-btn done";d.textContent="Done ✓";
+  d.addEventListener("click",function(){d.disabled=true;post("/api/task/done",{id:tk.id}).then(function(){loadNext();});});
+  c.appendChild(main);c.appendChild(d);return c;
+}
+// Split the badge: GATES is the primary count (turns red when a sensitive gate is
+// present) — the only number that should ever nag. WORK (email/docs/tasks) is a
+// muted sub-count, so a promo landing never inflates the alarming number.
+function setNeedsBadge(gates,work,sensitive){var tools=document.querySelectorAll(".tool");
+  for(var i=0;i<tools.length;i++){var t=tools[i].querySelector(".t");
+    if(t&&t.textContent==="Needs"){
+      var b=tools[i].querySelector(".badge");
+      if(gates>0){if(!b){b=document.createElement("span");b.className="badge";tools[i].appendChild(b);}
+        b.textContent=gates;if(sensitive)b.classList.add("sens");else b.classList.remove("sens");}
+      else if(b){b.remove();}
+      var w=tools[i].querySelector(".badge-work");
+      if(work>0){if(!w){w=document.createElement("span");w.className="badge-work";tools[i].appendChild(w);}w.textContent=work;}
+      else if(w){w.remove();}
+      break;}}}
+function cap(s){return s?s.charAt(0).toUpperCase()+s.slice(1):s;}
+// One inbound email at a time, top of the importance pile, full triage verbs.
+// After a "clear it" verb Rosco sweeps the rest of that sender's domain so you
+// clear the lookalikes in one click — the fast path through a repetitive inbox.
+function nextEmailCard(item,moreCount){
+  var card=document.createElement("div");card.className="ing-card email";
+  var imp=document.createElement("div");imp.className="nx-why";
+  imp.textContent="▲ "+(item.why||"recent inbox mail")+(moreCount>0?("     ·  "+moreCount+" more after this"):"");
+  card.appendChild(imp);
+  var hd=document.createElement("div");hd.className="em-head";
+  var f=document.createElement("span");f.className="em-from";f.textContent=item.from||"(unknown sender)";
+  var sj=document.createElement("span");sj.className="em-subj";sj.textContent=item.subject||"(no subject)";
+  hd.appendChild(f);hd.appendChild(sj);card.appendChild(hd);
+  if(item.snippet){var tx=document.createElement("div");tx.className="ing-text";tx.textContent=item.snippet;card.appendChild(tx);}
+  var sug=document.createElement("div");sug.className="nx-sug";
+  var sb=document.createElement("b");sb.textContent="Rosco: "+nxLabel(item.suggest);
+  var sw=document.createElement("span");sw.textContent=" — "+(item.suggestWhy||"");
+  sug.appendChild(sb);sug.appendChild(sw);card.appendChild(sug);
+  var msg=document.createElement("span");msg.className="ksst";
+  var row=document.createElement("div");row.className="em-acts";
+  function btn(label,action,cls){var b=document.createElement("button");
+    b.className="em-btn"+(cls?" "+cls:"")+(action===item.suggest?" primary":"");b.textContent=label;
+    b.addEventListener("click",function(){oneEmailAct(item,action,card,msg);});return b;}
+  row.appendChild(btn("Done ✓","done","done"));
+  row.appendChild(btn("Archive","archive"));
+  row.appendChild(btn("Star","star"));
+  row.appendChild(btn("Keep","keep"));
+  row.appendChild(btn("Trash","trash","warn"));
+  row.appendChild(btn("Spam","spam","warn"));
+  var replyBtn=document.createElement("button");replyBtn.className="em-btn";replyBtn.textContent="Reply → draft";
+  row.appendChild(replyBtn);
+  var taskBtn=document.createElement("button");taskBtn.className="em-btn done";taskBtn.textContent="→ Task";
+  row.appendChild(taskBtn);
+  card.appendChild(row);card.appendChild(msg);
+  var comp=document.createElement("div");comp.className="em-compose";comp.style.display="none";
+  var ta=document.createElement("textarea");ta.placeholder="Write the reply — saves an unsent Gmail draft you send.";
+  var crow=document.createElement("div");crow.className="em-crow";
+  var save=document.createElement("button");save.className="ing-go";save.textContent="Save draft";
+  var cancel=document.createElement("button");cancel.className="ing-skip";cancel.textContent="Cancel";
+  crow.appendChild(save);crow.appendChild(cancel);comp.appendChild(ta);comp.appendChild(crow);card.appendChild(comp);
+  replyBtn.addEventListener("click",function(){var open=comp.style.display==="none";comp.style.display=open?"block":"none";if(open)ta.focus();});
+  cancel.addEventListener("click",function(){comp.style.display="none";});
+  save.addEventListener("click",function(){var t=ta.value.trim();if(!t){ta.focus();return;}oneEmailAct(item,"reply",card,msg,t);});
+  // "→ Task": for an important one you're closing out — capture the follow-up AND archive it in one move.
+  var tcomp=document.createElement("div");tcomp.className="em-compose";tcomp.style.display="none";
+  var tin=document.createElement("input");tin.type="text";tin.className="task-in";tin.autocomplete="off";
+  tin.placeholder="What's the follow-up?";tin.value=item.subject||"";
+  var tc=document.createElement("div");tc.className="em-crow";
+  var tsave=document.createElement("button");tsave.className="ing-go";tsave.textContent="Make task + archive";
+  var tcancel=document.createElement("button");tcancel.className="ing-skip";tcancel.textContent="Cancel";
+  tc.appendChild(tsave);tc.appendChild(tcancel);tcomp.appendChild(tin);tcomp.appendChild(tc);card.appendChild(tcomp);
+  taskBtn.addEventListener("click",function(){var open=tcomp.style.display==="none";tcomp.style.display=open?"block":"none";if(open){tin.focus();tin.select();}});
+  tcancel.addEventListener("click",function(){tcomp.style.display="none";});
+  tsave.addEventListener("click",function(){var t=tin.value.trim();if(!t){tin.focus();return;}
+    card.querySelectorAll("button,textarea,input").forEach(function(b){b.disabled=true;});msg.className="ksst";msg.textContent="making task…";
+    post("/api/task",{ref:item.ref,text:t}).then(function(r){
+      if(r.ok){msg.className="ksst g";msg.textContent="✓ task made"+(r.j.archived?" + archived":"");setTimeout(loadNext,700);}
+      else{card.querySelectorAll("button,textarea,input").forEach(function(b){b.disabled=false;});msg.className="ksst r";msg.textContent=(r.j&&r.j.error)||"failed";}
+    }).catch(function(){card.querySelectorAll("button,textarea,input").forEach(function(b){b.disabled=false;});msg.className="ksst r";msg.textContent="unreachable";});});
+  // Talk it through with Rosco — grounded in THIS email. A read: it explains or
+  // drafts, never sends. Handy when you're not sure what an email even wants.
+  var chat=document.createElement("div");chat.className="nx-chat";
+  var thread=document.createElement("div");thread.className="nx-chat-thread";
+  var crow2=document.createElement("div");crow2.className="nx-chat-row";
+  var cin2=document.createElement("input");cin2.type="text";cin2.className="nx-chat-in";cin2.autocomplete="off";
+  cin2.placeholder="Talk to Rosco about this email…";
+  var cbtn=document.createElement("button");cbtn.className="em-btn";cbtn.textContent="Ask";
+  crow2.appendChild(cin2);crow2.appendChild(cbtn);chat.appendChild(thread);chat.appendChild(crow2);card.appendChild(chat);
+  function bub(cls,who,text){var m=document.createElement("div");m.className="nx-cb "+cls;
+    var by=document.createElement("span");by.className="nx-cb-by";by.textContent=who;
+    var d=document.createElement("span");d.className="nx-cb-t";d.textContent=text;
+    m.appendChild(by);m.appendChild(d);thread.appendChild(m);thread.scrollTop=thread.scrollHeight;return d;}
+  function ask(){var q=cin2.value.trim();if(!q)return;cin2.value="";bub("you","You",q);
+    var w=bub("ros","Rosco","thinking…");cbtn.disabled=true;
+    post("/api/email/chat",{ref:item.ref,message:q}).then(function(r){cbtn.disabled=false;
+      w.textContent=(r.ok&&r.j&&r.j.reply)||"(couldn't answer)";cin2.focus();})
+      .catch(function(){cbtn.disabled=false;w.textContent="(server unreachable)";});}
+  cbtn.addEventListener("click",ask);cin2.addEventListener("keydown",function(e){if(e.key==="Enter")ask();});
+  return card;
+}
+function oneEmailAct(item,action,card,msg,text){
+  card.querySelectorAll("button,textarea").forEach(function(b){b.disabled=true;});
+  msg.className="ksst";msg.textContent="working…";
+  var b={ref:item.ref,action:action};if(text)b.text=text;
+  post("/api/ingest/gmail",b).then(function(r){
+    if(r.ok){
+      if(r.j.similar&&r.j.similar.count>0){showSweep(card,msg,r.j.similar);}
+      else{msg.className="ksst g";msg.textContent="✓ "+(r.j.msg||action);setTimeout(loadNext,500);}
+    }else{card.querySelectorAll("button,textarea").forEach(function(x){x.disabled=false;});msg.className="ksst r";msg.textContent=(r.j&&r.j.error)||"couldn't do that";}
+  }).catch(function(){card.querySelectorAll("button,textarea").forEach(function(x){x.disabled=false;});msg.className="ksst r";msg.textContent="server unreachable";});
+}
+// The sweep: "you archived this — N more from the same domain; clear them all?"
+function showSweep(card,msg,sim){
+  msg.className="ksst g";msg.textContent="✓ "+sim.action+"d";
+  var box=document.createElement("div");box.className="nx-sweep";
+  var t=document.createElement("div");t.className="nx-sweep-t";
+  t.textContent="Found "+sim.count+" more from "+sim.domain+". "+cap(sim.action)+" all "+sim.count+" too?";
+  var acts=document.createElement("div");acts.className="em-acts";
+  var m2=document.createElement("span");m2.className="ksst";
+  var yes=document.createElement("button");yes.className="em-btn primary";yes.textContent=cap(sim.action)+" all "+sim.count;
+  var no=document.createElement("button");no.className="em-btn";no.textContent="Just this one";
+  yes.addEventListener("click",function(){yes.disabled=true;no.disabled=true;m2.className="ksst";m2.textContent="sweeping…";
+    post("/api/gmail/batch",{action:sim.action,refs:sim.refs}).then(function(r){
+      if(r.ok){m2.className="ksst g";m2.textContent="✓ "+sim.action+"d "+((r.j.done||0)+1)+" from "+sim.domain;setTimeout(loadNext,750);}
+      else{yes.disabled=false;no.disabled=false;m2.className="ksst r";m2.textContent=(r.j&&r.j.error)||"failed";}
+    }).catch(function(){yes.disabled=false;no.disabled=false;m2.className="ksst r";m2.textContent="unreachable";});});
+  no.addEventListener("click",function(){yes.disabled=true;no.disabled=true;setTimeout(loadNext,150);});
+  acts.appendChild(yes);acts.appendChild(no);
+  box.appendChild(t);box.appendChild(acts);box.appendChild(m2);card.appendChild(box);
+}
+// The autonomy ladder — learning → crawling → walking → running → auto. Rungs
+// light up to the current stage; the caption says what earns the next one. It
+// climbs live: every accepted placement in the report card refreshes this.
+function renderLadder(rd){
+  var stages=(rd&&rd.stages)||["learning","crawling","walking","running","auto"];
+  var idx=(rd&&typeof rd.stageIndex==="number")?rd.stageIndex:0;
+  var wrap=document.createElement("div");wrap.className="ladder";
+  var head=document.createElement("div");head.className="ladder-head";
+  var ll=document.createElement("span");ll.className="ll";
+  ll.innerHTML="Rosco is <b>"+esc(stages[idx]||"learning")+"</b>";
+  var ln=document.createElement("span");ln.className="ln";ln.textContent=(rd&&rd.toNext)||"";
+  head.appendChild(ll);head.appendChild(ln);wrap.appendChild(head);
+  var track=document.createElement("div");track.className="ladder-track";
+  stages.forEach(function(s,i){
+    var seg=document.createElement("div");seg.className="lseg"+(i<=idx?" on":"")+(i===idx?" cur":"");
+    seg.title=s;
+    var dot=document.createElement("span");dot.className="lsdot";
+    var nm=document.createElement("span");nm.className="lsname";nm.textContent=s;
+    seg.appendChild(dot);seg.appendChild(nm);track.appendChild(seg);
+  });
+  wrap.appendChild(track);
+  if(rd&&(rd.streak||rd.decided)){
+    var s=document.createElement("div");s.className="ladder-sub";
+    s.textContent="streak "+(rd.streak||0)+" · "+(rd.decided||0)+" placed · "+Math.round((rd.rate||0)*100)+"% on target";
+    wrap.appendChild(s);
+  }
+  return wrap;
+}
+function isEmail(x){return !!x&&(x.kind==="email"||((x.source||"").indexOf("gmail:")===0));}
 function ingestCard(item){
   var card=document.createElement("div");card.className="ing-card";
   var txt=document.createElement("div");txt.className="ing-text";txt.textContent=item.text;card.appendChild(txt);
@@ -907,10 +1361,10 @@ function ingestCard(item){
   setTimeout(function(){((lastIngestBiz||item.business)?go:sel).focus();},0);
   return card;
 }
-function decideIngest(cand,business,action,card,shorthand){
+function decideIngest(cand,business,action,card,shorthand,emailFact,reload){
   if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=true;});
-  post("/api/ingest/decide",{cand:cand,business:business,action:action,shorthand:shorthand||""}).then(function(r){
-    if(r.ok){loadIngest();}
+  post("/api/ingest/decide",{cand:cand,business:business,action:action,shorthand:shorthand||"",emailFact:!!emailFact}).then(function(r){
+    if(r.ok){(reload||loadIngest)();}
     else{alert((r.j&&r.j.error)||"couldn't decide");if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=false;});}
   });
 }
@@ -976,6 +1430,7 @@ function renderReportCard(host,items,confidence){
 }
 document.getElementById("ingestBtn").addEventListener("click",openIngest);
 document.getElementById("ingestClose").addEventListener("click",closeIngest);
+var nc=document.getElementById("nextClose");if(nc)nc.addEventListener("click",closeNext);
 
 // ---- resizable right panel: slide the context/chat split (up-down) and the
 // whole panel's width (left-right). Both handles use the same drag scaffold.
