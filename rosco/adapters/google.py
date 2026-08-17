@@ -251,15 +251,20 @@ def gmail_changes(token: str, start_id: str, cap: int = 300) -> dict | None:
     {UNREAD, INBOX} once, not three separate records. Only Ross's own mailbox is
     read — this is his behaviour in his account, the forgery-resistant signal the
     ranker is built on."""
+    import urllib.parse
     base = "https://gmail.googleapis.com/gmail/v1/users/me/history"
     trans, newid, page, seen = {}, start_id, "", 0
     while True:
-        params = {"startHistoryId": start_id,
-                  "historyTypes": "messageAdded,labelAdded,labelRemoved"}
+        # historyTypes is a REPEATED enum param — it must be sent as
+        # historyTypes=messageAdded&historyTypes=labelAdded&... A single
+        # comma-joined value is rejected 400 "Invalid value at 'history_types'".
+        pairs = [("startHistoryId", start_id)]
+        pairs += [("historyTypes", t) for t in ("messageAdded", "labelAdded", "labelRemoved")]
         if page:
-            params["pageToken"] = page
+            pairs.append(("pageToken", page))
         try:
-            d = safehttp.call(base + "?" + _q(params), method="GET", bearer=token, timeout=20)
+            d = safehttp.call(base + "?" + urllib.parse.urlencode(pairs),
+                              method="GET", bearer=token, timeout=20)
         except ValueError as e:
             if "HTTP 404" in str(e):
                 return None                       # cursor too old — re-baseline
