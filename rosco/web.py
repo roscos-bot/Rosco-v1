@@ -1563,7 +1563,34 @@ class ConsoleServer(ThreadingHTTPServer):
                 [{"text": content, "business": "", "confidence": 0.0,
                   "why": "drive file", "summary": ""}], source=src)
         if not added:
-            # Distinct diagnostics so a failed pull says WHY, not a catch-all.
+            # Distinct diagnostics so a failed pull says WHY, plus a file-TYPE
+            # breakdown so any format we don't yet read is named, not lumped as
+            # 'binary'. (Whatever shows up here is what to add support for next.)
+            from collections import Counter
+            _KIND = {
+                "application/vnd.google-apps.document": "Google Doc",
+                "application/vnd.google-apps.spreadsheet": "Google Sheet",
+                "application/vnd.google-apps.presentation": "Google Slides",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PowerPoint",
+                "application/msword": "Word(.doc)", "application/vnd.ms-excel": "Excel(.xls)",
+                "application/vnd.ms-powerpoint": "PowerPoint(.ppt)", "application/pdf": "PDF",
+                "application/rtf": "RTF", "text/rtf": "RTF"}
+
+            def _kind(mt):
+                m = (mt or "").lower()
+                if m in _KIND:
+                    return _KIND[m]
+                if m.startswith("image/"):
+                    return "image"
+                if m.startswith(("video/", "audio/")):
+                    return m.split("/")[0]
+                if m.startswith("text/") or "json" in m or "csv" in m:
+                    return "text"
+                return (m.split("/")[-1] or "other")[:24]
+            breakdown = ", ".join(f"{n} {k}" for k, n in
+                                  Counter(_kind(f.get("mimeType", "")) for f in files).most_common())
             if found == 0:
                 raise ValueError(
                     f"the '{account}' account's Drive returned 0 files for "
@@ -1574,10 +1601,10 @@ class ConsoleServer(ThreadingHTTPServer):
                         "file": f"nothing new — all {skipped} of {found} already "
                                 f"ingested (send force to re-pull)"}
             raise ValueError(
-                f"found {found} file(s) in '{account}' Drive but none had extractable "
-                f"text ({unreadable} were PDFs/images/binaries — only Docs, Sheets and "
-                f"plain text export)"
-                + (f"; {skipped} already ingested" if skipped else "") + ".")
+                f"found {found} file(s) in '{account}' Drive [{breakdown}] but none had "
+                f"extractable text — {unreadable} couldn't be read"
+                + (f", {skipped} already ingested" if skipped else "")
+                + ". If a type you want is in that list, tell me and I'll add it.")
         return {"ok": True, "added": added, "skipped": skipped, "found": found,
                 "file": f"{added} from {account} Drive" + (f" · '{name}'" if name else " (recent)")
                         + (f" ({skipped} already ingested, skipped)" if skipped else "")}

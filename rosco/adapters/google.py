@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import urllib.parse
 
-from .. import safehttp
+from .. import office, safehttp
 
 # Full access across the surfaces an agent might work in. Space-joined into the
 # consent request; Google shows Ross exactly these before he agrees.
@@ -260,6 +260,15 @@ def drive_read(token: str, file_id: str, mime: str, max_chars: int = 8000) -> st
                 max_bytes=25 * 1024 * 1024)
             from .. import ocr
             text = ocr.image_text(data)         # OCR the image
+        except Exception:
+            text = ""
+    elif office.is_office(mime):                 # Word / Excel / PowerPoint (.docx/.xlsx/.pptx)
+        try:
+            data = safehttp.call(
+                f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true",
+                method="GET", bearer=token, timeout=45, binary=True,
+                max_bytes=25 * 1024 * 1024)
+            text = office.office_text(data, mime)
         except Exception:
             text = ""
     else:
