@@ -702,6 +702,23 @@ var audioCtx=null,audioSrc=null,audioProc=null,audioStream=null,audioMute=null;
 var ring=[],ringLen=0,ringRate=16000,RING_SECS=6;
 var _bhi=0,_wasSpk=false,_echoLvl=0.01;     // barge-in: sustained-loud counter, speaking edge, running echo level
 function bargeFactor(){ var b=parseFloat(_ls("roscoBargeSens")); if(!(b>=0&&b<=1))b=0.3; return 3.6-b*2.2; }  // 0 -> 3.6 (hard to interrupt) … 1 -> 1.4 (easy)
+var _bargeVerifying=false,_bargeLast=0;
+function doBarge(){ try{window.speechSynthesis.cancel();}catch(e){} lastSpoken=""; vhint("▶ (go ahead)…",true); }
+// An energy spike WHILE Rosco speaks is a candidate interrupt. With the voiceprint
+// gate on, verify it's actually Ross before cutting Rosco off — so the TV (or
+// anyone else) can't interrupt. Gate off -> energy alone interrupts, as before.
+function tryBarge(){
+  if(!(window.speechSynthesis&&window.speechSynthesis.speaking)) return;
+  if(!voiceGateOn()){ doBarge(); return; }
+  var now=Date.now();
+  if(_bargeVerifying||now-_bargeLast<800) return;                       // debounce so a noisy TV doesn't spam verify
+  _bargeVerifying=true; _bargeLast=now;
+  var b64; try{ b64=wavB64(ringTail(1.6),ringRate); }catch(e){ _bargeVerifying=false; return; }
+  post("/api/voiceid/verify",{clip:b64}).then(function(r){ _bargeVerifying=false;
+    var v=(r.ok&&r.j)||{};
+    if((!v.gate||v.match)&&window.speechSynthesis&&window.speechSynthesis.speaking){ doBarge(); }
+  }).catch(function(){ _bargeVerifying=false; });
+}
 function startAudio(cb){
   if(audioCtx){ if(cb)cb(true); return; }
   if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){ if(cb)cb(false); return; }
@@ -727,7 +744,7 @@ function startAudio(cb){
         _wasSpk=true;
         _echoLvl=0.85*_echoLvl+0.15*Math.min(rms,_echoLvl*1.4);            // grow the echo estimate slowly; cap the input so YOUR spike can't inflate it
         if(rms>Math.max(0.05,_echoLvl*bargeFactor())){                      // must beat Rosco's OWN echo by the margin
-          if(++_bhi>=2){ _bhi=0; window.speechSynthesis.cancel(); lastSpoken=""; vhint("▶ (go ahead)…",true); } }
+          if(++_bhi>=2){ _bhi=0; tryBarge(); } }                            // then confirm it's Ross (if the voiceprint gate is on)
         else if(_bhi>0){ _bhi--; }
       } else { _wasSpk=false; _bhi=0; }
     };
