@@ -456,13 +456,10 @@ class ConsoleServer(ThreadingHTTPServer):
                 external_used = True
         except Exception:
             pass
-        try:
-            web_ctx = self._web_context(log, s.passphrase, msg)
-            if web_ctx:
-                ctx += "\n\n" + _EXTERNAL_DATA_GUARD + "\n" + web_ctx
-                external_used = True       # web results are attacker-controllable too
-        except Exception:
-            pass                           # search is best-effort; never breaks chat
+        # Web search is now MODEL-DRIVEN (handled after the answer below): Rosco
+        # emits an ACTION:websearch with a query IT writes, so it looks up the right
+        # thing instead of the raw message. The old auto-inject searched the literal
+        # message — which is how "you should have search now" got searched verbatim.
         # Eyes on the dashboard: what Ross is actually looking at, so 'this' / 'the
         # queue' / 'this node' resolve to what's on screen. His own UI - context,
         # never instructions.
@@ -523,6 +520,42 @@ class ConsoleServer(ThreadingHTTPServer):
             # A provider error, a bad model id, a timeout - it comes back as a
             # message in the chat, never as a crashed request.
             return f"(couldn't reach the chat model: {e})"
+
+        # MODEL-DRIVEN WEB SEARCH. If Rosco decided to look something up, run the
+        # query IT wrote (not the raw message) and re-answer once, grounded, with
+        # citations. Up to two hops so it can refine the terms; a blank result still
+        # re-answers with an honest 'came back empty' so it never claims it has no
+        # search tool. Results are external DATA (guarded + external_used), so a
+        # poisoned result can't seal a lesson or steer a write.
+        for _ in range(2):
+            _ws = next((a for a in _parse_actions(raw)
+                        if a.get("type") == "websearch" and str(a.get("query", "")).strip()),
+                       None)
+            if _ws is None:
+                break
+            from . import search
+            _q = str(_ws["query"]).strip()[:200]
+            _vault = Vault(log, key=self.console._vault_key(s.passphrase))
+            _hits = search.web_search(_vault, _q, n=6)
+            if _hits:
+                _block = ("WEB SEARCH RESULTS for \"" + _q + "\" (via "
+                          + search.configured(_vault) + "):\n"
+                          + "\n".join(str(i) + ". " + h["title"] + "\n   " + h["url"]
+                                      + ("\n   " + h["snippet"] if h["snippet"] else "")
+                                      for i, h in enumerate(_hits, 1))
+                          + "\nAnswer FROM these and cite the url(s); if they don't cover "
+                            "it, say so — never invent a fact or link.")
+            else:
+                _block = ("WEB SEARCH for \"" + _q + "\" returned nothing (backend "
+                          + search.configured(_vault) + "). Say plainly it came back "
+                          "empty; do not invent a number or a source.")
+            ctx += "\n\n" + _EXTERNAL_DATA_GUARD + "\n" + _block
+            external_used = True
+            try:
+                raw = Agent("Rosco", log, think=think, meter=meter).answer(
+                    msg, for_person="ross", context=ctx, history=hist, confirm_intent=True)
+            except Exception:
+                break
 
         # Pull out any 'LEARN: ...' lines the model emitted on a correction, seal
         # each as a durable lesson (OBSERVED - the agent watched Ross correct it,
