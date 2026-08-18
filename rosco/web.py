@@ -1242,6 +1242,25 @@ class ConsoleServer(ThreadingHTTPServer):
                     pass
                 row["valid"], row["detail"] = _probe_key(p, key)
             out.append(row)
+        # Search backends: open-source SearXNG (a URL, live-probed for reachability
+        # + JSON), plus the optional commercial keys. Same row shape, so the panel
+        # renders them and makes them click-to-fill for free.
+        for p, name in (("searxng", "searxng_url"),
+                        ("tavily", "tavily_api_key"),
+                        ("brave", "brave_api_key")):
+            row = {"provider": p, "secret": name, "stored": False,
+                   "valid": None, "detail": ""}
+            if f"system:{name}" in held:
+                row["stored"] = True
+                if p == "searxng":
+                    try:
+                        row["valid"], row["detail"] = _probe_searxng(
+                            vault.get_secret("system", name) or "")
+                    except Exception:
+                        row["detail"] = "stored"
+                else:
+                    row["detail"] = "key stored"
+            out.append(row)
         return {"keys": out}
 
     def telegram_status(self, s):
@@ -2192,6 +2211,14 @@ class ConsoleServer(ThreadingHTTPServer):
         n = Ingest(self.console.open(s.passphrase)).clear_pending()
         return {"ok": True, "cleared": n}
 
+    def meetings_ingest(self, s):
+        """Pull any new SteelHaven Meet transcripts and auto-learn them now. The
+        background watcher does this on a timer while the console is unlocked; this
+        is the on-demand button for the same thing (and how the watcher is tested).
+        Returns {connected, ingested, skipped, names}."""
+        from . import meetings
+        return meetings.ingest_new(self.console, s.passphrase)
+
     def ingest_readiness(self, s):
         from .ingest import Ingest
         log = self.console.open(s.passphrase)
@@ -2426,6 +2453,29 @@ def _list_models(provider, key):
         d = safehttp.call("http://localhost:11434/api/tags", method="GET")
         return sorted({m.get("name", "") for m in (d.get("models") or []) if m.get("name")})
     return []          # unknown provider: the form falls back to typing
+
+
+def _probe_searxng(url):
+    """Is a stored SearXNG reachable AND returning JSON? A cheap GET so the
+    settings panel can show green (JSON results came back), amber (reachable but
+    the JSON format isn't enabled in settings.yml), or red (unreachable). Reads
+    raw so an HTML reply (JSON off) is distinguishable from a dead host."""
+    from . import safehttp, search
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        return None, "no url"
+    try:
+        body = safehttp.call(url + "/search?q=rosco&format=json", method="GET",
+                             timeout=6, raw=True, headers={"User-Agent": search._UA})
+    except Exception:
+        return False, "unreachable"
+    if (body or "").lstrip().startswith("{"):
+        try:
+            if isinstance(json.loads(body).get("results"), list):
+                return True, "reachable, JSON on"
+        except Exception:
+            pass
+    return None, "reachable — enable JSON format"
 
 
 def _probe_key(provider, key):
@@ -3283,6 +3333,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.server.ingest_autoplace(s, body))
             if self.path == "/api/ingest/clear":
                 return self._send(200, self.server.ingest_clear(s))
+            if self.path == "/api/meetings/ingest":
+                return self._send(200, self.server.meetings_ingest(s))
             if self.path.startswith("/api/cfg/"):
                 msg = self.server.cfg(s, self.path[len("/api/cfg/"):], body)
                 return self._send(200, {"ok": True, "msg": msg})
@@ -3354,6 +3406,31 @@ def _reload_in_place(srv) -> None:
     srv.RequestHandlerClass = web.Handler
 
 
+def _meeting_watch(srv, every: int = 3600, first: int = 90) -> None:
+    """Background: while the console is UNLOCKED, pull new SteelHaven Meet
+    transcripts on a timer and auto-learn them into the SteelHaven vault.
+
+    Gated on an unlocked session because the vault key that reaches the SteelHaven
+    Google token comes from the passphrase — so it does nothing while locked, and
+    never needs a passphrase handed to a background job. Safe as a background writer
+    only because the Log's sqlite connection is now shareable across threads
+    (check_same_thread=False) and every write is serialised by _APPEND_LOCK. Best-
+    effort: an unconnected SteelHaven account or a hiccup is a quiet no-op.
+    """
+    import time as _t
+
+    from . import meetings
+    _t.sleep(first)
+    while True:
+        sess = getattr(srv, "session", None)
+        if sess is not None:
+            try:
+                meetings.ingest_new(srv.console, sess.passphrase)
+            except Exception:
+                pass
+        _t.sleep(every)
+
+
 def _hot_serve(console, port: int) -> None:
     """Serve in THIS process and hot-reload edits in place - the session stays."""
     import threading
@@ -3361,6 +3438,7 @@ def _hot_serve(console, port: int) -> None:
     print(f"console on http://127.0.0.1:{port}  (localhost only)")
     print("open it, unlock ONCE. Code edits hot-reload in place — your session "
           "and chat survive. Ctrl-C to stop.")
+    threading.Thread(target=_meeting_watch, args=(srv,), daemon=True).start()
 
     def watch():
         base = _stamp()
@@ -3394,9 +3472,11 @@ def _hot_serve(console, port: int) -> None:
 def serve_web(console, port: int = 8787, *, reload: bool = True) -> None:
     if reload:
         return _hot_serve(console, port)
+    import threading
     srv = ConsoleServer(console, port)
     print(f"console on http://127.0.0.1:{port}  (localhost only)")
     print("open it, unlock with your passphrase. Ctrl-C to stop.")
+    threading.Thread(target=_meeting_watch, args=(srv,), daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

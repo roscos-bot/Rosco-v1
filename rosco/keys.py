@@ -153,6 +153,13 @@ KINDS: dict[str, str] = {
     # history cursor) / 'done' (closed). NODE — it only bookmarks and observes
     # Ross's own mailbox; what he did in the window is folded into inbox.acted.
     "email.watch": NODE,
+
+    # A SteelHaven Meet transcript Rosco auto-ingested. NODE — it grants nothing;
+    # it is the dedup marker (one per transcript file id) AND the ledger entry for
+    # a no-review auto-learn, so Ross can see exactly what got pulled in. The
+    # knowledge itself is a separate OBSERVED vault.learned (Rosco watched the
+    # meeting, so 'observed' — never 'told', which would need Ross's signature).
+    "meeting.ingested": NODE,
 }
 
 # Bases that an agent may claim on its own signature. Anything else - missing,
@@ -233,6 +240,7 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "tracking.recorded": ("number",),
     "tracking.closed": ("number",),
     "email.watch": ("state",),
+    "meeting.ingested": ("file", "name"),
 }
 
 # Fields whose value must come from a closed set. An unexpected one used as a

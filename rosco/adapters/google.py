@@ -144,6 +144,30 @@ def drive_search(token: str, text: str, n: int = 12) -> list[dict]:
     return d.get("files") or []
 
 
+def drive_meet_transcripts(token: str, match: str = "", n: int = 20) -> list[dict]:
+    """Google Meet transcript Docs, newest first. Meet saves each meeting's
+    transcript to the organiser's Drive as a Google Doc whose name ends
+    '- Transcript'. Pass `match` to keep only those whose name ALSO contains it
+    (the meeting title, e.g. 'Tactical'), so a weekly-standup watcher doesn't pull
+    every meeting in the workspace. Returns [] on any error (never fatal)."""
+    def esc(v):
+        return (v or "").replace("\\", "\\\\").replace("'", "\\'")
+    clauses = ["name contains 'Transcript'",
+               "mimeType='application/vnd.google-apps.document'", "trashed=false"]
+    if match:
+        clauses.append(f"name contains '{esc(match)}'")
+    try:
+        d = safehttp.call(
+            "https://www.googleapis.com/drive/v3/files?" + _q({
+                "q": " and ".join(clauses), "orderBy": "modifiedTime desc",
+                "pageSize": n,
+                "fields": "files(id,name,mimeType,modifiedTime,webViewLink)"}),
+            method="GET", bearer=token, timeout=15)
+        return d.get("files") or []
+    except Exception:
+        return []
+
+
 # How a Google-native file becomes text. A Doc exports to plain text, a Sheet to
 # CSV, Slides to text. A plain text/markdown/json file is downloaded as-is. A PDF
 # or image has no text extraction here - the connector reads what it can and says
