@@ -50,8 +50,43 @@ def available() -> bool:
     return _tess() is not None
 
 
+def _prep(im):
+    """Prep an image for OCR: grayscale, stretch contrast, and upscale a small one
+    so text isn't sub-pixel. Tesseract does its own binarization on top."""
+    from PIL import ImageOps
+    im = im.convert("L")
+    im = ImageOps.autocontrast(im)
+    w, h = im.size
+    if max(w, h) < 1200:
+        f = 1200.0 / max(w, h)
+        im = im.resize((max(1, int(w * f)), max(1, int(h * f))))
+    return im
+
+
+_COMMON = {"the", "and", "of", "to", "in", "is", "for", "on", "with", "that",
+           "this", "are", "be", "as", "at", "it", "or", "by", "an", "from", "we",
+           "you", "your", "will", "our", "not", "have", "has", "was", "all", "if"}
+
+
+def _quality_ok(s: str) -> bool:
+    """Is this OCR output plausibly REAL text, not noise? Rejects the garble a scan
+    of a photo/plan/low-res page produces, so it's skipped rather than queued as a
+    junk 'lesson'. Wants some length, mostly letters, several real words, and at
+    least one everyday word (prose, not a soup of symbols)."""
+    s = (s or "").strip()
+    if len(s) < 25:
+        return False
+    body = s.replace(" ", "").replace("\n", "")
+    if not body or sum(c.isalpha() for c in body) / len(body) < 0.6:
+        return False
+    words = [w for w in s.split() if w.isalpha() and len(w) >= 2]
+    if len(words) < 6:
+        return False
+    return bool(_COMMON & {w.lower() for w in words})
+
+
 def image_text(data: bytes) -> str:
-    """OCR one image (bytes). '' if OCR isn't set up or nothing is found."""
+    """OCR one image (bytes). '' if OCR isn't set up, or the result reads as noise."""
     t = _tess()
     if not t:
         return ""
@@ -61,14 +96,16 @@ def image_text(data: bytes) -> str:
         from PIL import Image
         im = Image.open(io.BytesIO(data))
         im.load()
-        return (t.image_to_string(im) or "").strip()
+        s = (t.image_to_string(_prep(im)) or "").strip()
+        return s if _quality_ok(s) else ""
     except Exception:
         return ""
 
 
-def pdf_ocr_text(data: bytes, max_pages: int = 15, dpi: int = 200) -> str:
-    """OCR a scanned PDF: rasterize each page (PyMuPDF) and read it. Page-capped so a
-    big scan set can't hang the pull. '' if OCR / render isn't available."""
+def pdf_ocr_text(data: bytes, max_pages: int = 15, dpi: int = 300) -> str:
+    """OCR a scanned PDF: rasterize each page (PyMuPDF at 300 DPI), prep, and read it.
+    Page-capped so a big scan set can't hang the pull. '' if OCR/render isn't
+    available, or the combined result reads as noise (a photo/plan, not a document)."""
     t = _tess()
     if not t:
         return ""
@@ -86,8 +123,9 @@ def pdf_ocr_text(data: bytes, max_pages: int = 15, dpi: int = 200) -> str:
                 break
             pix = page.get_pixmap(matrix=mat)
             im = Image.open(io.BytesIO(pix.tobytes("png")))
-            out.append((t.image_to_string(im) or "").strip())
+            out.append((t.image_to_string(_prep(im)) or "").strip())
         doc.close()
-        return "\n".join(p for p in out if p).strip()
+        s = "\n".join(p for p in out if p).strip()
+        return s if _quality_ok(s) else ""
     except Exception:
         return ""
