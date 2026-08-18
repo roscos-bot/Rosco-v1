@@ -124,11 +124,17 @@ def _q(params: dict) -> str:
     return urllib.parse.urlencode(params)
 
 
+# Shared-drive flags: without these, files.list returns ONLY the user's My Drive
+# and silently omits Shared Drive items AND files shared WITH the user — so a pull
+# comes back empty for anything living in a team/shared drive.
+_ALL_DRIVES = {"supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}
+
+
 def drive_recent(token: str, n: int = 12) -> list[dict]:
     d = safehttp.call(
         "https://www.googleapis.com/drive/v3/files?" + _q({
             "orderBy": "modifiedTime desc", "pageSize": n, "spaces": "drive",
-            "fields": "files(id,name,mimeType,modifiedTime,webViewLink)"}),
+            "fields": "files(id,name,mimeType,modifiedTime,webViewLink)", **_ALL_DRIVES}),
         method="GET", bearer=token, timeout=15)
     return d.get("files") or []
 
@@ -139,7 +145,7 @@ def drive_search(token: str, text: str, n: int = 12) -> list[dict]:
         "https://www.googleapis.com/drive/v3/files?" + _q({
             "q": f"(name contains '{safe}' or fullText contains '{safe}') and trashed=false",
             "orderBy": "modifiedTime desc", "pageSize": n,
-            "fields": "files(id,name,mimeType,modifiedTime,webViewLink)"}),
+            "fields": "files(id,name,mimeType,modifiedTime,webViewLink)", **_ALL_DRIVES}),
         method="GET", bearer=token, timeout=15)
     return d.get("files") or []
 
@@ -161,7 +167,7 @@ def drive_meet_transcripts(token: str, match: str = "", n: int = 20) -> list[dic
             "https://www.googleapis.com/drive/v3/files?" + _q({
                 "q": " and ".join(clauses), "orderBy": "modifiedTime desc",
                 "pageSize": n,
-                "fields": "files(id,name,mimeType,modifiedTime,webViewLink)"}),
+                "fields": "files(id,name,mimeType,modifiedTime,webViewLink)", **_ALL_DRIVES}),
             method="GET", bearer=token, timeout=15)
         return d.get("files") or []
     except Exception:
@@ -187,7 +193,7 @@ def _readable_media(mime: str) -> bool:
 
 def _export(token: str, file_id: str, export_mime: str) -> str:
     url = (f"https://www.googleapis.com/drive/v3/files/{file_id}/export?"
-           + _q({"mimeType": export_mime}))
+           + _q({"mimeType": export_mime, "supportsAllDrives": "true"}))
     return safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True) or ""
 
 
@@ -213,7 +219,7 @@ def drive_read(token: str, file_id: str, mime: str, max_chars: int = 8000) -> st
         if not text:
             text = _export(token, file_id, "text/plain" if want == "text/markdown" else want)
     elif _readable_media(mime):
-        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
         text = safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True)
     else:
         return ""
