@@ -700,7 +700,8 @@ try{ if(localStorage.getItem("roscoListen")==="1"&&voiceSupported()) startListen
 // and sent to the local /api/voiceid endpoints; nothing leaves the machine.
 var audioCtx=null,audioSrc=null,audioProc=null,audioStream=null,audioMute=null;
 var ring=[],ringLen=0,ringRate=16000,RING_SECS=6;
-var _bfloor=0.01,_bhi=0;                    // running quiet-floor + sustained-loud counter for barge-in
+var _bhi=0,_wasSpk=false,_echoLvl=0.01;     // barge-in: sustained-loud counter, speaking edge, running echo level
+function bargeFactor(){ var b=parseFloat(_ls("roscoBargeSens")); if(!(b>=0&&b<=1))b=0.3; return 3.6-b*2.2; }  // 0 -> 3.6 (hard to interrupt) … 1 -> 1.4 (easy)
 function startAudio(cb){
   if(audioCtx){ if(cb)cb(true); return; }
   if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){ if(cb)cb(false); return; }
@@ -720,11 +721,15 @@ function startAudio(cb){
       // is speaking means Ross started talking. Cut Rosco off and listen. A running
       // quiet-floor adapts to the room so residual echo/noise doesn't false-trigger.
       var s=0; for(var i=0;i<d.length;i++){ s+=d[i]*d[i]; } var rms=Math.sqrt(s/d.length);
-      if(rms<0.03){ _bfloor=0.9*_bfloor+0.1*rms; }
-      if(wantListen&&window.speechSynthesis&&window.speechSynthesis.speaking){
-        if(rms>Math.max(0.04,_bfloor*4)){ if(++_bhi>=2){ _bhi=0; window.speechSynthesis.cancel(); lastSpoken=""; vhint("▶ (go ahead)…",true); } }
+      var speaking=wantListen&&window.speechSynthesis&&window.speechSynthesis.speaking;
+      if(speaking){
+        if(!_wasSpk){ _echoLvl=Math.max(rms,0.01); _bhi=0; }               // speech just started: seed the echo level from Rosco's own voice
+        _wasSpk=true;
+        _echoLvl=0.85*_echoLvl+0.15*Math.min(rms,_echoLvl*1.4);            // grow the echo estimate slowly; cap the input so YOUR spike can't inflate it
+        if(rms>Math.max(0.05,_echoLvl*bargeFactor())){                      // must beat Rosco's OWN echo by the margin
+          if(++_bhi>=2){ _bhi=0; window.speechSynthesis.cancel(); lastSpoken=""; vhint("▶ (go ahead)…",true); } }
         else if(_bhi>0){ _bhi--; }
-      } else { _bhi=0; }
+      } else { _wasSpk=false; _bhi=0; }
     };
     audioSrc.connect(audioProc);audioProc.connect(audioMute);audioMute.connect(audioCtx.destination);
     if(cb)cb(true);
@@ -835,6 +840,7 @@ function renderVoicePane(card){
   }
   var rate=slider("Speed","roscoRate",0.7,1.4,0.05,1.05);
   var pitch=slider("Pitch","roscoPitch",0.5,1.5,0.05,1);
+  var barge=slider("Interrupt sensitivity (lower it if Rosco cuts itself off; raise it if talking over it doesn't stop it)","roscoBargeSens",0,1,0.05,0.3);
   var test=document.createElement("button");test.className="go";test.textContent="🔊 Test this voice";test.style.marginTop="10px";
   test.addEventListener("click",function(){
     try{localStorage.setItem("roscoVoice",sel.value);}catch(e){}
