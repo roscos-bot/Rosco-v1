@@ -3406,9 +3406,12 @@ def _reload_in_place(srv) -> None:
     srv.RequestHandlerClass = web.Handler
 
 
-def _meeting_watch(srv, every: int = 3600, first: int = 90) -> None:
-    """Background: while the console is UNLOCKED, pull new SteelHaven Meet
-    transcripts on a timer and auto-learn them into the SteelHaven vault.
+def _meeting_watch(srv, every: int = 900, first: int = 90) -> None:
+    """Background: while the console is UNLOCKED, check the SteelHaven calendar and,
+    once a tactical meeting has ended and its recap grace has passed, pull the fresh
+    transcript and auto-learn it. Calendar-driven (meetings.ingest_new decides when
+    to act), so a ~15-min check just catches the post-meeting window promptly — it
+    is not scanning Drive on every tick.
 
     Gated on an unlocked session because the vault key that reaches the SteelHaven
     Google token comes from the passphrase — so it does nothing while locked, and

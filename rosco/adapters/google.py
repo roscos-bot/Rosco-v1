@@ -413,6 +413,34 @@ def calendar_search(token: str, query: str, n: int = 10) -> list[dict]:
     return out
 
 
+def calendar_recent_ended(token: str, match: str = "", hours_back: int = 24,
+                          n: int = 20) -> list[dict]:
+    """Events that fell within the last `hours_back` (a PAST window), optionally
+    filtered to those matching `match` (a meeting-title query). Returns
+    {id, title, start, end} — `end` drives the 'wait for the recap' grace, `id`
+    the dedup, `start` the transcript match. [] on any error (never fatal)."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    params = {"timeMin": (now - timedelta(hours=hours_back)).isoformat(),
+              "timeMax": now.isoformat(), "maxResults": n,
+              "singleEvents": "true", "orderBy": "startTime"}
+    if match:
+        params["q"] = match
+    try:
+        d = safehttp.call(
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events?" + _q(params),
+            method="GET", bearer=token, timeout=15)
+    except Exception:
+        return []
+    out = []
+    for e in (d.get("items") or []):
+        s, en = e.get("start") or {}, e.get("end") or {}
+        out.append({"id": e.get("id", ""), "title": e.get("summary", ""),
+                    "start": s.get("dateTime") or s.get("date") or "",
+                    "end": en.get("dateTime") or en.get("date") or ""})
+    return out
+
+
 # ---- Sheets ---------------------------------------------------------------
 
 def sheets_find(token: str, name: str) -> dict | None:
