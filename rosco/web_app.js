@@ -593,6 +593,18 @@ document.getElementById("chatin").addEventListener("keydown",function(e){if(e.ke
 // SpeechRecognition + SpeechSynthesis, both localhost-safe.
 var wantListen=false, recog=null;
 var WAKE=/\b(rosco|roscoe|rosko|rosca|ross[\s-]?go|russ[\s-]?co)\b/i;
+// Conversation window: after Rosco replies, stay "engaged" for ENGAGE_MS so Ross
+// can keep talking WITHOUT the wake word. Silence past that -> wake word needed
+// again. lastSpoken powers the echo filter that keeps barge-in from firing on
+// Rosco's OWN voice coming back through the speakers.
+var ENGAGE_MS=10000, engagedUntil=0, lastSpoken="";
+function _norm(s){return (s||"").toLowerCase().replace(/[^a-z0-9 ]+/g," ").replace(/\s+/g," ").trim();}
+function _echoOf(t){                          // is this heard text just Rosco hearing itself?
+  var ls=_norm(lastSpoken); t=_norm(t); if(!ls||!t) return false;
+  if(ls.indexOf(t)>=0) return true;           // a prefix/substring of what Rosco is saying
+  var w=t.split(" "),hit=0; for(var i=0;i<w.length;i++){ if(w[i].length>2&&ls.indexOf(w[i])>=0)hit++; }
+  return w.length>0 && hit/w.length>0.6;       // or mostly Rosco's words -> echo
+}
 function voiceSupported(){return !!(window.SpeechRecognition||window.webkitSpeechRecognition);}
 function voiceList(){ try{return window.speechSynthesis.getVoices()||[];}catch(e){return [];} }
 function _ls(k){ try{return localStorage.getItem(k);}catch(e){return null;} }
@@ -607,23 +619,46 @@ function speak(text){
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu,"")  // emoji/arrows
     .replace(/\s+/g," ").trim().slice(0,700);
   if(!t) return;
+  lastSpoken=t;                                                         // echo filter reference (don't barge-in on our own voice)
   try{window.speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(t);
     var v=pickedVoice(); if(v){u.voice=v;u.lang=v.lang;}                 // Rosco's chosen voice
     u.rate=voiceRate();u.pitch=voicePitch();
+    u.onend=function(){ lastSpoken=""; if(wantListen) engagedUntil=Date.now()+ENGAGE_MS; };  // reply done -> conversation window opens
     window.speechSynthesis.speak(u);}catch(e){}
 }
 function vhint(txt,acting){var h=document.getElementById("vhint");if(!h)return;
   h.textContent=txt||""; h.className="vhint"+(acting?" act":"");}
+function maybeBargeIn(interim){
+  // Ross started talking while Rosco is mid-sentence -> stop Rosco and listen.
+  // Interim results fire fast, so this cuts in almost immediately. Skip our own
+  // voice echoing back (speakers) via the echo filter.
+  if(!(window.speechSynthesis&&window.speechSynthesis.speaking)) return;
+  var t=(interim||"").trim(); if(t.length<4) return;                     // too short to be sure
+  if(_echoOf(t)) return;                                                 // that's Rosco hearing itself
+  window.speechSynthesis.cancel(); lastSpoken="";                        // Ross is talking -> yield the floor
+  vhint("▶ (go ahead)…",true);
+}
 function handleUtterance(raw){
-  // Ignore anything heard WHILE Rosco is speaking, so it never triggers on its own
-  // voice (no feedback loop). Barge-in can come later.
-  if(window.speechSynthesis&&window.speechSynthesis.speaking) return;
   var t=(raw||"").trim(); if(!t) return;
+  var now=Date.now();
+  // A final result WHILE Rosco is speaking: if it's really Ross (not the speaker
+  // echoing Rosco), stop Rosco and take it as the next turn.
+  if(window.speechSynthesis&&window.speechSynthesis.speaking){
+    if(_echoOf(t)) return;
+    window.speechSynthesis.cancel(); lastSpoken="";
+  }
+  if(now<engagedUntil){
+    // Mid-conversation: no wake word needed — whatever Ross said IS the instruction.
+    engagedUntil=now+ENGAGE_MS;                                          // keep the window open
+    vhint("▶ "+t.slice(0,64),true); sendChat(t); return;
+  }
+  // Cold (past the window): require the wake word.
   var m=t.match(WAKE);
   if(!m){ vhint("· "+t.slice(0,64),false); return; }                     // not addressed to Rosco
   var instruction=t.slice(m.index+m[0].length).replace(/^[\s,.:!?-]+/,"").trim();
-  if(!instruction){ vhint("▶ yes?",true); speak("Yes?"); return; }
+  if(!instruction){ vhint("▶ yes?",true); speak("Yes?"); engagedUntil=now+ENGAGE_MS; return; }
   vhint("▶ "+instruction.slice(0,64),true);
+  engagedUntil=now+ENGAGE_MS;                                            // enter conversation mode
   sendChat(instruction);
 }
 function setListenUI(on){var b=document.getElementById("micBtn");
@@ -634,9 +669,11 @@ function startListen(){
   wantListen=true;
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   try{recog=new SR();}catch(e){wantListen=false;return;}
-  recog.continuous=true; recog.interimResults=false; recog.lang="en-US";
+  recog.continuous=true; recog.interimResults=true; recog.lang="en-US";   // interim -> fast barge-in
   recog.onresult=function(e){for(var i=e.resultIndex;i<e.results.length;i++){
-    if(e.results[i].isFinal)handleUtterance(e.results[i][0].transcript);}};
+    var r=e.results[i];
+    if(r.isFinal) handleUtterance(r[0].transcript);
+    else maybeBargeIn(r[0].transcript);}};
   recog.onerror=function(e){ if(e.error==="not-allowed"||e.error==="service-not-allowed"){
     wantListen=false;setListenUI(false);alert("Rosco needs microphone permission to listen — allow it and click the mic again.");}};
   recog.onend=function(){ if(wantListen){try{recog.start();}catch(e){}} else setListenUI(false); };  // auto-restart = always-on
