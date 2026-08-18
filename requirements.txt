@@ -1,1 +1,12 @@
 cryptography>=42
+
+# Optional — richer Drive ingest. Each reader degrades to "unreadable" (never a
+# crash) if its library is missing, so core Rosco doesn't need these. Install to let
+# a Drive pull read more file types:
+#   PDFs (text)         : pypdf
+#   scanned PDFs/images : pytesseract + pymupdf + Pillow  (plus the Tesseract binary:
+#                         winget install UB-Mannheim.TesseractOCR)
+#   Word/Excel/PPT      : python-docx openpyxl python-pptx
+#   video/audio speech  : faster-whisper  (plus ffmpeg on PATH — winget Gyan.FFmpeg)
+#   image vision + whisper both use: numpy
+# pip install pypdf pytesseract pymupdf Pillow python-docx openpyxl python-pptx faster-whisper numpy
