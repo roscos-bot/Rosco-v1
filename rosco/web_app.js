@@ -679,7 +679,8 @@ function startListen(){
   recog.onend=function(){ if(wantListen){try{recog.start();}catch(e){}} else setListenUI(false); };  // auto-restart = always-on
   try{recog.start();setListenUI(true);}catch(e){}
   try{localStorage.setItem("roscoListen","1");}catch(e){}
-  fetchVoiceCfg(function(){ if(voiceGateOn()) startAudio(); });         // arm the voiceprint gate if enrolled + on
+  startAudio();                                                         // always on while listening — powers energy-based barge-in
+  fetchVoiceCfg();                                                      // load the voiceprint gate config
 }
 function stopListen(){wantListen=false;try{if(recog)recog.stop();}catch(e){}
   try{if(window.speechSynthesis)window.speechSynthesis.cancel();}catch(e){}
@@ -699,6 +700,7 @@ try{ if(localStorage.getItem("roscoListen")==="1"&&voiceSupported()) startListen
 // and sent to the local /api/voiceid endpoints; nothing leaves the machine.
 var audioCtx=null,audioSrc=null,audioProc=null,audioStream=null,audioMute=null;
 var ring=[],ringLen=0,ringRate=16000,RING_SECS=6;
+var _bfloor=0.01,_bhi=0;                    // running quiet-floor + sustained-loud counter for barge-in
 function startAudio(cb){
   if(audioCtx){ if(cb)cb(true); return; }
   if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){ if(cb)cb(false); return; }
@@ -713,6 +715,16 @@ function startAudio(cb){
       var d=e.inputBuffer.getChannelData(0),c=new Float32Array(d);
       ring.push(c);ringLen+=c.length;
       var max=RING_SECS*ringRate; while(ringLen>max&&ring.length>1){ringLen-=ring[0].length;ring.shift();}
+      // Energy-based barge-in. getUserMedia has echoCancellation on, so Rosco's own
+      // voice is largely removed from this stream — a real energy spike WHILE Rosco
+      // is speaking means Ross started talking. Cut Rosco off and listen. A running
+      // quiet-floor adapts to the room so residual echo/noise doesn't false-trigger.
+      var s=0; for(var i=0;i<d.length;i++){ s+=d[i]*d[i]; } var rms=Math.sqrt(s/d.length);
+      if(rms<0.03){ _bfloor=0.9*_bfloor+0.1*rms; }
+      if(wantListen&&window.speechSynthesis&&window.speechSynthesis.speaking){
+        if(rms>Math.max(0.04,_bfloor*4)){ if(++_bhi>=2){ _bhi=0; window.speechSynthesis.cancel(); lastSpoken=""; vhint("▶ (go ahead)…",true); } }
+        else if(_bhi>0){ _bhi--; }
+      } else { _bhi=0; }
     };
     audioSrc.connect(audioProc);audioProc.connect(audioMute);audioMute.connect(audioCtx.destination);
     if(cb)cb(true);
