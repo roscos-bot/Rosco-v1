@@ -80,12 +80,6 @@ def _strip_toolcalls(text: str) -> str:
 # fits under the cap and is untouched; the cap only bites once there's a lot.
 GROUNDING_CAP = 12000
 
-_STOP = frozenset(
-    "the a an of to in on at for and or but is are was were be been being this "
-    "that these those it its as by with from into about how what when where why "
-    "who which do does did done can could should would will i you he she we they "
-    "me my your our their not no yes if then than so up out get show read".split())
-
 
 class Agent:
     """One agent, able to do a piece of its business's work.
@@ -132,26 +126,19 @@ class Agent:
     def _relevant(self, lessons, query, cap: int = GROUNDING_CAP):
         """The lessons most worth grounding on for THIS query, up to a char budget.
 
-        Lexical and dependency-free: score each lesson by how many query terms it
-        contains, tilt toward what Ross TOLD over what was merely inferred, then
-        take the best until the budget is spent. With no useful query terms it
-        degrades to trust-order (told first), so even a vague ask grounds on the
-        firmest facts rather than nothing. A vault that fits under the cap is
-        returned whole - this only prunes once there's a lot (e.g. ingested code).
+        Ranking is delegated to the vault (FTS5 BM25 x trust basis, with a lexical
+        fallback) - an indexed, length-normalised ranked query rather than an
+        O(lessons x terms) substring scan (see Vault.rank for what that does and
+        doesn't buy - it's better lexical ranking, not semantic search). With no
+        useful query terms it degrades to trust-order (told first), so even a vague
+        ask grounds on the firmest facts rather than nothing. A vault that fits under
+        the cap is returned whole - this only prunes once there's a lot (e.g.
+        ingested code).
         """
         if not lessons or sum(len(l.text) for l in lessons) <= cap:
             return lessons
-        terms = {w for w in re.findall(r"[a-z0-9_]+", (query or "").lower())
-                 if len(w) > 2 and w not in _STOP}
-        weight = {TOLD: 3, OBSERVED: 1}
-
-        def score(l):
-            text = l.text.lower()
-            hits = sum(text.count(t) for t in terms) if terms else 0
-            return hits * 2 + weight.get(l.basis, 0)
-
         out, used = [], 0
-        for l in sorted(lessons, key=score, reverse=True):
+        for l in self.vault.rank(lessons, query):
             out.append(l)
             used += len(l.text)
             if used >= cap:

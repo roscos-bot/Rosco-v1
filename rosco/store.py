@@ -303,6 +303,17 @@ class Log:
                 continue
             yield ev
 
+    def revision(self) -> int:
+        """A cheap monotonic token that increases on every append — the table's
+        MAX(rowid), O(1) in SQLite. The log is append-only, so this never goes
+        backward; a reader (e.g. the vault's grounding projection) can memoize a
+        derived view and rebuild it only when this changes, instead of re-folding
+        the whole log on every call. In WAL autocommit a fresh read here also sees
+        another process's committed appends, so the token invalidates across the
+        web and telegram processes too."""
+        row = self.db.execute("SELECT MAX(rowid) FROM events").fetchone()
+        return int(row[0] or 0)
+
     def rejected(self) -> list[dict]:
         """Authority events present in the table that do not verify.
 

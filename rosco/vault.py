@@ -41,6 +41,8 @@ import hmac
 import json
 import os
 import re
+import sqlite3
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +55,55 @@ TOLD = "told"            # Ross said so directly
 OBSERVED = "observed"    # it watched this happen, repeatedly
 INFERRED = "inferred"    # it worked this out, and could be wrong
 WEIGHT = {TOLD: 3, OBSERVED: 2, INFERRED: 1}
+
+# The folded grounding projection is expensive (replay every vault.* event + a
+# fixpoint over corrections) but changes only when the log GROWS, so it's memoized
+# per-DB and rebuilt on a cheap revision token (Log.revision()). Keyed by db path
+# because console.open() hands out a fresh Log object per request over the same
+# file — a per-instance cache would never hit. The signed log stays the source of
+# truth; this is a derived cache that a stale token throws away.
+_FOLD_CACHE: dict = {}
+_FOLD_LOCK = threading.Lock()
+
+# Query words too common to carry meaning — dropped before ranking.
+_STOP = frozenset(
+    "the a an of to in on at for and or but is are was were be been being this "
+    "that these those it its as by with from into about how what when where why "
+    "who which do does did done can could should would will i you he she we they "
+    "me my your our their not no yes if then than so up out get show read".split())
+
+
+def _fts5_ok() -> bool:
+    """Does this Python's sqlite carry the FTS5 module? Probed once. If not, ranking
+    falls back to lexical scoring — never an error, just the old behaviour."""
+    ok = getattr(_fts5_ok, "_ok", None)
+    if ok is None:
+        try:
+            c = sqlite3.connect(":memory:")
+            c.execute("CREATE VIRTUAL TABLE _t USING fts5(x)")
+            c.close()
+            ok = True
+        except Exception:
+            ok = False
+        _fts5_ok._ok = ok
+    return ok
+
+
+def _query_terms(query: str) -> list:
+    return [w for w in re.findall(r"[^\W_]+", (query or "").lower())
+            if len(w) > 2 and w not in _STOP]
+
+
+def _lexical_rank(lessons: list, query: str) -> list:
+    """The original substring-count ranking, kept as the FTS fallback: term hits x2
+    plus a tilt toward higher trust basis (told over inferred)."""
+    terms = _query_terms(query)
+
+    def score(l):
+        text = l.text.lower()
+        hits = sum(text.count(t) for t in terms) if terms else 0
+        return hits * 2 + WEIGHT.get(l.basis, 0)
+    return sorted(lessons, key=score, reverse=True)
 
 
 @dataclass
@@ -175,7 +226,106 @@ class Vault:
 
         The business filter is the silo. Omitting it is how Rosco reads across
         everything, and nothing else should be calling it that way.
+
+        The expensive fold (replay every vault.* event + a fixpoint over
+        corrections) is memoized on the log's revision — see _fold(); only these
+        cheap filters run per call, so repeated grounding on an unchanged log is
+        O(matches) now, not O(whole log).
         """
+        lessons, replaced, dropped = self._fold()
+        out = []
+        for lid, les in lessons.items():
+            les.superseded_by = replaced.get(lid, "")
+            dead = bool(les.superseded_by) or lid in dropped
+            if dead and not include_dead:
+                continue
+            # None means no filter; "" means the empty name and matches
+            # nothing. The same conflation in grants.live() let an
+            # unidentified sender match every grant in the business, and
+            # fixing it there and not here is exactly the adjacent-door
+            # mistake this codebase keeps making.
+            if business is not None and les.business != business:
+                continue
+            if agent is not None and les.agent != agent:
+                continue
+            if contains and contains.lower() not in les.text.lower():
+                continue
+            out.append(les)
+        out.sort(key=lambda l: (-WEIGHT.get(l.basis, 0), l.learned))
+        return out
+
+    def _fold(self):
+        """The folded projection — every live+dead lesson with corrections resolved
+        and forgets applied — memoized per log revision. This is the costly part;
+        recall()'s filters run cheaply on top. Rebuilt only when the log grew (a
+        stale revision token), and correctly across processes because revision()
+        reads the DB's committed MAX(rowid), which another process's append moves."""
+        key = str(self.log.path)
+        rev = self.log.revision()
+        c = _FOLD_CACHE.get(key)
+        if c and c[0] == rev:
+            return c[1], c[2], c[3]          # fast path: no lock on a warm, current cache
+        with _FOLD_LOCK:
+            # Re-read the revision INSIDE the lock, right before building, so the
+            # key we store always matches the data _build_fold is about to read.
+            # (Without this, a concurrent append between the pre-lock read and here
+            # would file the fresh fold under a stale rev - still correct, because
+            # a stale key can never equal a later monotonic rev, but it clobbers a
+            # newer entry and forces everyone to rebuild until a writer wins.)
+            rev = self.log.revision()
+            c = _FOLD_CACHE.get(key)         # double-check: another thread may have built it
+            if c and c[0] == rev:
+                return c[1], c[2], c[3]
+            lessons, replaced, dropped = self._build_fold()
+            _FOLD_CACHE[key] = (rev, lessons, replaced, dropped)
+            return lessons, replaced, dropped
+
+    def rank(self, lessons: list, query: str) -> list:
+        """Order `lessons` most-relevant-first for `query`, tilting toward higher
+        trust basis. Uses SQLite FTS5 (BM25) instead of an O(lessons x terms)
+        substring scan. What that actually buys — being precise, since FTS is still
+        LEXICAL, not semantic: (1) proper BM25 ranking — IDF + length-normalised, so
+        a common word like 'steel' no longer swamps the score the way raw text.count
+        did; (2) word-boundary tokens, so 'steel' matches the word 'steel' and NOT
+        the substring inside 'SteelHaven'; (3) an index rather than a full scan.
+        Synonymy ('partner' finding 'co-owner') still needs embeddings — a separate,
+        non-local add we deliberately don't make here. Falls back to lexical scoring
+        when FTS5 is missing or nothing matches, so it's never worse than before.
+        Stdlib sqlite, fully local; the lessons stay human-readable prose in the log
+        — the index is derived, thrown away each call."""
+        terms = _query_terms(query)
+        if lessons and terms and _fts5_ok():
+            hits = None
+            try:
+                conn = sqlite3.connect(":memory:")
+                try:
+                    conn.execute("CREATE VIRTUAL TABLE m USING fts5(txt, tokenize='unicode61')")
+                    conn.executemany("INSERT INTO m(rowid, txt) VALUES(?,?)",
+                                     ((i, l.text) for i, l in enumerate(lessons)))
+                    # Each term quoted as an FTS string and OR'd: a match on ANY term
+                    # counts (like the old any-term score), and quoting disarms the
+                    # FTS operator syntax (AND/OR/NEAR/*/-) hiding in a lesson's words.
+                    q = " OR ".join('"%s"' % t.replace('"', '""') for t in terms)
+                    hits = {int(r[0]): float(r[1]) for r in
+                            conn.execute("SELECT rowid, bm25(m) FROM m WHERE m MATCH ?", (q,))}
+                finally:
+                    conn.close()
+            except Exception:
+                hits = None
+            if hits:
+                # bm25 is negative — more negative = a better match. Rank matches by
+                # relevance with a trust tilt; keep the non-matches in the trust
+                # order recall() already sorted them into.
+                matched = sorted((iv for iv in enumerate(lessons) if iv[0] in hits),
+                                 key=lambda iv: (-hits[iv[0]]) + 0.5 * WEIGHT.get(iv[1].basis, 0),
+                                 reverse=True)
+                rest = [l for i, l in enumerate(lessons) if i not in hits]
+                return [l for _, l in matched] + rest
+        return _lexical_rank(lessons, query)
+
+    def _build_fold(self):
+        """Replay the vault log into (lessons, replaced, dropped) — the pure
+        projection, no filters, so the result is cacheable independent of who asks."""
         lessons: dict[str, Lesson] = {}
         replaced: dict[str, str] = {}
         dropped: set[str] = set()
@@ -273,26 +423,7 @@ class Vault:
                 if lid:
                     dropped.add(lid)
 
-        out = []
-        for lid, les in lessons.items():
-            les.superseded_by = replaced.get(lid, "")
-            dead = bool(les.superseded_by) or lid in dropped
-            if dead and not include_dead:
-                continue
-            # None means no filter; "" means the empty name and matches
-            # nothing. The same conflation in grants.live() let an
-            # unidentified sender match every grant in the business, and
-            # fixing it there and not here is exactly the adjacent-door
-            # mistake this codebase keeps making.
-            if business is not None and les.business != business:
-                continue
-            if agent is not None and les.agent != agent:
-                continue
-            if contains and contains.lower() not in les.text.lower():
-                continue
-            out.append(les)
-        out.sort(key=lambda l: (-WEIGHT.get(l.basis, 0), l.learned))
-        return out
+        return lessons, replaced, dropped
 
     def to_markdown(self, business: str, agent: str = "") -> str:
         """The readable projection - what an agent has worked out, on a page.

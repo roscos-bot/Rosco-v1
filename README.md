@@ -37,7 +37,7 @@ git-ignored.
 | `rosco/ingest.py` | reviewed ingestion — learn one item at a time |
 | `rosco/adapters/google.py` | Google Workspace connector (Gmail / Drive / Calendar / Sheets / Contacts / Chat) |
 | `rosco/web.py`, `web_app.html`, `web_app.js` | the localhost console: 3D mesh, queue, chat, settings |
-| `tests/` | `test_core.py` and `test_web.py` — the safety suites |
+| `tests/` | `test_core.py`, `test_web.py`, `test_recall_fts.py` — the safety suites |
 
 ## The rules that don't bend
 
@@ -60,6 +60,7 @@ for what's built and what's next.
 ```bash
 python tests/test_core.py
 python tests/test_web.py
+python tests/test_recall_fts.py
 ```
 
 Both must print `ALL PASS`. The HOSTILE sections are regression tests for real
