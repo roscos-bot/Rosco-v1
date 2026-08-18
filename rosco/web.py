@@ -1231,6 +1231,44 @@ class ConsoleServer(ThreadingHTTPServer):
         except Exception as e:
             return {"models": [], "error": str(e)}
 
+    def voiceid_status(self, s):
+        from . import voiceid
+        return voiceid.status(self.console.home)
+
+    def voiceid_enroll(self, s, body):
+        """Build Ross's voiceprint from the read-prompt clips (base64 WAVs)."""
+        import base64
+        from . import voiceid
+        clips = []
+        for c in (body.get("clips") or []):
+            try:
+                clips.append(base64.b64decode(c))
+            except Exception:
+                pass
+        return voiceid.enroll(self.console.home, clips)
+
+    def voiceid_verify(self, s, body):
+        """Is this one clip (base64 WAV) Ross? {gate, match, score, threshold}."""
+        import base64
+        from . import voiceid
+        try:
+            clip = base64.b64decode(body.get("clip") or "")
+        except Exception:
+            clip = b""
+        if not clip:
+            return {"gate": True, "match": False, "score": None, "reason": "no audio"}
+        return voiceid.verify(self.console.home, clip)
+
+    def voiceid_config(self, s, body):
+        from . import voiceid
+        return voiceid.set_config(self.console.home,
+                                  enabled=body.get("enabled"),
+                                  threshold=body.get("threshold"))
+
+    def voiceid_clear(self, s):
+        from . import voiceid
+        return voiceid.clear(self.console.home)
+
     def key_status(self, s):
         """Which provider keys are stored, and whether each actually works.
 
@@ -3275,6 +3313,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, srv.ingest_queue(s))
         if self.path == "/api/ingest/readiness":
             return self._send(200, srv.ingest_readiness(s))
+        if self.path == "/api/voiceid/status":
+            return self._send(200, srv.voiceid_status(s))
         # The unified surface: /api/needs composes the old /api/queue, /api/next,
         # /api/requests(GET) and /api/tasks(GET) reads server-side, so those four
         # GET routes were removed — next_list/requests/tasks stay as methods that
@@ -3380,6 +3420,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.server.ingest_autoplace(s, body))
             if self.path == "/api/ingest/clear":
                 return self._send(200, self.server.ingest_clear(s))
+            if self.path == "/api/voiceid/enroll":
+                return self._send(200, self.server.voiceid_enroll(s, body))
+            if self.path == "/api/voiceid/verify":
+                return self._send(200, self.server.voiceid_verify(s, body))
+            if self.path == "/api/voiceid/config":
+                return self._send(200, self.server.voiceid_config(s, body))
+            if self.path == "/api/voiceid/clear":
+                return self._send(200, self.server.voiceid_clear(s))
             if self.path == "/api/meetings/ingest":
                 return self._send(200, self.server.meetings_ingest(s))
             if self.path.startswith("/api/cfg/"):

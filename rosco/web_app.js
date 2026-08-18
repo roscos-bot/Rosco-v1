@@ -672,16 +672,18 @@ function startListen(){
   recog.continuous=true; recog.interimResults=true; recog.lang="en-US";   // interim -> fast barge-in
   recog.onresult=function(e){for(var i=e.resultIndex;i<e.results.length;i++){
     var r=e.results[i];
-    if(r.isFinal) handleUtterance(r[0].transcript);
+    if(r.isFinal) gateThen(r[0].transcript);     // verify it's Ross's voice (if enrolled) before acting
     else maybeBargeIn(r[0].transcript);}};
   recog.onerror=function(e){ if(e.error==="not-allowed"||e.error==="service-not-allowed"){
     wantListen=false;setListenUI(false);alert("Rosco needs microphone permission to listen — allow it and click the mic again.");}};
   recog.onend=function(){ if(wantListen){try{recog.start();}catch(e){}} else setListenUI(false); };  // auto-restart = always-on
   try{recog.start();setListenUI(true);}catch(e){}
   try{localStorage.setItem("roscoListen","1");}catch(e){}
+  fetchVoiceCfg(function(){ if(voiceGateOn()) startAudio(); });         // arm the voiceprint gate if enrolled + on
 }
 function stopListen(){wantListen=false;try{if(recog)recog.stop();}catch(e){}
   try{if(window.speechSynthesis)window.speechSynthesis.cancel();}catch(e){}
+  stopAudio();
   setListenUI(false);try{localStorage.removeItem("roscoListen");}catch(e){}}
 function toggleListen(){ wantListen?stopListen():startListen(); }
 var _mic=document.getElementById("micBtn");
@@ -690,6 +692,96 @@ if(_mic)_mic.addEventListener("click",toggleListen);
 // permission, so start() usually works without a fresh click. If the browser
 // blocks it, the mic just shows off and one click resumes.
 try{ if(localStorage.getItem("roscoListen")==="1"&&voiceSupported()) startListen(); }catch(e){}
+
+// ---- voice fingerprint: capture raw mic audio (alongside SpeechRecognition),
+// grab the last few seconds for a per-utterance "is this Ross?" check, and record
+// fixed clips for enrollment. All audio is downsampled to 16k mono WAV in-browser
+// and sent to the local /api/voiceid endpoints; nothing leaves the machine.
+var audioCtx=null,audioSrc=null,audioProc=null,audioStream=null,audioMute=null;
+var ring=[],ringLen=0,ringRate=16000,RING_SECS=6;
+function startAudio(cb){
+  if(audioCtx){ if(cb)cb(true); return; }
+  if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){ if(cb)cb(false); return; }
+  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}).then(function(stream){
+    audioStream=stream;
+    audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    ringRate=audioCtx.sampleRate;
+    audioSrc=audioCtx.createMediaStreamSource(stream);
+    audioProc=audioCtx.createScriptProcessor(4096,1,1);
+    audioMute=audioCtx.createGain();audioMute.gain.value=0;               // keep the node alive WITHOUT playing the mic back
+    audioProc.onaudioprocess=function(e){
+      var d=e.inputBuffer.getChannelData(0),c=new Float32Array(d);
+      ring.push(c);ringLen+=c.length;
+      var max=RING_SECS*ringRate; while(ringLen>max&&ring.length>1){ringLen-=ring[0].length;ring.shift();}
+    };
+    audioSrc.connect(audioProc);audioProc.connect(audioMute);audioMute.connect(audioCtx.destination);
+    if(cb)cb(true);
+  }).catch(function(){ if(cb)cb(false); });
+}
+function stopAudio(){ try{if(audioProc)audioProc.disconnect();if(audioSrc)audioSrc.disconnect();if(audioMute)audioMute.disconnect();
+  if(audioStream)audioStream.getTracks().forEach(function(t){t.stop();});if(audioCtx)audioCtx.close();}catch(e){}
+  audioCtx=null;audioSrc=null;audioProc=null;audioStream=null;ring=[];ringLen=0; }
+function ringTail(secs){
+  var need=Math.floor(secs*ringRate),out=new Float32Array(need),pos=need;
+  for(var k=ring.length-1;k>=0&&pos>0;k--){var c=ring[k],take=Math.min(c.length,pos);out.set(c.subarray(c.length-take),pos-take);pos-=take;}
+  return pos>0?out.subarray(pos):out;
+}
+function wavB64(float32,srcRate){
+  var dst=16000,ratio=srcRate/dst,n=Math.max(1,Math.floor(float32.length/ratio)),out=new Float32Array(n);
+  for(var i=0;i<n;i++){var a=Math.floor(i*ratio),b=Math.min(float32.length,Math.floor((i+1)*ratio)),s=0,cnt=0;for(var j=a;j<b;j++){s+=float32[j];cnt++;}out[i]=cnt?s/cnt:0;}  // averaging downsample
+  var buf=new ArrayBuffer(44+out.length*2),v=new DataView(buf);
+  function ws(o,x){for(var i=0;i<x.length;i++)v.setUint8(o+i,x.charCodeAt(i));}
+  ws(0,"RIFF");v.setUint32(4,36+out.length*2,true);ws(8,"WAVE");ws(12,"fmt ");
+  v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,dst,true);v.setUint32(28,dst*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);
+  ws(36,"data");v.setUint32(40,out.length*2,true);
+  var o=44;for(var i=0;i<out.length;i++){var x=Math.max(-1,Math.min(1,out[i]));v.setInt16(o,x*0x7fff,true);o+=2;}
+  var bytes=new Uint8Array(buf),bin="";for(var i=0;i<bytes.length;i++)bin+=String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function recordClip(secs){ return new Promise(function(res,rej){
+  startAudio(function(ok){ if(!ok){rej(new Error("no mic"));return;}
+    ring=[];ringLen=0;                                                    // fresh clip
+    setTimeout(function(){ res(wavB64(ringTail(secs),ringRate)); }, secs*1000+150); }); }); }
+var voiceCfg={enabled:false,enrolled:false,threshold:0.55,samples:0};
+function fetchVoiceCfg(cb){ api("/api/voiceid/status").then(function(r){ if(r.ok&&r.j)voiceCfg=r.j; if(cb)cb(voiceCfg); }).catch(function(){ if(cb)cb(voiceCfg); }); }
+function voiceGateOn(){ return !!(voiceCfg.enabled&&voiceCfg.enrolled); }
+// Gate a heard utterance on Ross's voiceprint before acting on it. Gate off / not
+// enrolled / mic or server unreachable -> proceed (the check only ever ADDS a bar).
+function gateThen(transcript){
+  if(!voiceGateOn()||!audioCtx){ handleUtterance(transcript); return; }
+  var b64; try{ b64=wavB64(ringTail(3.0),ringRate); }catch(e){ handleUtterance(transcript); return; }
+  post("/api/voiceid/verify",{clip:b64}).then(function(r){
+    var v=(r.ok&&r.j)||{};
+    if(!v.gate||v.match){ handleUtterance(transcript); }
+    else { vhint("· not your voice"+(v.score!=null?" ("+v.score+")":""),false); }
+  }).catch(function(){ handleUtterance(transcript); });
+}
+
+// Enrollment: read each prompt, record ~3s, collect the clips, POST them. The
+// server builds Ross's reference voiceprint from them.
+function runEnroll(prompts,msg,btn,done){
+  btn.disabled=true; var clips=[],i=0;
+  function step(){
+    if(i>=prompts.length){
+      msg.textContent="Saving your voiceprint…";
+      post("/api/voiceid/enroll",{clips:clips}).then(function(r){
+        var v=(r.ok&&r.j)||{};
+        msg.textContent = (v.ok===false) ? ("Needs a bit more — "+(v.error||"read the prompts a touch longer")+".")
+          : ("Enrolled ✓ ("+v.samples+" samples). Flip on ‘Only respond to my voice’, then Test.");
+        btn.disabled=false; if(done)done();
+      }).catch(function(){ msg.textContent="Couldn't save — server unavailable."; btn.disabled=false; });
+      return;
+    }
+    msg.innerHTML="<b>Read aloud ("+(i+1)+"/"+prompts.length+"):</b> “"+esc(prompts[i])+"” — recording in 1s…";
+    setTimeout(function(){
+      msg.innerHTML="<b>🔴 Recording ("+(i+1)+"/"+prompts.length+"):</b> “"+esc(prompts[i])+"”";
+      recordClip(3).then(function(b64){ clips.push(b64); i++; step(); })
+                   .catch(function(){ msg.textContent="Mic unavailable — allow microphone access and retry."; btn.disabled=false; });
+    },1000);
+  }
+  step();
+}
 
 // ---- settings → Voice: pick Rosco's spoken voice from every voice the browser
 // exposes (OS-local + cloud), tune speed/pitch, and hear it. Saved to localStorage
@@ -746,6 +838,54 @@ function renderVoicePane(card){
   var tip=document.createElement("div");tip.className="n";tip.style.marginTop="10px";
   tip.textContent="Saves and applies immediately. If the list looks short, it fills a moment after page load — reopen this section.";
   card.appendChild(tip);
+
+  // ── Voice recognition: respond only to Ross's voice ──
+  var hr=document.createElement("div");hr.style.cssText="margin:16px 0 6px;border-top:1px solid #2a332e;padding-top:12px;font-weight:600;";
+  hr.textContent="Voice recognition — respond only to me";card.appendChild(hr);
+  var vstat=document.createElement("div");vstat.className="n";card.appendChild(vstat);
+  var togRow=document.createElement("label");togRow.style.cssText="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;";
+  var tog=document.createElement("input");tog.type="checkbox";
+  var togTxt=document.createElement("span");togTxt.textContent="Only act on my voice (in listen mode)";
+  togRow.appendChild(tog);togRow.appendChild(togTxt);card.appendChild(togRow);
+  var sl=document.createElement("label");sl.textContent="Strictness (higher rejects others more — and, too high, sometimes you)";sl.style.marginTop="8px";card.appendChild(sl);
+  var thRow=document.createElement("div");thRow.style.cssText="display:flex;align-items:center;gap:8px;";
+  var th=document.createElement("input");th.type="range";th.min=0.3;th.max=0.9;th.step=0.01;th.style.flex="1";
+  var thOut=document.createElement("span");thOut.className="n";
+  thRow.appendChild(th);thRow.appendChild(thOut);card.appendChild(thRow);
+  var brow=document.createElement("div");brow.style.cssText="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;";
+  var enrollBtn=document.createElement("button");enrollBtn.className="go";enrollBtn.textContent="🎤 Enroll my voice";
+  var testBtn=document.createElement("button");testBtn.className="ing-skip";testBtn.textContent="Test — say something";
+  var clrBtn=document.createElement("button");clrBtn.className="ing-skip";clrBtn.textContent="Clear";
+  brow.appendChild(enrollBtn);brow.appendChild(testBtn);brow.appendChild(clrBtn);card.appendChild(brow);
+  var vmsg=document.createElement("div");vmsg.className="n";vmsg.style.marginTop="8px";card.appendChild(vmsg);
+  function refreshVid(){ fetchVoiceCfg(function(c){
+    vstat.textContent=c.enrolled?("Enrolled — "+c.samples+" samples on file."):"Not enrolled yet. Click ‘Enroll my voice’ and read the six prompts.";
+    tog.checked=!!c.enabled; tog.disabled=!c.enrolled;
+    th.value=c.threshold; thOut.textContent=(+c.threshold).toFixed(2);
+    testBtn.disabled=!c.enrolled;
+  }); }
+  refreshVid();
+  tog.addEventListener("change",function(){ post("/api/voiceid/config",{enabled:tog.checked}).then(refreshVid); });
+  th.addEventListener("input",function(){ thOut.textContent=(+th.value).toFixed(2); });
+  th.addEventListener("change",function(){ post("/api/voiceid/config",{threshold:parseFloat(th.value)}).then(refreshVid); });
+  enrollBtn.addEventListener("click",function(){ runEnroll(
+    ["Steel-strong, smart-secure — that's how we build.",
+     "Rosco, pull up my calendar for tomorrow morning.",
+     "The Duo is our flagship — cold-formed steel, built to last.",
+     "Remind me to call John about the Field Crossing lot.",
+     "Behind the drywall matters more than the finishes.",
+     "Plan, build, test, verify — every single home."], vmsg, enrollBtn, refreshVid); });
+  testBtn.addEventListener("click",function(){ vmsg.textContent="Listening… say a sentence.";
+    recordClip(3).then(function(b64){ return post("/api/voiceid/verify",{clip:b64}); }).then(function(r){
+      var v=(r.ok&&r.j)||{};
+      if(v.score==null) vmsg.textContent="Couldn't read that — speak a bit longer / closer to the mic.";
+      else vmsg.textContent="Score "+v.score+" vs threshold "+v.threshold+" → "+(v.match?"✅ recognized as you":"❌ not recognized")+". Set strictness just below your usual score.";
+    }).catch(function(){ vmsg.textContent="Mic or server unavailable."; }); });
+  clrBtn.addEventListener("click",function(){ if(!confirm("Clear your voiceprint?"))return;
+    post("/api/voiceid/clear",{}).then(function(){ vmsg.textContent="Voiceprint cleared."; refreshVid(); }); });
+  var vtip=document.createElement("div");vtip.className="n";vtip.style.marginTop="8px";
+  vtip.textContent="Enroll once, flip it on, then Test and dial strictness. When on, listen mode ignores anyone whose voice doesn't match — best on a headset. It only adds a check; off or unenrolled, everything works as before.";
+  card.appendChild(vtip);
 }
 
 // ---- settings: the CLI's config commands, as forms ----
