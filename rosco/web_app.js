@@ -1444,11 +1444,20 @@ function ingestCard(item){
   return card;
 }
 function decideIngest(cand,business,action,card,shorthand,emailFact,reload){
+  // Guard the silent loop: 'ingest' with no business raises 'unknown business' on
+  // the server, which never records the decision — so the item comes back forever.
+  // Refuse here with a clear nudge instead. (Skip needs no business.)
+  if(action==="ingest" && !((business||"").trim())){
+    var gs=card&&card.querySelector("select");
+    if(gs&&!gs.options.length)alert("No businesses to file into yet — add them in Settings, or hit Skip.");
+    else{alert("Pick a business in 'File into' to file this, or hit Skip.");if(gs)gs.focus();}
+    return;
+  }
   if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=true;});
   post("/api/ingest/decide",{cand:cand,business:business,action:action,shorthand:shorthand||"",emailFact:!!emailFact}).then(function(r){
     if(r.ok){(reload||loadIngest)();}
     else{alert((r.j&&r.j.error)||"couldn't decide");if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=false;});}
-  });
+  }).catch(function(){alert("server unreachable");if(card)card.querySelectorAll("button,select").forEach(function(x){x.disabled=false;});});
 }
 // Batch review — a report card. Rosco reads the next N in one pass, shows where
 // each goes + how sure; you ✓ (right) or ✗ (wrong → pick the real home / skip),
