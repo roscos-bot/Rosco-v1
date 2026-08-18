@@ -1505,22 +1505,33 @@ class ConsoleServer(ThreadingHTTPServer):
             n = self._queue_text(s, content, source=src)
             return {"ok": True, "added": n, "file": hit.get("name", "")}
         files = g.drive_search(token, name, 40) if name else g.drive_recent(token, 40)
-        added = 0
+        # Skip files already queued or learned, so re-running a pull doesn't ingest
+        # the same documents over again. `force` bypasses it for a deliberate re-pull.
+        seen = set() if body.get("force") else Ingest(log, Vault(log)).seen_sources()
+        added = skipped = 0
         for f in files:
+            src = f"drive:{f.get('name','')}"[:80]
+            if src in seen:
+                skipped += 1
+                continue
             content = g.drive_read(token, f.get("id", ""), f.get("mimeType", ""),
                                    max_chars=20000)
             if not content:
                 continue                      # a PDF/image/binary — skip, don't queue noise
-            src = f"drive:{f.get('name','')}"[:80]
             sources.save(self.console.home, src, content)
             added += Ingest(log).add(
                 [{"text": content, "business": "", "confidence": 0.0,
                   "why": "drive file", "summary": ""}], source=src)
         if not added:
+            if skipped:
+                return {"ok": True, "added": 0, "skipped": skipped,
+                        "file": f"nothing new — {skipped} already ingested "
+                                f"(send force to re-pull)"}
             raise ValueError(f"no readable text files in {account} Drive for "
                              f"'{name or 'recent'}' (Docs/Sheets/text only)")
-        return {"ok": True, "added": added,
-                "file": f"{added} from {account} Drive" + (f" · '{name}'" if name else " (recent)")}
+        return {"ok": True, "added": added, "skipped": skipped,
+                "file": f"{added} from {account} Drive" + (f" · '{name}'" if name else " (recent)")
+                        + (f" ({skipped} already ingested, skipped)" if skipped else "")}
 
     def ingest_github(self, s, body):
         """Pull a file — OR a whole repo/folder — from GitHub into the review queue.
@@ -1565,20 +1576,32 @@ class ConsoleServer(ThreadingHTTPServer):
             sources.save(self.console.home, src, content)               # local copy for offline detail
             n = self._queue_text(s, content, source=src)
             return {"ok": True, "added": n, "file": f"{repo['full']}:{files[0]}"}
-        added = 0                                                       # many -> bulk into Rosco's Vault
+        # many -> bulk into Rosco's Vault. Skip files already queued/learned so a
+        # re-pull doesn't re-ingest the same source over again; force re-pulls all.
+        seen = set() if body.get("force") else Ingest(log, Vault(log)).seen_sources()
+        added = skipped = 0
         for p in files:
+            src = f"gh:{name}/{p}"
+            if src in seen:
+                skipped += 1
+                continue
             content, _ = gh.gh_read(token, owner, name, p)
             if not content:
                 continue
-            src = f"gh:{name}/{p}"
             sources.save(self.console.home, src, content)               # local copy for offline detail
             added += Ingest(log).add(
                 [{"text": content, "business": "system", "confidence": 0.6,
                   "why": "repo source file", "summary": ""}],
                 source=src)
         if not added:
+            if skipped:
+                return {"ok": True, "added": 0, "skipped": skipped,
+                        "file": f"{repo['full']} — nothing new ({skipped} already "
+                                f"ingested; send force to re-pull)"}
             raise ValueError(f"no readable files pulled from {repo['full']}")
-        return {"ok": True, "added": added, "file": f"{repo['full']} — {added} files"}
+        return {"ok": True, "added": added, "skipped": skipped,
+                "file": f"{repo['full']} — {added} files"
+                        + (f" ({skipped} already ingested, skipped)" if skipped else "")}
 
     def gmail_action(self, s, body):
         """Process one email in the hopper. A LABEL change (archive/star/read/

@@ -142,6 +142,28 @@ class Ingest:
                 out[c] = b
         return out
 
+    def seen_sources(self) -> set:
+        """Every document source pointer already in the system: proposed (whether
+        still pending, ingested, or skipped) and — if a vault is attached — already
+        learned. The bulk pullers (Drive, GitHub, meetings) skip a file whose source
+        is in here, so re-running a pull never floods the queue with the same
+        documents again. A blank/generic source ('paste') is ignored so it never
+        blocks a fresh paste."""
+        out = set()
+        for ev in self.log.replay(kind="ingest.proposed"):
+            b = ev["body"]
+            src = b.get("source") if isinstance(b, dict) else None
+            if src and src not in ("paste", "note"):
+                out.add(src)
+        if self.vault is not None:
+            try:
+                for les in self.vault.recall():
+                    if les.source:
+                        out.add(les.source)
+            except Exception:
+                pass
+        return out
+
     def pending(self) -> list[dict]:
         """Candidates still waiting on a glance, oldest first."""
         decided = self._decided_ids()

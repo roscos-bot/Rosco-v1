@@ -62,14 +62,25 @@ def _past_grace(end_iso: str, now: datetime, grace_min: int) -> bool:
         return False
 
 
-def _seen(log) -> set:
-    """Transcript file ids already ingested — the dedup set, from the ledger."""
+def _seen(log, vault=None) -> set:
+    """Transcript file ids already ingested — the dedup set. Primarily the
+    `meeting.ingested` ledger; but ALSO, belt-and-braces, the `meet:<id>` source of
+    any already-learned SteelHaven lesson, so a transcript can never be re-learned
+    even if its marker append ever failed (e.g. a stale process without the kind)."""
     out = set()
     for ev in log.replay(kind="meeting.ingested"):
         b = ev.get("body") or {}
         f = b.get("file") if isinstance(b, dict) else None
         if f:
             out.add(f)
+    if vault is not None:
+        try:
+            for les in vault.recall(business=STEELHAVEN):
+                src = les.source or ""
+                if src.startswith("meet:"):
+                    out.add(src[len("meet:"):])
+        except Exception:
+            pass
     return out
 
 
@@ -127,7 +138,7 @@ def ingest_new(console, passphrase, *, match: str = MATCH,
                 "ingested": 0, "skipped": 0, "names": []}
 
     models, meter = Models(log, vault), Meter(log)
-    seen = _seen(log)
+    seen = _seen(log, vault)
     captain = knowledge._captain(STEELHAVEN) or "HavenMind"
     ingested = skipped = 0
     names: list[str] = []
