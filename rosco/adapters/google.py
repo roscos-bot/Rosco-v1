@@ -322,6 +322,22 @@ def drive_read(token: str, file_id: str, mime: str, max_chars: int = 8000) -> st
     return (text or "")[:max_chars]
 
 
+def drive_bytes(token: str, file_id: str, *, max_bytes: int = 64 * 1024 * 1024,
+                timeout: int = 120) -> bytes:
+    """Raw bytes of a Drive file — for callers that read it themselves rather than
+    as text (the vision model on a photo, Whisper on a video). b'' on any failure so
+    the caller just degrades that file, never crashes the pull."""
+    if not file_id:
+        return b""
+    try:
+        return safehttp.call(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true",
+            method="GET", bearer=token, timeout=timeout, binary=True,
+            max_bytes=max_bytes) or b""
+    except Exception:
+        return b""
+
+
 def drive_find(token: str, name: str) -> dict | None:
     """Best single file match for a name - what 'read <file>' resolves to."""
     files = drive_search(token, name, 5)

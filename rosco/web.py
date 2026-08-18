@@ -1527,15 +1527,24 @@ class ConsoleServer(ThreadingHTTPServer):
         if f"{account}:{g.REFRESH_TOKEN}" not in set(Vault(log).secret_names()):
             raise ValueError(f"the '{account}' Google account isn't connected — "
                              f"add it in Settings → Google Workspace first")
-        token = g.access_for(Vault(log, key=self.console._vault_key(s.passphrase)), account)
+        vault = Vault(log, key=self.console._vault_key(s.passphrase))
+        token = g.access_for(vault, account)
         if not token:
             raise ValueError(f"couldn't sign in to the '{account}' Google account")
+        models, meter = Models(log, vault), Meter(log)
         if not bulk:
             hit = g.drive_find(token, name)
             if not hit:
                 raise ValueError(f"no Drive file matching {name!r}")
+            hmt = (hit.get("mimeType", "") or "").lower()
             content = g.drive_read(token, hit.get("id", ""), hit.get("mimeType", ""),
                                    max_chars=20000)
+            if not content and hmt.startswith("image/"):   # OCR found nothing -> vision
+                content = _image_describe(models, meter,
+                                          g.drive_bytes(token, hit.get("id", "")), hmt)
+            if not content and hmt.startswith("video/"):    # transcribe with local Whisper
+                content = _video_transcript(g.drive_bytes(token, hit.get("id", "")),
+                                            hit.get("name", ""))
             if not content:
                 raise ValueError(f"'{hit.get('name','')}' has no readable text (a PDF or image?)")
             src = f"drive:{hit.get('name','')}"[:80]
@@ -1554,14 +1563,25 @@ class ConsoleServer(ThreadingHTTPServer):
         # Skip files already queued or learned, so re-running a pull doesn't ingest
         # the same documents over again. `force` bypasses it for a deliberate re-pull.
         seen = set() if body.get("force") else Ingest(log, Vault(log)).seen_sources()
+        want_video = bool(body.get("transcribe"))    # heavy — only when asked
+        vcap, tcap = 40, 6                            # per-pull budgets so a big media folder can't run away
         added = skipped = unreadable = 0
         for f in files:
             src = f"drive:{f.get('name','')}"[:80]
             if src in seen:
                 skipped += 1
                 continue
+            mt = (f.get("mimeType") or "").lower()
             content = g.drive_read(token, f.get("id", ""), f.get("mimeType", ""),
                                    max_chars=20000)
+            if not content and mt.startswith("image/") and vcap > 0:   # OCR blank -> vision
+                content = _image_describe(models, meter,
+                                          g.drive_bytes(token, f.get("id", "")), mt)
+                vcap -= 1
+            if not content and mt.startswith("video/") and want_video and tcap > 0:
+                content = _video_transcript(g.drive_bytes(token, f.get("id", "")),
+                                            f.get("name", ""))
+                tcap -= 1
             if not content:
                 unreadable += 1               # a PDF/image/binary — skip, don't queue noise
                 continue
@@ -1607,11 +1627,16 @@ class ConsoleServer(ThreadingHTTPServer):
                 return {"ok": True, "added": 0, "skipped": skipped, "found": found,
                         "file": f"nothing new — all {skipped} of {found} already "
                                 f"ingested (send force to re-pull)"}
+            nvid = sum(1 for f in files
+                       if (f.get("mimeType", "") or "").lower().startswith("video/"))
+            hint = (f" Turn on 'Transcribe videos' to read the {nvid} video(s) with local "
+                    f"Whisper (slower)." if nvid and not want_video else "")
             raise ValueError(
                 f"found {found} file(s) in '{account}' Drive [{breakdown}] but none had "
                 f"extractable text — {unreadable} couldn't be read"
                 + (f", {skipped} already ingested" if skipped else "")
-                + ". If a type you want is in that list, tell me and I'll add it.")
+                + "." + hint
+                + " If a type you want is in that list, tell me and I'll add it.")
         return {"ok": True, "added": added, "skipped": skipped, "found": found,
                 "file": f"{added} from {account} Drive" + (f" · '{name}'" if name else " (recent)")
                         + (f" ({skipped} already ingested, skipped)" if skipped else "")}
@@ -2797,6 +2822,59 @@ def _salvage_objects(raw):
             "summary": sm.group(1).strip(),
         })
     return out
+
+
+def _image_describe(models, meter, data: bytes, mime: str) -> str:
+    """Read an image with the VISION model when OCR couldn't. One prompt covers both
+    cases a Drive is full of: it transcribes any text (a scanned doc, a sign, a plan's
+    title block) OR describes a photo (jobsite stage, materials, address clues). '' if
+    vision has no key, the image won't decode, or the model errors — caller skips it.
+    Shrinks + re-encodes to JPEG first (odd types like HEIC/TIFF, and multi-MB photos,
+    are exactly what timed out a raw vision read)."""
+    if not data:
+        return ""
+    try:
+        import base64
+        import io
+
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        im.load()
+        im = im.convert("RGB")
+        w, h = im.size
+        if max(w, h) > 1600:
+            fac = 1600.0 / max(w, h)
+            im = im.resize((max(1, int(w * fac)), max(1, int(h * fac))))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return ""
+    from .llm import NoModel, see
+    prompt = (
+        "This image is a file from a homebuilder's company Drive, being read so the "
+        "business can remember what's in it. If it contains any text — a scanned "
+        "document, a sign, a label, a spreadsheet, a plan's title block — transcribe "
+        "ALL of that text verbatim. If it's a photograph, describe concretely what it "
+        "shows: construction stage, materials, any address or location clues, anything "
+        "a builder would record. Be factual; never invent detail. Begin with 'TEXT:' "
+        "or 'PHOTO:'.")
+    try:
+        return (see(models, prompt, b64, "image/jpeg", meter=meter, timeout=90) or "").strip()
+    except NoModel:
+        return ""
+    except Exception:
+        return ""
+
+
+def _video_transcript(data: bytes, name: str) -> str:
+    """Transcribe a video/audio file's speech with local Whisper (offline). '' if it
+    can't be transcribed — the pull then just skips it."""
+    try:
+        from . import media
+        return media.transcribe(data, name)
+    except Exception:
+        return ""
 
 
 def _route_ingest(models, meter, chunks):
