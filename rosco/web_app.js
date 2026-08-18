@@ -594,6 +594,12 @@ document.getElementById("chatin").addEventListener("keydown",function(e){if(e.ke
 var wantListen=false, recog=null;
 var WAKE=/\b(rosco|roscoe|rosko|rosca|ross[\s-]?go|russ[\s-]?co)\b/i;
 function voiceSupported(){return !!(window.SpeechRecognition||window.webkitSpeechRecognition);}
+function voiceList(){ try{return window.speechSynthesis.getVoices()||[];}catch(e){return [];} }
+function _ls(k){ try{return localStorage.getItem(k);}catch(e){return null;} }
+function pickedVoice(){ var n=_ls("roscoVoice")||""; if(!n)return null;
+  var m=voiceList().filter(function(v){return v.name===n;}); return m[0]||null; }   // chosen in Settings → Voice
+function voiceRate(){ var r=parseFloat(_ls("roscoRate")); return (r>=0.5&&r<=2)?r:1.05; }
+function voicePitch(){ var p=parseFloat(_ls("roscoPitch")); return (p>=0&&p<=2)?p:1; }
 function speak(text){
   if(!window.speechSynthesis) return;
   var t=(text||"").replace(/https?:\/\/\S+/g," (link) ")                 // don't read URLs aloud
@@ -601,7 +607,10 @@ function speak(text){
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu,"")  // emoji/arrows
     .replace(/\s+/g," ").trim().slice(0,700);
   if(!t) return;
-  try{window.speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(t);u.rate=1.05;window.speechSynthesis.speak(u);}catch(e){}
+  try{window.speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(t);
+    var v=pickedVoice(); if(v){u.voice=v;u.lang=v.lang;}                 // Rosco's chosen voice
+    u.rate=voiceRate();u.pitch=voicePitch();
+    window.speechSynthesis.speak(u);}catch(e){}
 }
 function vhint(txt,acting){var h=document.getElementById("vhint");if(!h)return;
   h.textContent=txt||""; h.className="vhint"+(acting?" act":"");}
@@ -645,6 +654,63 @@ if(_mic)_mic.addEventListener("click",toggleListen);
 // blocks it, the mic just shows off and one click resumes.
 try{ if(localStorage.getItem("roscoListen")==="1"&&voiceSupported()) startListen(); }catch(e){}
 
+// ---- settings → Voice: pick Rosco's spoken voice from every voice the browser
+// exposes (OS-local + cloud), tune speed/pitch, and hear it. Saved to localStorage
+// so speak() uses it; no server round-trip. British males are usually 'Microsoft
+// Ryan/George (United Kingdom)' (offline) or 'Google UK English Male' (cloud).
+function renderVoicePane(card){
+  if(!window.speechSynthesis){
+    var w=document.createElement("div");w.className="n";
+    w.textContent="This browser has no speech synthesis — open the console in Chrome or Edge for spoken replies.";
+    card.appendChild(w);return;
+  }
+  var lab=document.createElement("label");lab.textContent="Voice";card.appendChild(lab);
+  var sel=document.createElement("select");sel.className="karole";card.appendChild(sel);
+  function fill(){
+    var saved=_ls("roscoVoice")||"", vs=voiceList().slice();
+    // British English first, then other English, then the rest — so the list Ross
+    // wants is at the top.
+    vs.sort(function(a,b){
+      var ga=/en[-_]?GB/i.test(a.lang)?0:/^en/i.test(a.lang)?1:2,
+          gb=/en[-_]?GB/i.test(b.lang)?0:/^en/i.test(b.lang)?1:2;
+      return ga-gb || a.name.localeCompare(b.name);});
+    sel.innerHTML="";
+    var d=document.createElement("option");d.value="";d.textContent="(browser default)";sel.appendChild(d);
+    vs.forEach(function(v){var o=document.createElement("option");o.value=v.name;
+      o.textContent=v.name+" — "+v.lang+(v.localService?" · offline":" · cloud");
+      if(v.name===saved)o.selected=true;sel.appendChild(o);});
+  }
+  fill();
+  try{window.speechSynthesis.onvoiceschanged=fill;}catch(e){}   // getVoices() often fills a beat late
+  sel.addEventListener("change",function(){try{localStorage.setItem("roscoVoice",sel.value);}catch(e){}});
+  function slider(txt,key,min,max,step,def){
+    var l=document.createElement("label");l.textContent=txt;card.appendChild(l);
+    var row=document.createElement("div");row.style.display="flex";row.style.alignItems="center";row.style.gap="8px";
+    var r=document.createElement("input");r.type="range";r.min=min;r.max=max;r.step=step;r.style.flex="1";
+    var cur=parseFloat(_ls(key));r.value=(cur>=min&&cur<=max)?cur:def;
+    var out=document.createElement("span");out.className="n";out.textContent=(+r.value).toFixed(2);
+    r.addEventListener("input",function(){out.textContent=(+r.value).toFixed(2);try{localStorage.setItem(key,r.value);}catch(e){}});
+    row.appendChild(r);row.appendChild(out);card.appendChild(row);return r;
+  }
+  var rate=slider("Speed","roscoRate",0.7,1.4,0.05,1.05);
+  var pitch=slider("Pitch","roscoPitch",0.5,1.5,0.05,1);
+  var test=document.createElement("button");test.className="go";test.textContent="🔊 Test this voice";test.style.marginTop="10px";
+  test.addEventListener("click",function(){
+    try{localStorage.setItem("roscoVoice",sel.value);}catch(e){}
+    try{window.speechSynthesis.cancel();
+      var u=new SpeechSynthesisUtterance("This is Rosco. Steel-strong, smart-secure — how can I help?");
+      var v=voiceList().filter(function(x){return x.name===sel.value;})[0];
+      if(v){u.voice=v;u.lang=v.lang;}
+      u.rate=parseFloat(rate.value)||1.05;u.pitch=parseFloat(pitch.value)||1;
+      window.speechSynthesis.speak(u);
+    }catch(e){}
+  });
+  card.appendChild(test);
+  var tip=document.createElement("div");tip.className="n";tip.style.marginTop="10px";
+  tip.textContent="Saves and applies immediately. If the list looks short, it fills a moment after page load — reopen this section.";
+  card.appendChild(tip);
+}
+
 // ---- settings: the CLI's config commands, as forms ----
 var CFG=[
  {t:"Models",a:"model",n:"Pick a role, a provider, then a model your key can serve.",
@@ -653,6 +719,7 @@ var CFG=[
   f:[{k:"business",l:"Scope",sel:"scopes"},{k:"name",l:"Key name",ph:"openrouter_api_key"},{k:"value",l:"Value",type:"password"}]},
  {t:"Google Workspace",google:true,n:"Connect each Google account by OAuth — full Gmail/Drive/Calendar/Docs/Sheets/Chat/Contacts. Set that account's Client ID + secret on its row below, then Authorize and consent as the right account in the tab that opens.",f:[]},
  {t:"GitHub",gh:true,n:"Paste a fine-grained token (Contents: Read on the repos you want Rosco to see; add Pull requests: Read+write for PRs). It's stored as github_token and Rosco can then browse and read your repos in chat.",f:[]},
+ {t:"Voice",voice:true,n:"Rosco's spoken voice — used in full-listen mode and whenever you talk to it. Pick from every voice your browser/OS provides and hear each one. For a British male, look for 'Microsoft Ryan' or 'Microsoft George (United Kingdom)' (offline) or 'Google UK English Male' (cloud). Local/offline voices stay on your machine; 'cloud' ones synthesize over the network.",f:[]},
  {t:"Test a model",a:"test",btn:"Test",n:"Pings the model a role actually uses and reports the raw reply — or the exact provider error. Use it right after pasting a key.",
   f:[{k:"role",l:"Role",sel:"roles"}]},
  {t:"Spend cap",a:"budget",n:"A soft monthly cap. Warns at 80% and 100%; never blocks.",
@@ -779,6 +846,7 @@ function buildForms(){var host=document.getElementById("cfgForms");host.innerHTM
     if(sec.n){var nn=document.createElement("div");nn.className="n";nn.textContent=sec.n;card.appendChild(nn);}
     if(sec.google){renderGooglePane(card);host.appendChild(card);addNav(idx,sec.t);return;}
     if(sec.gh){renderGithubPane(card);host.appendChild(card);addNav(idx,sec.t);return;}
+    if(sec.voice){renderVoicePane(card);host.appendChild(card);addNav(idx,sec.t);return;}
     var inputs={},dyn={},ksEl=null,tgEl=null;
     if(sec.a==="secret"&&!sec.tg){ksEl=document.createElement("div");ksEl.className="keystat";card.appendChild(ksEl);}
     if(sec.tg){tgEl=document.createElement("div");tgEl.className="keystat";card.appendChild(tgEl);}
