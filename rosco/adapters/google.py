@@ -317,20 +317,35 @@ def gmail_changes(token: str, start_id: str, cap: int = 300) -> dict | None:
     return {"transitions": trans, "historyId": newid}
 
 
-def gmail_from(token: str, message_id: str) -> str:
-    """The From header of one message (metadata only — no body). Used to attribute
-    an observed read/archive/star to a sender/domain."""
+def gmail_from_labels(token: str, message_id: str) -> tuple[str, set]:
+    """The From header AND current labelIds of one message, from a SINGLE metadata
+    fetch (format=metadata returns labelIds alongside the requested headers, so this
+    costs no more than reading the sender alone).
+
+    The labels are what let the watch tell engagement from a brush-off: a message
+    whose INBOX label is gone but that no longer carries UNREAD was read then filed
+    (or was already read — a paid bill), whereas one still UNREAD was cleared without
+    a look. On any failure returns ('', set()) so the caller skips the message rather
+    than inventing a signal from nothing."""
     try:
         d = safehttp.call(
             f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?" + _q(
                 {"format": "metadata", "metadataHeaders": "From"}),
             method="GET", bearer=token, timeout=12)
     except Exception:
-        return ""
+        return "", set()
+    frm = ""
     for h in ((d.get("payload") or {}).get("headers") or []):
         if h.get("name", "").lower() == "from":
-            return h.get("value", "")
-    return ""
+            frm = h.get("value", "")
+            break
+    return frm, set(d.get("labelIds") or [])
+
+
+def gmail_from(token: str, message_id: str) -> str:
+    """The From header of one message (metadata only — no body). Used to attribute
+    an observed read/archive/star to a sender/domain."""
+    return gmail_from_labels(token, message_id)[0]
 
 
 def _b64url(data: str) -> str:

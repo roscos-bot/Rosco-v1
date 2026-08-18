@@ -263,11 +263,13 @@ ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     # from a compromised node is dropped at absorb().
     ("ingest.decided", "action"): ("ingest", "skip", "archive", "star", "keep",
                                    "done", "markread", "trash", "spam", "reply"),
-    # 'read' joins the tidy verbs: it's what a Gmail watch observes when Ross
-    # opens/marks a message (UNREAD removed) — a mild positive engagement signal,
-    # distinct from a dashboard 'markread'.
+    # 'read' and 'file' join the tidy verbs — both from a Gmail watch. 'read' is a
+    # message opened/marked (UNREAD removed) and kept; 'file' is one read THEN
+    # cleared from the inbox (or an already-read message filed away). Both are mild
+    # positive engagement; only 'archive' — inbox cleared while still UNREAD — is a
+    # dismissal. 'read' is also distinct from a dashboard 'markread'.
     ("inbox.acted", "action"): ("archive", "star", "keep", "done", "markread",
-                                "trash", "spam", "reply", "read"),
+                                "trash", "spam", "reply", "read", "file"),
     ("email.watch", "state"): ("open", "closed"),
 }
 

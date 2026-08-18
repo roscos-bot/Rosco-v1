@@ -1055,21 +1055,11 @@ class ConsoleServer(ThreadingHTTPServer):
         answers from what it knows. Reads only, and the results are DATA not
         instructions — the caller wraps them in the external-content guard and
         marks the turn external_used (so a poisoned result can't seal a lesson)."""
-        low = (msg or "").lower()
-        wants = (low.startswith(("search ", "look up ", "google ", "find ", "web ")) or
-                 any(w in low for w in (
-                     "search the web", "look this up", "look that up", "look it up",
-                     "on the web", "on the internet", " online", "latest", "current",
-                     "right now", "today", "this week", "recent", "in the news",
-                     "who is ", "who's ", "the price of", "how much is", "how much does",
-                     "weather", "when is ", "when does", "release date", "cite a source",
-                     "find me", "google")))
-        if not wants:
-            return ""
         from . import search
+        if not search.wants_web(msg):     # intent + query cleanup live in search.py,
+            return ""                     # so research phrasings aren't missed here
         vault = Vault(log, key=self.console._vault_key(passphrase))
-        q = re.sub(r"^\s*(please\s+)?(search( the web)?( for)?|look (this|that|it) up|"
-                   r"look up|google|find( me)?)\s+", "", msg.strip(), flags=re.I).strip()
+        q = search.clean_query(msg)
         try:
             results = search.web_search(vault, q or msg, n=5)
         except Exception:
@@ -2830,7 +2820,8 @@ def _ledger_line(kind, b):
     if kind == "inbox.acted":
         v = {"archive": "archived", "trash": "trashed", "spam": "marked spam on",
              "star": "starred", "keep": "kept", "done": "cleared",
-             "markread": "marked read", "reply": "drafted a reply to"}.get(
+             "markread": "marked read", "reply": "drafted a reply to",
+             "read": "read", "file": "filed"}.get(
                  b.get("action", ""), b.get("action", ""))
         return f"{v} mail from {b.get('domain','')}"
     if kind == "task.created":
@@ -2879,8 +2870,8 @@ def _engagement(log):
     importance model growing from Ross's own behaviour — the more he acts, the
     sharper 'what to do next' gets, and no email can talk its way up by claiming
     to be urgent because only Ross's actions move the number."""
-    W = {"reply": 2, "star": 2, "done": 1, "learn": 2, "read": 1, "keep": 0,
-         "markread": 0, "archive": -1, "trash": -2, "spam": -3}
+    W = {"reply": 2, "star": 2, "done": 1, "learn": 2, "read": 1, "file": 1,
+         "keep": 0, "markread": 0, "archive": -1, "trash": -2, "spam": -3}
     out = {}
     for ev in log.replay(kind="inbox.acted"):
         b = ev["body"]
