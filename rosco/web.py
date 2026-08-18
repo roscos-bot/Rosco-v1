@@ -1542,7 +1542,14 @@ class ConsoleServer(ThreadingHTTPServer):
             sources.save(self.console.home, src, content)
             n = self._queue_text(s, content, source=src)
             return {"ok": True, "added": n, "file": hit.get("name", "")}
-        files = g.drive_search(token, name, 40) if name else g.drive_recent(token, 40)
+        # A name first tries to resolve a FOLDER (pull its whole tree); else it's a
+        # name/content search; blank is the recent list.
+        if name:
+            folder = g.drive_find_folder(token, name)
+            files = (g.drive_folder_files(token, folder["id"]) if folder
+                     else g.drive_search(token, name, 40))
+        else:
+            files = g.drive_recent(token, 40)
         found = len(files)
         # Skip files already queued or learned, so re-running a pull doesn't ingest
         # the same documents over again. `force` bypasses it for a deliberate re-pull.

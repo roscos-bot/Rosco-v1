@@ -150,6 +150,52 @@ def drive_search(token: str, text: str, n: int = 12) -> list[dict]:
     return d.get("files") or []
 
 
+_FOLDER = "application/vnd.google-apps.folder"
+
+
+def drive_find_folder(token: str, name: str) -> dict | None:
+    """The best folder match for a name, or None. Lets a pull target a folder by
+    name instead of only searching file names."""
+    safe = (name or "").replace("\\", "\\\\").replace("'", "\\'")
+    d = safehttp.call(
+        "https://www.googleapis.com/drive/v3/files?" + _q({
+            "q": f"name contains '{safe}' and mimeType='{_FOLDER}' and trashed=false",
+            "pageSize": 5, "fields": "files(id,name)", **_ALL_DRIVES}),
+        method="GET", bearer=token, timeout=15)
+    fs = d.get("files") or []
+    return fs[0] if fs else None
+
+
+def drive_folder_files(token: str, folder_id: str, cap: int = 200) -> list[dict]:
+    """Every non-folder file under a folder, recursing into subfolders (bounded by
+    `cap` so a huge tree can't run away). Paginates each level."""
+    out: list[dict] = []
+    stack, seen = [folder_id], set()
+    while stack and len(out) < cap:
+        fid = stack.pop()
+        if fid in seen:
+            continue
+        seen.add(fid)
+        page = ""
+        while len(out) < cap:
+            params = {"q": f"'{fid}' in parents and trashed=false", "pageSize": 100,
+                      "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink)",
+                      **_ALL_DRIVES}
+            if page:
+                params["pageToken"] = page
+            d = safehttp.call("https://www.googleapis.com/drive/v3/files?" + _q(params),
+                              method="GET", bearer=token, timeout=20)
+            for f in (d.get("files") or []):
+                if f.get("mimeType") == _FOLDER:
+                    stack.append(f["id"])
+                else:
+                    out.append(f)
+            page = d.get("nextPageToken") or ""
+            if not page:
+                break
+    return out[:cap]
+
+
 def drive_meet_transcripts(token: str, match: str = "", n: int = 20) -> list[dict]:
     """Google Meet transcript Docs, newest first. Meet saves each meeting's
     transcript to the organiser's Drive as a Google Doc whose name ends
