@@ -169,6 +169,20 @@ class TelegramBot:
             return d["result"].get("username") or "bot"
         return ""
 
+    def _reload(self) -> None:
+        """Adopt edited code without a restart. hotreload.reload_modules() has just
+        refreshed the modules, but a plain reload leaves THIS bot's collaborators
+        (doorway, console) on their old class — so rebuild them via from_console
+        with the SAME home and the passphrase we already hold in memory. The
+        offset/seen state lives on disk, so it carries over untouched."""
+        import sys as _sys
+        cmod = _sys.modules["rosco.console"]
+        tmod = _sys.modules["rosco.adapters.telegram"]
+        fresh = tmod.TelegramBot.from_console(cmod.Console(self.console.home),
+                                              self._passphrase, send=self._send)
+        self.__class__ = tmod.TelegramBot
+        self.__dict__.update(fresh.__dict__)
+
     def serve(self) -> None:
         who = self.whoami()
         if not who:
@@ -185,6 +199,10 @@ class TelegramBot:
             print("not paired yet: from your phone message @%s, then run "
                   "`python -m rosco pair` AT THIS CONSOLE (not on your phone) to link "
                   "it." % who)
+        from .. import hotreload as _hotreload
+        print("code edits hot-reload in place — push a change and I pick it up "
+              "within a poll cycle, no restart needed.")
+        _base = _hotreload.stamp()
         warned_conflict = False
         while True:
             try:
@@ -208,6 +226,25 @@ class TelegramBot:
                 # Network blip, Telegram hiccup. Wait a moment and carry on -
                 # the service is meant to sit up for weeks.
                 time.sleep(5)
+            # Hot-reload edits between polls (poll_once long-polls, so this check is
+            # effectively free and applies a change within one cycle). Never brings
+            # the bot down for an edit: a syntax error or a failed rebuild just keeps
+            # the last good version running.
+            try:
+                _names, _base = _hotreload.changed(_base)
+                if _names:
+                    _ok, _why = _hotreload.compiles_ok()
+                    if not _ok:
+                        print(f"  edit has a syntax error ({_why}); keeping the last "
+                              f"good version — fix and save again.")
+                    else:
+                        _hotreload.reload_modules()
+                        self._reload()
+                        print(f"  reloaded {', '.join(sorted(_names)[:5])} — kept "
+                              f"listening, no restart.")
+            except Exception as _e:
+                print(f"  hot-reload skipped ({type(_e).__name__}: {str(_e)[:60]}); "
+                      f"still on the last good version.")
 
     # ---- handling one message -------------------------------------------
 
