@@ -197,6 +197,25 @@ def _export(token: str, file_id: str, export_mime: str) -> str:
     return safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True) or ""
 
 
+def _pdf_text(data: bytes) -> str:
+    """Embedded text from a PDF's bytes (pypdf). Returns '' for a scanned / image-
+    only PDF (no embedded text — that needs OCR) or on any parse error. Page-capped
+    so a huge plan set can't hang the pull."""
+    try:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        out = []
+        for pg in reader.pages[:60]:
+            try:
+                out.append(pg.extract_text() or "")
+            except Exception:
+                pass
+        return "\n".join(out).strip()
+    except Exception:
+        return ""
+
+
 def drive_read(token: str, file_id: str, mime: str, max_chars: int = 8000) -> str:
     """The actual text of a Drive file, or '' if its type isn't readable text.
 
@@ -221,6 +240,15 @@ def drive_read(token: str, file_id: str, mime: str, max_chars: int = 8000) -> st
     elif _readable_media(mime):
         url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
         text = safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True)
+    elif (mime or "").lower() == "application/pdf":
+        try:
+            data = safehttp.call(
+                f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true",
+                method="GET", bearer=token, timeout=45, binary=True,
+                max_bytes=25 * 1024 * 1024)
+            text = _pdf_text(data)              # '' for a scanned/image-only PDF (needs OCR)
+        except Exception:
+            text = ""
     else:
         return ""
     return (text or "")[:max_chars]

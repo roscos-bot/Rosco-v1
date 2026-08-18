@@ -100,7 +100,7 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
          form: dict | None = None, bearer: str | None = None,
          headers: dict | None = None, timeout: int = 60,
          max_bytes: int = MAX_RESPONSE, allow_internal: bool = False,
-         raw: bool = False):
+         raw: bool = False, binary: bool = False):
     """Make one request and return the parsed JSON reply ({} for an empty body),
     or - with raw=True - the response body decoded as text. raw is for endpoints
     that return a document, not JSON (a Google Doc exported to text/plain, a CSV
@@ -183,6 +183,8 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
         raise ValueError(f"could not reach {parsed.hostname}: {reason}") from None
     if len(body) > max_bytes:
         raise ValueError(f"reply larger than {max_bytes} bytes; refused")
+    if binary:
+        return body                          # raw bytes (a PDF download, say), past every guard
     if raw:
         return body.decode("utf-8", "replace")
     if not body.strip():
