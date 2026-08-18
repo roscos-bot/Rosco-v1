@@ -1262,8 +1262,13 @@ function loadIngest(){
   // or pull Google Drive contents — one file, or a whole batch (search / recent)
   var drow=document.createElement("div");drow.className="ing-row";
   var dl=document.createElement("label");dl.textContent="or Drive";drow.appendChild(dl);
-  var dacc=document.createElement("input");dacc.type="text";dacc.value="personal";dacc.title="Google account";dacc.autocomplete="off";
-  dacc.style.cssText="width:90px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
+  var dacc=document.createElement("select");dacc.title="Connected Google account";
+  dacc.style.cssText="max-width:190px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
+  (function(){var o=document.createElement("option");o.value="personal";o.textContent="personal";dacc.appendChild(o);})();  // default while the list loads
+  api("/api/google/status").then(function(r){var accs=(r.ok&&r.j&&r.j.accounts)||[];
+    var conn=accs.filter(function(a){return a.connected;});
+    if(conn.length){dacc.innerHTML="";conn.forEach(function(a){var o=document.createElement("option");o.value=a.account;o.textContent=a.account+(a.email?" — "+a.email:"");dacc.appendChild(o);});}
+  }).catch(function(){});
   var din=document.createElement("input");din.type="text";din.placeholder="search/folder, or blank = recent (pulls all matching)";din.autocomplete="off";
   din.style.cssText="flex:1;min-width:150px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
   var fwrap=document.createElement("label");fwrap.style.cssText="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);cursor:pointer;white-space:nowrap;";
