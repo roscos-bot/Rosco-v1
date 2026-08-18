@@ -1266,14 +1266,17 @@ function loadIngest(){
   dacc.style.cssText="width:90px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
   var din=document.createElement("input");din.type="text";din.placeholder="search/folder, or blank = recent (pulls all matching)";din.autocomplete="off";
   din.style.cssText="flex:1;min-width:150px;background:var(--ground);border:1px solid var(--line-hot);color:var(--text);font:12.5px/1 var(--sans);padding:8px";
+  var fwrap=document.createElement("label");fwrap.style.cssText="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);cursor:pointer;white-space:nowrap;";
+  var fchk=document.createElement("input");fchk.type="checkbox";fchk.title="Re-pull files already ingested (bypass the 'already seen' skip)";
+  fwrap.appendChild(fchk);fwrap.appendChild(document.createTextNode("re-pull"));
   var dbtn=document.createElement("button");dbtn.className="ing-go";dbtn.textContent="Pull from Drive";
   var dmsg=document.createElement("span");dmsg.className="ksst";
   dbtn.addEventListener("click",function(){var nm=din.value.trim(),acc=dacc.value.trim()||"personal";
     dbtn.disabled=true;dmsg.className="ksst";dmsg.textContent=nm?("searching "+acc+" Drive…"):("pulling recent from "+acc+" Drive…");
-    post("/api/ingest/drive",{name:nm,account:acc,bulk:true}).then(function(r){dbtn.disabled=false;
+    post("/api/ingest/drive",{name:nm,account:acc,bulk:true,force:fchk.checked}).then(function(r){dbtn.disabled=false;
       if(r.ok){din.value="";dmsg.className="ksst g";dmsg.textContent="queued "+r.j.added+" from "+(r.j.file||acc);loadIngest();}
       else{dmsg.className="ksst r";dmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
-  drow.appendChild(dacc);drow.appendChild(din);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
+  drow.appendChild(dacc);drow.appendChild(din);drow.appendChild(fwrap);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
   // or pull a file from a GitHub repo (needs a github_token stored)
   var grow=document.createElement("div");grow.className="ing-row";
   var gl=document.createElement("label");gl.textContent="or GitHub";grow.appendChild(gl);

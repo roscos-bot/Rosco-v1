@@ -246,7 +246,20 @@ def drive_read(token: str, file_id: str, mime: str, max_chars: int = 8000) -> st
                 f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true",
                 method="GET", bearer=token, timeout=45, binary=True,
                 max_bytes=25 * 1024 * 1024)
-            text = _pdf_text(data)              # '' for a scanned/image-only PDF (needs OCR)
+            text = _pdf_text(data)
+            if not text:                        # scanned / image-only PDF -> local Tesseract OCR
+                from .. import ocr
+                text = ocr.pdf_ocr_text(data)
+        except Exception:
+            text = ""
+    elif (mime or "").lower().startswith("image/"):
+        try:
+            data = safehttp.call(
+                f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true",
+                method="GET", bearer=token, timeout=45, binary=True,
+                max_bytes=25 * 1024 * 1024)
+            from .. import ocr
+            text = ocr.image_text(data)         # OCR the image
         except Exception:
             text = ""
     else:
