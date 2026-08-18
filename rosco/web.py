@@ -1543,10 +1543,11 @@ class ConsoleServer(ThreadingHTTPServer):
             n = self._queue_text(s, content, source=src)
             return {"ok": True, "added": n, "file": hit.get("name", "")}
         files = g.drive_search(token, name, 40) if name else g.drive_recent(token, 40)
+        found = len(files)
         # Skip files already queued or learned, so re-running a pull doesn't ingest
         # the same documents over again. `force` bypasses it for a deliberate re-pull.
         seen = set() if body.get("force") else Ingest(log, Vault(log)).seen_sources()
-        added = skipped = 0
+        added = skipped = unreadable = 0
         for f in files:
             src = f"drive:{f.get('name','')}"[:80]
             if src in seen:
@@ -1555,19 +1556,29 @@ class ConsoleServer(ThreadingHTTPServer):
             content = g.drive_read(token, f.get("id", ""), f.get("mimeType", ""),
                                    max_chars=20000)
             if not content:
-                continue                      # a PDF/image/binary — skip, don't queue noise
+                unreadable += 1               # a PDF/image/binary — skip, don't queue noise
+                continue
             sources.save(self.console.home, src, content)
             added += Ingest(log).add(
                 [{"text": content, "business": "", "confidence": 0.0,
                   "why": "drive file", "summary": ""}], source=src)
         if not added:
-            if skipped:
-                return {"ok": True, "added": 0, "skipped": skipped,
-                        "file": f"nothing new — {skipped} already ingested "
-                                f"(send force to re-pull)"}
-            raise ValueError(f"no readable text files in {account} Drive for "
-                             f"'{name or 'recent'}' (Docs/Sheets/text only)")
-        return {"ok": True, "added": added, "skipped": skipped,
+            # Distinct diagnostics so a failed pull says WHY, not a catch-all.
+            if found == 0:
+                raise ValueError(
+                    f"the '{account}' account's Drive returned 0 files for "
+                    f"'{name or 'recent'}'. Wrong account, or those files aren't in a "
+                    f"Drive this account can reach (e.g. a different Google Workspace).")
+            if skipped and not unreadable:
+                return {"ok": True, "added": 0, "skipped": skipped, "found": found,
+                        "file": f"nothing new — all {skipped} of {found} already "
+                                f"ingested (send force to re-pull)"}
+            raise ValueError(
+                f"found {found} file(s) in '{account}' Drive but none had extractable "
+                f"text ({unreadable} were PDFs/images/binaries — only Docs, Sheets and "
+                f"plain text export)"
+                + (f"; {skipped} already ingested" if skipped else "") + ".")
+        return {"ok": True, "added": added, "skipped": skipped, "found": found,
                 "file": f"{added} from {account} Drive" + (f" · '{name}'" if name else " (recent)")
                         + (f" ({skipped} already ingested, skipped)" if skipped else "")}
 
