@@ -456,6 +456,13 @@ class ConsoleServer(ThreadingHTTPServer):
                 external_used = True
         except Exception:
             pass
+        try:
+            web_ctx = self._web_context(log, s.passphrase, msg)
+            if web_ctx:
+                ctx += "\n\n" + _EXTERNAL_DATA_GUARD + "\n" + web_ctx
+                external_used = True       # web results are attacker-controllable too
+        except Exception:
+            pass                           # search is best-effort; never breaks chat
         # Eyes on the dashboard: what Ross is actually looking at, so 'this' / 'the
         # queue' / 'this node' resolve to what's on screen. His own UI - context,
         # never instructions.
@@ -1039,6 +1046,44 @@ class ConsoleServer(ThreadingHTTPServer):
                     "merge on GitHub): " + res.get("pr", ""))
         except Exception as e:
             return f"(couldn't open the PR — {str(e)[:150]})"
+
+    def _web_context(self, log, passphrase, msg):
+        """Search the open web when the question needs current/external facts, and
+        hand the top results back for the agent to answer from — WITH citations.
+
+        Best-effort: no backend, no results, or any hiccup returns '' and Rosco
+        answers from what it knows. Reads only, and the results are DATA not
+        instructions — the caller wraps them in the external-content guard and
+        marks the turn external_used (so a poisoned result can't seal a lesson)."""
+        low = (msg or "").lower()
+        wants = (low.startswith(("search ", "look up ", "google ", "find ", "web ")) or
+                 any(w in low for w in (
+                     "search the web", "look this up", "look that up", "look it up",
+                     "on the web", "on the internet", " online", "latest", "current",
+                     "right now", "today", "this week", "recent", "in the news",
+                     "who is ", "who's ", "the price of", "how much is", "how much does",
+                     "weather", "when is ", "when does", "release date", "cite a source",
+                     "find me", "google")))
+        if not wants:
+            return ""
+        from . import search
+        vault = Vault(log, key=self.console._vault_key(passphrase))
+        q = re.sub(r"^\s*(please\s+)?(search( the web)?( for)?|look (this|that|it) up|"
+                   r"look up|google|find( me)?)\s+", "", msg.strip(), flags=re.I).strip()
+        try:
+            results = search.web_search(vault, q or msg, n=5)
+        except Exception:
+            return ""
+        if not results:
+            return ""
+        lines = ['WEB SEARCH RESULTS for "' + (q or msg)[:120] + '" (via '
+                 + search.configured(vault) + "):"]
+        for i, r in enumerate(results, 1):
+            lines.append(str(i) + ". " + r["title"] + "\n   " + r["url"]
+                         + ("\n   " + r["snippet"] if r["snippet"] else ""))
+        lines.append("Answer from these when they're relevant and CITE the url(s) you "
+                     "used. If they don't cover it, say so — never invent a fact or link.")
+        return "\n".join(lines)
 
     def _github_context(self, log, passphrase, msg):
         """When the message is about a repo, read it live: list the repos the
