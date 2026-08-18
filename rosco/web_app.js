@@ -560,17 +560,21 @@ function dashState(){
   var visible=ctx?((ctx.innerText||ctx.textContent||"").replace(/\s+/g," ").trim().slice(0,700)):"";
   return {tool:tool,node:node,visible:visible};
 }
-function sendChat(){
+// `voiceMsg` (a string) means this came from the mic — use it as the message and
+// SPEAK the reply back. A typed message leaves both untouched.
+function sendChat(voiceMsg){
   var inp=document.getElementById("chatin"),btn=document.getElementById("chatsend");
-  var msg=inp.value.trim(); if(!msg) return;
-  bubble("you","Ross",msg); inp.value=""; btn.disabled=true;
+  var fromVoice=(typeof voiceMsg==="string");
+  var msg=(fromVoice?voiceMsg:inp.value).trim(); if(!msg) return;
+  bubble("you","Ross",msg); if(!fromVoice)inp.value=""; btn.disabled=true;
   var waiting=bubble("wait","Rosco","thinking…");
   post("/api/chat",{message:msg,ui:dashState()}).then(function(res){
-    waiting.remove(); btn.disabled=false; inp.focus();
-    if(res.ok){ bubble("ros","Rosco", res.j.reply||"…"); }
-    else{ bubble("ros","Rosco", (res.j&&res.j.error)||"couldn't reach the model."); }
+    waiting.remove(); btn.disabled=false; if(!fromVoice)inp.focus();
+    var reply=res.ok?(res.j.reply||"…"):((res.j&&res.j.error)||"couldn't reach the model.");
+    bubble("ros","Rosco",reply);
+    if(fromVoice) speak(reply);
   }).catch(function(){ waiting.remove(); btn.disabled=false;
-    bubble("ros","Rosco","server unreachable."); });
+    var e="server unreachable."; bubble("ros","Rosco",e); if(fromVoice)speak(e); });
 }
 document.getElementById("chatsend").addEventListener("click",sendChat);
 // Starts readonly so Chrome's password manager won't pair it with the unlock
@@ -578,6 +582,68 @@ document.getElementById("chatsend").addEventListener("click",sendChat);
 // the moment it's focused so typing works normally.
 document.getElementById("chatin").addEventListener("focus",function(){this.removeAttribute("readonly");});
 document.getElementById("chatin").addEventListener("keydown",function(e){if(e.key==="Enter")sendChat();});
+
+// ---- voice: full-listen mode ----------------------------------------------
+// When on, the console listens continuously. Only an utterance that CONTAINS the
+// wake word "rosco" is taken as an instruction (everything else is ignored, so
+// ambient talk and the TV don't trigger it); the words after "rosco" are sent to
+// the chat and the reply is spoken back. The browser can't verify WHO is speaking,
+// so the wake word + your unlocked console (physical access) are the gate — true
+// voice-fingerprinting would need a model. Zero dependencies: browser-native
+// SpeechRecognition + SpeechSynthesis, both localhost-safe.
+var wantListen=false, recog=null;
+var WAKE=/\b(rosco|roscoe|rosko|rosca|ross[\s-]?go|russ[\s-]?co)\b/i;
+function voiceSupported(){return !!(window.SpeechRecognition||window.webkitSpeechRecognition);}
+function speak(text){
+  if(!window.speechSynthesis) return;
+  var t=(text||"").replace(/https?:\/\/\S+/g," (link) ")                 // don't read URLs aloud
+    .replace(/[*_`#>]/g,"")                                              // markdown
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu,"")  // emoji/arrows
+    .replace(/\s+/g," ").trim().slice(0,700);
+  if(!t) return;
+  try{window.speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(t);u.rate=1.05;window.speechSynthesis.speak(u);}catch(e){}
+}
+function vhint(txt,acting){var h=document.getElementById("vhint");if(!h)return;
+  h.textContent=txt||""; h.className="vhint"+(acting?" act":"");}
+function handleUtterance(raw){
+  // Ignore anything heard WHILE Rosco is speaking, so it never triggers on its own
+  // voice (no feedback loop). Barge-in can come later.
+  if(window.speechSynthesis&&window.speechSynthesis.speaking) return;
+  var t=(raw||"").trim(); if(!t) return;
+  var m=t.match(WAKE);
+  if(!m){ vhint("· "+t.slice(0,64),false); return; }                     // not addressed to Rosco
+  var instruction=t.slice(m.index+m[0].length).replace(/^[\s,.:!?-]+/,"").trim();
+  if(!instruction){ vhint("▶ yes?",true); speak("Yes?"); return; }
+  vhint("▶ "+instruction.slice(0,64),true);
+  sendChat(instruction);
+}
+function setListenUI(on){var b=document.getElementById("micBtn");
+  if(b){b.classList.toggle("on",on);b.title=on?"Listening — click to stop":"Voice: click to listen";}
+  if(!on)vhint("",false);}
+function startListen(){
+  if(!voiceSupported()){alert("This browser can't do speech recognition — open the console in Chrome or Edge.");return;}
+  wantListen=true;
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  try{recog=new SR();}catch(e){wantListen=false;return;}
+  recog.continuous=true; recog.interimResults=false; recog.lang="en-US";
+  recog.onresult=function(e){for(var i=e.resultIndex;i<e.results.length;i++){
+    if(e.results[i].isFinal)handleUtterance(e.results[i][0].transcript);}};
+  recog.onerror=function(e){ if(e.error==="not-allowed"||e.error==="service-not-allowed"){
+    wantListen=false;setListenUI(false);alert("Rosco needs microphone permission to listen — allow it and click the mic again.");}};
+  recog.onend=function(){ if(wantListen){try{recog.start();}catch(e){}} else setListenUI(false); };  // auto-restart = always-on
+  try{recog.start();setListenUI(true);}catch(e){}
+  try{localStorage.setItem("roscoListen","1");}catch(e){}
+}
+function stopListen(){wantListen=false;try{if(recog)recog.stop();}catch(e){}
+  try{if(window.speechSynthesis)window.speechSynthesis.cancel();}catch(e){}
+  setListenUI(false);try{localStorage.removeItem("roscoListen");}catch(e){}}
+function toggleListen(){ wantListen?stopListen():startListen(); }
+var _mic=document.getElementById("micBtn");
+if(_mic)_mic.addEventListener("click",toggleListen);
+// Re-arm on load if it was on last session — the origin already holds mic
+// permission, so start() usually works without a fresh click. If the browser
+// blocks it, the mic just shows off and one click resumes.
+try{ if(localStorage.getItem("roscoListen")==="1"&&voiceSupported()) startListen(); }catch(e){}
 
 // ---- settings: the CLI's config commands, as forms ----
 var CFG=[
