@@ -100,6 +100,58 @@ def web_search(vault, query: str, *, n: int = 5, timeout: int = 12) -> list:
         return []
 
 
+# --- intent: does a question want the open web, and what's the actual query? ---
+# One home for the heuristic (both the console chat and the doorway call it), and
+# deliberately GENEROUS: an extra search only adds context the model can ignore,
+# while a missed one leaves Rosco saying "I have no web search tool" on a question
+# that plainly needed it (e.g. "look to see how other companies use X").
+_WEB_START = ("search ", "look up ", "google ", "find ", "web ", "research ",
+              "look into ", "look to ")
+_WEB_PHRASES = (
+    # explicit intent
+    "search the web", "look this up", "look that up", "look it up", "look up",
+    "on the web", "on the internet", " online", "google", "web search",
+    # freshness / current facts
+    "latest", "current", "currently", "right now", "today", "tonight", "this week",
+    "this year", "recent", "in the news", "news about", "release date", "released",
+    "who is ", "who's ", "the price of", "how much is", "how much does", "weather",
+    "when is ", "when does", "cite a source", "find me", "find out",
+    # research / precedent / how-OTHERS-do-it (the class that was being missed)
+    "look to see", "look into", "look at how", "how other", "other companies",
+    "how companies", "how do compan", "how does compan", "how businesses",
+    "how firms", "how people use", "how others", "how the industry",
+    "industry standard", "common practice", "best practice", "precedent",
+    "examples of", "example of", "who else", "research", "compare ", "what do other",
+)
+# "how do/does <...> companies/people/others/industry ..." — the research shape.
+_HOW_OTHERS = re.compile(
+    r"\bhow (do|does|is|are|can|should|might|would|did)\b.*\b"
+    r"(compan|firm|business|people|other|industr|anyone|everyone|startup|team|"
+    r"folks|vendors|builders|developers|owners)\b")
+
+
+def wants_web(text: str) -> bool:
+    """True if a question is better answered from the open web than the vault.
+    Generous by design — see the note above."""
+    low = (text or "").lower()
+    if not low.strip():
+        return False
+    return (low.startswith(_WEB_START) or any(p in low for p in _WEB_PHRASES)
+            or bool(_HOW_OTHERS.search(low)))
+
+
+def clean_query(text: str) -> str:
+    """Strip a leading 'can you search/look up/google/research ...' so what reaches
+    the engine is the SUBJECT, not the request. Falls back to the whole text."""
+    text = (text or "").strip()
+    q = re.sub(
+        r"^\s*(can you\s+|could you\s+|would you\s+|please\s+|hey\s+|go\s+)*"
+        r"(search( the web)?( for)?|look (this|that|it) up|look up|look into|"
+        r"look to see( how)?|google|research|find( me| out)?)\s+",
+        "", text, flags=re.I).strip()
+    return q or text
+
+
 def _clip(s: str, n: int = 300) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()[:n]
 
