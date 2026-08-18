@@ -172,9 +172,15 @@
   .ing-add textarea:focus{border-color:var(--amber-dim)}
   .ing-bar{font:700 9px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:12px}
   .ing-card{border:1px solid var(--line-hot);background:var(--sunk);padding:14px}
-  .ing-text{font:13.5px/1.55 var(--sans);color:var(--head);margin-bottom:12px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
-  .ing-reads{font:12.5px/1.5 var(--sans);color:var(--text);background:var(--sunk);border-left:2px solid var(--teal);padding:7px 9px;margin-bottom:10px}
-  .ing-reads .rl{font:700 8px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--teal);display:block;margin-bottom:3px}
+  .ing-text{font:12px/1.5 var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:200px;overflow:auto;margin-top:7px;padding:9px 10px;background:var(--ground);border:1px solid var(--line)}
+  .ing-reads{font:13px/1.55 var(--sans);color:var(--head);background:var(--raise);border-left:3px solid var(--teal);padding:9px 11px;margin-bottom:11px;max-height:180px;overflow:auto}
+  .ing-reads .rl{font:700 8px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--teal);display:block;margin-bottom:4px}
+  .ing-src{margin-bottom:11px}
+  .ing-src>summary{font:700 8px/1.4 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint);cursor:pointer;list-style:none;user-select:none;padding:2px 0}
+  .ing-src>summary::-webkit-details-marker{display:none}
+  .ing-src>summary::before{content:"\25B8  ";color:var(--dim)}
+  .ing-src[open]>summary::before{content:"\25BE  "}
+  .ing-src>summary:hover{color:var(--text)}
   .ing-prop{display:flex;align-items:center;gap:6px;margin-bottom:10px;font:700 9px/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
   .ing-prop b{color:var(--amber)}
   .ing-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}

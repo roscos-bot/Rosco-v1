@@ -1386,11 +1386,13 @@ function renderLadder(rd){
 function isEmail(x){return !!x&&(x.kind==="email"||((x.source||"").indexOf("gmail:")===0));}
 function ingestCard(item){
   var card=document.createElement("div");card.className="ing-card";
-  var txt=document.createElement("div");txt.className="ing-text";txt.textContent=item.text;card.appendChild(txt);
   var shorthand=item.summary||"";   // the distilled form that actually gets learned (not the raw text)
   var touched=false;                // did Ross pick a business himself? then don't auto-move it
+  // Lead with the shorthand — what actually gets learned — since judging IT (and
+  // the business) is the decision. The raw source is secondary, collapsed below,
+  // so it never buries the thing you're deciding on.
   var rd=document.createElement("div");rd.className="ing-reads";
-  rd.innerHTML="<span class='rl'>Rosco's shorthand (this is what gets learned)</span> <span class='rv'>"+(item.summary?esc(item.summary):"distilling…")+"</span>";
+  rd.innerHTML="<span class='rl'>Rosco's shorthand · this is what gets learned</span> <span class='rv'>"+(item.summary?esc(item.summary):"distilling…")+"</span>";
   card.appendChild(rd);
   var prop=document.createElement("div");prop.className="ing-prop";
   function showProp(biz,conf,why){prop.innerHTML="";
@@ -1401,6 +1403,12 @@ function ingestCard(item){
     else{var s0=document.createElement("span");s0.textContent=(item.summary?"Rosco isn't sure — you place this one":"reading…");prop.appendChild(s0);}}
   showProp(item.business,item.confidence,item.why);
   card.appendChild(prop);
+  // The raw source — collapsed by default so it never buries the shorthand. When
+  // opened it's a single contained scroll box (no more double-scrollbar).
+  var src=document.createElement("details");src.className="ing-src";
+  var sm=document.createElement("summary");sm.textContent="Original source · "+(item.text||"").length.toLocaleString()+" chars";
+  var txt=document.createElement("div");txt.className="ing-text";txt.textContent=item.text||"";
+  src.appendChild(sm);src.appendChild(txt);card.appendChild(src);
   var row=document.createElement("div");row.className="ing-row";
   var lab=document.createElement("label");lab.textContent="File into";row.appendChild(lab);
   var sel=document.createElement("select");
