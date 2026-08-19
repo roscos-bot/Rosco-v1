@@ -11,6 +11,19 @@ escalates to the Chief of Staff; the Chief of Staff escalates to Ross and
 stops. Nothing skips a level, which is what stops a lawyer agent quietly
 deciding something that belonged to the man who owns the company.
 
+THE DOTTED LINE — ROSCO'S OWN BENCH. Rosco is not just the Admiral; it keeps its
+own bench of PROFESSION heads (a marketing, books, law, it, ops), the centers of
+excellence on the top floor. The captains are separate companies (each a floor of
+one building); their like-profession lieutenants answer on TWO lines - the solid
+line to their own captain (run this company's work), and a DOTTED line up to
+Rosco's matching head (report what worked, and consult it while working). Rosco's
+marketing head runs no one's campaigns; it curates what is working across every
+floor and hands the playbook down, so a win on one floor becomes a practice on all
+of them. That cross-company sharing is a deliberate act of the parent - it happens
+here, through Rosco, never by one captain reading another's books. These heads read
+across all captains for their craft (business '*', like Rosco); they advise and
+curate, they command nothing.
+
 Ross holds no rank. He is the civil authority the whole structure answers to,
 and the one thing in the system that cannot be delegated - see grants.give(),
 which refuses any other author.
@@ -93,10 +106,33 @@ _BENCH = {
 _ROLES = (("law", LIEUTENANT), ("marketing", LIEUTENANT),
           ("books", QUARTERMASTER), ("it", WARRANT), ("ops", LIEUTENANT))
 
+# Rosco's OWN bench: the corporate function heads / centers of excellence, one per
+# profession. Unlike a captain's bench (scoped to one business), these read ACROSS
+# every captain for their craft (business '*', like Rosco) and report to Rosco. Each
+# captain's <domain> lieutenant reports its wins up to, and consults, the matching
+# head here - the "dotted line" (see rosco_lead()). They keep the same profession
+# RANK as a captain's lieutenant; the '*' scope is what makes them corporate. Names
+# are the standard each craft steers by. A head with no name here just isn't staffed
+# yet. `ops` is construction/site - staffed for when a builder captain's ops work
+# starts feeding it.
+_ROSCO_BENCH = {
+    "law":       "Codex",     # the body of law everyone references
+    "marketing": "Beacon",    # the signal every floor steers by
+    "books":     "Sovereign", # the money standard
+    "it":        "Cortex",    # the shared technical brain
+    "ops":       "Keystone",  # the load-bearing operational standard
+}
+
 
 def roster() -> list[Agent]:
     """Everyone, in order of precedence."""
     out = [Agent("Rosco", ADMIRAL, "*", "chief of staff", "ross")]
+    # Rosco's own bench: the cross-captain profession heads (business '*'), right
+    # under the Admiral and above the captains' floors functionally.
+    for role, rank in _ROLES:
+        name = _ROSCO_BENCH.get(role)
+        if name:
+            out.append(Agent(name, rank, "*", role, "Rosco"))
     for biz in BUSINESSES:
         # Rosco (the Admiral) is chief of staff over '*' and also holds the 'system'
         # code vault as captain - so skip minting a duplicate agent when a business's
@@ -151,6 +187,22 @@ def specialist_for(business: str, domain: str) -> Agent | None:
         return None
     for a in roster():
         if a.business == business and a.role == d and a.rank != CAPTAIN:
+            return a
+    return None
+
+
+def rosco_lead(domain: str) -> Agent | None:
+    """Rosco's function head for `domain` - the cross-captain center of excellence a
+    captain's <domain> lieutenant reports to and consults (the dotted line UP). None
+    for an unknown domain or an unstaffed head. Business '*': it reads every captain's
+    <domain> work and curates the shared playbook. This is the ONLY sanctioned path
+    for one captain's practice to reach another - through Rosco, never captain to
+    captain."""
+    d = (domain or "").strip().lower()
+    if d not in DOMAINS:
+        return None
+    for a in roster():
+        if a.business == "*" and a.role == d and a.reports_to == "Rosco":
             return a
     return None
 

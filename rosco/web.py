@@ -499,12 +499,33 @@ class ConsoleServer(ThreadingHTTPServer):
             spec = roster.specialist_for(dbiz, roster.domain_of(msg))
             advisor = spec.name if spec else roster.business(dbiz).captain
             try:
+                # THE DOTTED LINE. A domain specialist first consults Rosco's matching
+                # function head (the cross-captain center of excellence) for what's
+                # worked on the OTHER floors, and answers informed by it — the only
+                # sanctioned path for one captain's practice to reach another (through
+                # Rosco, never captain-to-captain). Best-effort: no head, no lift.
+                lead_ctx = ""
+                if spec:
+                    lead = roster.rosco_lead(spec.role)
+                    if lead:
+                        play = Agent(lead.name, log, think=think, meter=meter).answer(
+                            f"Across every captain, what has worked in {spec.role} that "
+                            f"bears on this, and what to avoid? {msg}",
+                            for_person=advisor, history=hist)
+                        if play and play.strip():
+                            lead_ctx = (
+                                f"\n\nCROSS-COMPANY {spec.role.upper()} PLAYBOOK from Rosco's "
+                                f"{spec.role} head ({lead.name}) — what's worked across the "
+                                f"other captains. Borrow what fits THIS business and adapt it; "
+                                f"never copy another company's specifics blind:\n"
+                                + play.strip()[:900])
                 take = Agent(advisor, log, think=think, meter=meter).answer(
-                    msg, for_person="rosco", history=hist)
+                    msg, for_person="rosco", context=lead_ctx, history=hist)
                 if take and take.strip():
                     role = f"{spec.role} hand" if spec else "captain"
+                    seen = f" (after consulting Rosco's {spec.role} playbook)" if lead_ctx else ""
                     ctx += (f"\n\nYOUR {role.upper()} FOR {roster.business(dbiz).title}"
-                            f" — {advisor} — looked at this first (they report to you; "
+                            f" — {advisor} — looked at this first{seen} (they report to you; "
                             "you're relaying to Ross). Their grounded take:\n"
                             + take.strip()[:1200]
                             + "\nLean on it and keep your own voice — you own the "
