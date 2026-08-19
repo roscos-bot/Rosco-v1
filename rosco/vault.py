@@ -26,7 +26,7 @@ an agent that cannot tell them apart will eventually present its own guess back
 to Ross as his own instruction.
 
 It is siloed by construction. A lesson belongs to a business. Remington's FFL
-knowledge is RUM's; asking HavenMind about it returns nothing, because the
+knowledge is RUM's; asking Bessemer about it returns nothing, because the
 scope is part of the record rather than a filter applied afterwards.
 
 Only Rosco reads across businesses, and only to enrich - see grants.py, where
@@ -110,7 +110,7 @@ def _lexical_rank(lessons: list, query: str) -> list:
 class Lesson:
     """One thing an agent believes, and why."""
     id: str
-    agent: str                 # 'Remington', 'HavenMind', ...
+    agent: str                 # 'Remington', 'Bessemer', ...
     business: str              # 'rum', 'steelhaven', ...
     text: str
     basis: str = INFERRED

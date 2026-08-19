@@ -2314,8 +2314,8 @@ class ConsoleServer(ThreadingHTTPServer):
             what = _ledger_line(kind, b)
             if not what:
                 continue
-            # Prefer the AGENT that did it (Remington, HavenMind, Rosco) over the
-            # raw actor, so a lesson reads "HavenMind learned…" not its source path.
+            # Prefer the AGENT that did it (Remington, Bessemer, Rosco) over the
+            # raw actor, so a lesson reads "Bessemer learned…" not its source path.
             rows.append({"at": ev.get("ts", ""),
                          "by": b.get("agent") or ev.get("actor") or "rosco",
                          "business": b.get("business", ""), "kind": kind, "what": what,
@@ -3126,7 +3126,7 @@ def _account_for_msg(text):
             or "captain morgan" in low or "captainmorgan" in low):
         return "rum"
     if ("steelhaven" in low or "steel haven" in low or "permahaven" in low
-            or "havenmind" in low):
+            or "bessemer" in low or "besse" in low):
         return "steelhaven"
     return "personal"
 
@@ -3137,7 +3137,7 @@ def _account_for_msg(text):
 # is Rosco's own lane (he is Ross's chief of staff, not a thing he delegates), and
 # 'system' is Rosco's own code. Neither is a captain the chat delegates TO.
 _BIZ_TOKENS = {
-    "steelhaven":    (r"steelhaven", r"steel haven", r"permahaven", r"havenmind"),
+    "steelhaven":    (r"steelhaven", r"steel haven", r"permahaven", r"bessemer", r"\bbesse\b"),
     "rum":           (r"\brum\b", r"romann", r"rumachines", r"captain\s?morgan"),
     "river-city":    (r"river[ \-]city", r"\brce\b", r"\btwain\b"),
     "sugar-creek":   (r"sugar[ \-]creek", r"\bdrones?\b", r"agras", r"\bharrier\b"),

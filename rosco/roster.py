@@ -57,7 +57,7 @@ class Business:
 
 
 BUSINESSES = (
-    Business("steelhaven", "SteelHaven Homes", "HavenMind", "ross@steelhaven.homes", True, "SHH"),
+    Business("steelhaven", "SteelHaven Homes", "Bessemer", "ross@steelhaven.homes", True, "SHH"),
     Business("rum", "Romann Utility Machines", "CaptainMorgan", "ross@rumachines.com", True, "RUM"),
     Business("river-city", "River City Enterprises", "Twain", "rossfusz@gmail.com", False, "RCE"),
     Business("sugar-creek", "Sugar Creek Drones", "Harrier", "rossfusz@gmail.com", False, "SCD"),
@@ -79,7 +79,7 @@ BUSINESSES = (
 # stored here - populating this with (rank, business, role, reports_to) would make
 # roster() mint bogus agents.
 _BENCH = {
-    "steelhaven":    ("Steele", "Forge", "Nate Plumb", "Gage", "Girder"),
+    "steelhaven":    ("Steele", "Herald", "Nate Plumb", "Gage", "Girder"),
     "rum":           ("Remington", "Flint", "Nate Chambers", "Bolt"),
     "river-city":    ("Banks", "Marlowe", "Nate Wharton", "Keyes"),
     "sugar-creek":   ("Fields", "Bloom", "Nate Bushel", "Swift"),

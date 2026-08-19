@@ -138,7 +138,7 @@ class Models:
 
         The rest of the system stays role-addressed - swap the workhorse once,
         it changes everywhere. This is the deliberate exception: when Ross wants
-        HavenMind on Opus but a bulk classifier on Haiku, he says so per agent,
+        Bessemer on Opus but a bulk classifier on Haiku, he says so per agent,
         and that agent's think() uses it. Still only Ross - a model choice reads
         his mail and spends his money, the same reason choose() is his alone.
         """

@@ -5,7 +5,7 @@ a meeting ends. So rather than scan Drive on a blind timer, this is driven by th
 CALENDAR: it looks for a tactical meeting that has ENDED and been given a grace
 window (time for Meet to write the recap), and only then pulls the fresh
 transcript from the SteelHaven Drive, distils it into a compact shorthand
-(decisions, action items + owners, numbers, open threads — the gist HavenMind can
+(decisions, action items + owners, numbers, open threads — the gist Bessemer can
 lean on, never the raw transcript), and learns it straight into the SteelHaven
 vault. No review step: Ross asked for it to run on its own.
 
@@ -139,7 +139,7 @@ def ingest_new(console, passphrase, *, match: str = MATCH,
 
     models, meter = Models(log, vault), Meter(log)
     seen = _seen(log, vault)
-    captain = knowledge._captain(STEELHAVEN) or "HavenMind"
+    captain = knowledge._captain(STEELHAVEN) or "Bessemer"
     ingested = skipped = 0
     names: list[str] = []
     for f in g.drive_meet_transcripts(token, match=match):

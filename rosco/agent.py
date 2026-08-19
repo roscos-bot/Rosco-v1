@@ -2,7 +2,7 @@
 
 The roster says who the agents are; this is what one of them IS when it runs.
 Built general, so any roster entry becomes an agent, and demonstrated first as
-HavenMind for SteelHaven.
+Bessemer for SteelHaven.
 
 THE LOOP, and every step is observable:
 
