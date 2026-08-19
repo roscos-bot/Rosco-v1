@@ -465,6 +465,13 @@ class ConsoleServer(ThreadingHTTPServer):
 
         def think(system, user):
             return complete(models, "chat", system, user, meter=meter, agent="Rosco")
+        # Rosco's OWN answer to Ross gets a bigger output budget so a full strategic
+        # reply doesn't get cut off mid-sentence (the default 800 truncates a long
+        # matrix scoring). The consult thinks keep the default — their takes are
+        # sliced short when folded into context, so extra tokens there are wasted.
+        def think_full(system, user):
+            return complete(models, "chat", system, user, meter=meter, agent="Rosco",
+                            max_tokens=2000)
         ctx = _now_line()                  # so the model can resolve 'Tuesday 3pm'
         try:                               # tell it its REAL model, so it stops guessing
             ch = models.pin_for("Rosco") or models.pick("chat")
@@ -570,7 +577,7 @@ class ConsoleServer(ThreadingHTTPServer):
             except Exception:
                 pass                       # a consult hiccup never breaks the chat
         try:
-            raw = Agent("Rosco", log, think=think, meter=meter).answer(
+            raw = Agent("Rosco", log, think=think_full, meter=meter).answer(
                 msg, for_person="ross", context=ctx, history=hist, confirm_intent=True)
         except NoModel as e:
             return f"(no chat model set - {e})"
@@ -610,7 +617,7 @@ class ConsoleServer(ThreadingHTTPServer):
             ctx += "\n\n" + _EXTERNAL_DATA_GUARD + "\n" + _block
             external_used = True
             try:
-                raw = Agent("Rosco", log, think=think, meter=meter).answer(
+                raw = Agent("Rosco", log, think=think_full, meter=meter).answer(
                     msg, for_person="ross", context=ctx, history=hist, confirm_intent=True)
             except Exception:
                 break
