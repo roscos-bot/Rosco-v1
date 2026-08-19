@@ -1551,9 +1551,13 @@ class ConsoleServer(ThreadingHTTPServer):
             sources.save(self.console.home, src, content)
             n = self._queue_text(s, content, source=src)
             return {"ok": True, "added": n, "file": hit.get("name", "")}
-        # A name first tries to resolve a FOLDER (pull its whole tree); else it's a
+        # 'whole' sweeps the entire drive (every shared drive + My Drive). Otherwise a
+        # name first tries to resolve a FOLDER (pull its whole tree), else it's a
         # name/content search; blank is the recent list.
-        if name:
+        whole = bool(body.get("whole"))
+        if whole:
+            files = g.drive_all_files(token, cap=500)
+        elif name:
             folder = g.drive_find_folder(token, name)
             files = (g.drive_folder_files(token, folder["id"]) if folder
                      else g.drive_search(token, name, 40))
@@ -1621,8 +1625,9 @@ class ConsoleServer(ThreadingHTTPServer):
             if found == 0:
                 raise ValueError(
                     f"the '{account}' account's Drive returned 0 files for "
-                    f"'{name or 'recent'}'. Wrong account, or those files aren't in a "
-                    f"Drive this account can reach (e.g. a different Google Workspace).")
+                    f"'{'whole drive' if whole else (name or 'recent')}'. Wrong account, "
+                    f"or those files aren't in a Drive this account can reach "
+                    f"(e.g. a different Google Workspace).")
             if skipped and not unreadable:
                 return {"ok": True, "added": 0, "skipped": skipped, "found": found,
                         "file": f"nothing new — all {skipped} of {found} already "
@@ -1637,8 +1642,9 @@ class ConsoleServer(ThreadingHTTPServer):
                 + (f", {skipped} already ingested" if skipped else "")
                 + "." + hint
                 + " If a type you want is in that list, tell me and I'll add it.")
+        label = " (whole drive)" if whole else (f" · '{name}'" if name else " (recent)")
         return {"ok": True, "added": added, "skipped": skipped, "found": found,
-                "file": f"{added} from {account} Drive" + (f" · '{name}'" if name else " (recent)")
+                "file": f"{added} from {account} Drive" + label
                         + (f" ({skipped} already ingested, skipped)" if skipped else "")}
 
     def ingest_github(self, s, body):

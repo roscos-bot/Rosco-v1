@@ -196,6 +196,29 @@ def drive_folder_files(token: str, folder_id: str, cap: int = 200) -> list[dict]
     return out[:cap]
 
 
+def drive_all_files(token: str, cap: int = 500) -> list[dict]:
+    """Every non-folder file the account can reach — across My Drive AND every shared
+    drive (corpora=allDrives) — newest first, paginated, bounded by `cap` so a giant
+    company drive can't run away. This is the 'pull my whole drive' sweep; folders are
+    filtered out (their contents come through as files in their own right)."""
+    out: list[dict] = []
+    page = ""
+    while len(out) < cap:
+        params = {"q": f"trashed=false and mimeType != '{_FOLDER}'", "pageSize": 100,
+                  "corpora": "allDrives", "orderBy": "modifiedTime desc",
+                  "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink)",
+                  **_ALL_DRIVES}
+        if page:
+            params["pageToken"] = page
+        d = safehttp.call("https://www.googleapis.com/drive/v3/files?" + _q(params),
+                          method="GET", bearer=token, timeout=25)
+        out.extend(d.get("files") or [])
+        page = d.get("nextPageToken") or ""
+        if not page:
+            break
+    return out[:cap]
+
+
 def drive_meet_transcripts(token: str, match: str = "", n: int = 20) -> list[dict]:
     """Google Meet transcript Docs, newest first. Meet saves each meeting's
     transcript to the organiser's Drive as a Google Doc whose name ends

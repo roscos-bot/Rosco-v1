@@ -1277,14 +1277,18 @@ function loadIngest(){
   var vwrap=document.createElement("label");vwrap.style.cssText=fwrap.style.cssText;
   var vchk=document.createElement("input");vchk.type="checkbox";vchk.title="Transcribe any videos with local Whisper (slower — a few min for a batch)";
   vwrap.appendChild(vchk);vwrap.appendChild(document.createTextNode("transcribe videos"));
+  var wwrap=document.createElement("label");wwrap.style.cssText=fwrap.style.cssText;
+  var wchk=document.createElement("input");wchk.type="checkbox";wchk.title="Sweep the ENTIRE drive — every shared drive + My Drive (up to 500 newest files). Ignores the search box.";
+  wwrap.appendChild(wchk);wwrap.appendChild(document.createTextNode("whole drive"));
+  wchk.addEventListener("change",function(){din.disabled=wchk.checked;din.style.opacity=wchk.checked?"0.5":"";});
   var dbtn=document.createElement("button");dbtn.className="ing-go";dbtn.textContent="Pull from Drive";
   var dmsg=document.createElement("span");dmsg.className="ksst";
-  dbtn.addEventListener("click",function(){var nm=din.value.trim(),acc=dacc.value.trim()||"personal";
-    dbtn.disabled=true;dmsg.className="ksst";dmsg.textContent=(vchk.checked?"reading + transcribing ":(nm?"searching ":"pulling recent from "))+acc+" Drive…";
-    post("/api/ingest/drive",{name:nm,account:acc,bulk:true,force:fchk.checked,transcribe:vchk.checked}).then(function(r){dbtn.disabled=false;
+  dbtn.addEventListener("click",function(){var nm=din.value.trim(),acc=dacc.value.trim()||"personal",whole=wchk.checked;
+    dbtn.disabled=true;dmsg.className="ksst";dmsg.textContent=(whole?"sweeping whole ":(vchk.checked?"reading + transcribing ":(nm?"searching ":"pulling recent from ")))+acc+" Drive…";
+    post("/api/ingest/drive",{name:nm,account:acc,bulk:true,force:fchk.checked,transcribe:vchk.checked,whole:whole}).then(function(r){dbtn.disabled=false;
       if(r.ok){din.value="";dmsg.className="ksst g";dmsg.textContent="queued "+r.j.added+" from "+(r.j.file||acc);loadIngest();}
       else{dmsg.className="ksst r";dmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
-  drow.appendChild(dacc);drow.appendChild(din);drow.appendChild(fwrap);drow.appendChild(vwrap);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
+  drow.appendChild(dacc);drow.appendChild(din);drow.appendChild(fwrap);drow.appendChild(vwrap);drow.appendChild(wwrap);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
   // or pull a file from a GitHub repo (needs a github_token stored)
   var grow=document.createElement("div");grow.className="ing-row";
   var gl=document.createElement("label");gl.textContent="or GitHub";grow.appendChild(gl);
