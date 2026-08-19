@@ -227,7 +227,14 @@ _DOMAIN_HINTS = {
               "receivable", "payable", "profit", "expense", "reconcile"),
     "it": ("website", "webpage", "deploy", "server", "database", "integration",
            "webhook", "dashboard", "netlify", "endpoint", "software", "codebase",
-           "api"),
+           "api",
+           # Engineering vocab Ross actually uses (added 2026-08-19), so the IT head
+           # (Cortex) receives the self-hosting / deploy / integration lessons the
+           # original list missed - tunnels, OAuth, the monorepo, the local stack.
+           "cloudflare", "cloudflared", "tunnel", "oauth", "subdomain", "monorepo",
+           "sqlite", "supabase", "telegram", "cron", "vite", "hono", "self-host",
+           "self-hosted", "repo", "refresh token", "scheduled task", "localhost",
+           "webapp", "front-end", "frontend", "backend", "back-end"),
     "ops": ("construction", "jobsite", "job site", "build schedule", "cpm",
             "critical path", "milestone", "framing", "slab", "foundation",
             "subcontractor", "procurement", "punch list", "certificate of occupancy",
