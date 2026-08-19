@@ -96,6 +96,7 @@ class Agent:
         self.name = ent.name
         self.rank = ent.rank
         self.business = ent.business
+        self.role = ent.role
         self.log = log
         self.vault = Vault(log)
         self.think = think
@@ -118,7 +119,19 @@ class Agent:
         Rosco (business '*') is the one agent that reads across everything - the
         chief-of-staff enrichment role from the design - so it grounds on the
         whole vault rather than a single business's slice.
+
+        Rosco's PROFESSION HEADS (business '*' + a craft role - Beacon/marketing,
+        Sovereign/books, …) read across every captain too, but SCOPED TO THEIR CRAFT:
+        only the lessons whose dominant domain is theirs - the cross-company craft
+        playbook - never the whole vault. So the marketing head is fed marketing
+        wins from every floor and is not diluted by law or books. (Business lessons
+        are learned under the CAPTAIN's name, not the lieutenant's, so the scope is
+        the lesson's CONTENT domain, not who wrote it.) Empty until captains actually
+        accumulate that craft's lessons - honest, not a bug.
         """
+        if self.business == "*" and self.role in roster.DOMAINS:
+            return [les for les in self.vault.recall()
+                    if roster.domain_of(les.text) == self.role]
         if self.business == "*":
             return self.vault.recall()
         return self.vault.recall(business=self.business)
