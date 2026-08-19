@@ -737,6 +737,16 @@ class ConsoleServer(ThreadingHTTPServer):
                               + ". Reply 'yes' to open it — you review and merge on GitHub.\n\n" + diff)
                 break                      # one pending write at a time
 
+        # A turn can end with nothing to show: the model replied with only control
+        # lines (LEARN/ACTION) that got stripped, or came back empty — e.g. it kept
+        # firing web-searches that found nothing and never wrote prose. Returning ''
+        # makes the console render a bare '…'; answer honestly instead, and nudge a
+        # reasoning question back to a shape the model won't try to web-search.
+        if not shown.strip():
+            shown = ("I didn't land a usable answer that time — I may have gone looking "
+                     "for data instead of just reasoning it out. Ask me to score it "
+                     "against the matrix directly, e.g. \"run the Project Decision Matrix "
+                     "on this and give me the verdict,\" and I'll answer from what I know.")
         self._remember(msg, shown)
         return shown
 
