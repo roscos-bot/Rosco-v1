@@ -1137,8 +1137,11 @@ function loadGoogleStatus(wrap){
     if(!accs.length){wrap.innerHTML="<div class='n'>(no accounts)</div>";return;}
     accs.forEach(function(a){
       var block=document.createElement("div");block.className="gacct";
-      var cls=a.connected?"g":(a.clientReady?"o":"a");
-      var st=a.connected?("connected "+(a.email||"")):(a.clientReady?"ready — not connected":"needs client id + secret");
+      // A red dot + 'wrong login' when the sealed token signs in as a DIFFERENT
+      // account than this slug should be (server verified it live). Green only when
+      // the token is confirmed to be the right account, or there's nothing to check.
+      var cls=a.mismatch?"r":(a.connected?"g":(a.clientReady?"o":"a"));
+      var st=a.mismatch?("⚠ wrong login — "+(a.email||"?")):(a.connected?("connected "+(a.email||"")):(a.clientReady?"ready — not connected":"needs client id + secret"));
       var row=document.createElement("div");row.className="ksrow";
       var dot=document.createElement("span");dot.className="dot "+cls;
       var nm=document.createElement("span");nm.className="ksname";nm.textContent=a.account;
@@ -1151,6 +1154,11 @@ function loadGoogleStatus(wrap){
         row.appendChild(btn);
       }
       block.appendChild(row);
+      if(a.mismatch){                                      // spell out the fix, in red
+        var warn=document.createElement("div");warn.className="n";warn.style.cssText="color:var(--red);padding:2px 10px 4px;line-height:1.5";
+        warn.textContent="This slug is connected to "+(a.email||"another Google account")+", not "+(a.expected||a.account)+". Reads are blocked. Click Reconnect and sign in as "+(a.expected||"the right account")+".";
+        block.appendChild(warn);
+      }
       // Inline app credentials, right here — no hunting through API keys. Stored
       // under this account's own vault scope, then the row refreshes and (once
       // both are set) Authorize appears.

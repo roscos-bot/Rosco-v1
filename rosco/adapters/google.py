@@ -25,6 +25,9 @@ The scope breadth is a decision recorded here so it is visible, not buried.
 """
 from __future__ import annotations
 
+import hashlib
+import threading
+import time
 import urllib.parse
 
 from .. import office, safehttp
@@ -54,20 +57,31 @@ REFRESH_TOKEN = "google_refresh_token"
 EMAIL = "google_email"
 
 
-def consent_url(client_id: str, redirect_uri: str, state: str) -> str:
+def consent_url(client_id: str, redirect_uri: str, state: str,
+                login_hint: str = "") -> str:
     """The Google consent URL to open. offline + consent so a refresh token
-    actually comes back (Google withholds it on a silent re-auth otherwise)."""
-    q = urllib.parse.urlencode({
+    actually comes back (Google withholds it on a silent re-auth otherwise).
+
+    `prompt='select_account consent'` FORCES the account chooser: without it, a
+    browser signed into exactly one Google account authorizes silently as THAT
+    account — which is how RUM's token got sealed under the SteelHaven slug (Ross
+    was signed into RUM, Google never asked). `login_hint` pre-selects the account
+    this slug is meant to be (e.g. ross@steelhaven.homes) so the right one is one
+    click away even when several are signed in. The chooser is what lets Ross catch
+    'wrong account' before he consents, not after."""
+    params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": " ".join(SCOPES),
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "select_account consent",
         "include_granted_scopes": "true",
         "state": state,
-    })
-    return f"{AUTH_URL}?{q}"
+    }
+    if login_hint:
+        params["login_hint"] = login_hint
+    return f"{AUTH_URL}?{urllib.parse.urlencode(params)}"
 
 
 def exchange_code(client_id: str, client_secret: str, code: str,
@@ -117,6 +131,83 @@ def access_for(vault, account: str) -> str:
         return ""
     tok = refresh_access(cid, csec, rt)
     return (tok or {}).get("access_token", "") if isinstance(tok, dict) else ""
+
+
+# The vault seals whatever refresh token the consent returned — it cannot know the
+# token is the RIGHT company's (that is the account chooser's job, upstream). So the
+# READ side proves it: which Google account does this credential actually sign in as?
+# One userinfo call, cached ~10 min keyed on the refresh-token fingerprint, so a
+# re-authorize (new token → new fp) re-checks at once instead of trusting a stale
+# 'connected' flag. This is the tripwire that was missing when RUM's token, sealed
+# under 'steelhaven', read RUM's mailbox under the SteelHaven label with no warning.
+_WHOAMI_TTL = 600
+_whoami_cache: dict = {}
+_whoami_lock = threading.Lock()
+
+
+def _rt_fp(rt: str) -> str:
+    return hashlib.sha256((rt or "").encode()).hexdigest()[:16]
+
+
+def account_email(access_token: str, refresh_token: str, *, ttl: int = _WHOAMI_TTL) -> str:
+    """The email this credential REALLY belongs to (live userinfo), cached on the
+    refresh-token fingerprint. '' if userinfo can't be reached and nothing is
+    cached — a transient blip trusts the last good answer rather than crying wolf."""
+    fp = _rt_fp(refresh_token)
+    now = time.time()
+    with _whoami_lock:
+        hit = _whoami_cache.get(fp)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+    try:
+        who = whoami(access_token)
+        email = (who.get("email", "") if isinstance(who, dict) else "") or ""
+    except Exception:
+        with _whoami_lock:
+            hit = _whoami_cache.get(fp)
+        return hit[1] if hit else ""
+    if email:
+        with _whoami_lock:
+            _whoami_cache[fp] = (now, email)
+    return email
+
+
+def access_for_verified(vault, account: str, expected_domain: str = "") -> tuple:
+    """access_for, but for an own-domain slug PROVE the token signs in on that
+    domain before handing it back. Returns (token, '') when safe to read; ('',
+    actual_email) when the slug is wired to the WRONG Google login (or its identity
+    can't be verified) so the caller reads NOTHING. A blank expected_domain
+    (personal/shared inbox) enforces nothing — there is no single right owner."""
+    rt = vault.get_secret(account, REFRESH_TOKEN)
+    token = access_for(vault, account)
+    if not token:
+        return "", ""                       # not connected → existing path
+    if not expected_domain:
+        return token, ""                    # personal/shared: nothing to enforce
+    actual = account_email(token, rt or "")
+    if actual and actual.split("@")[-1].lower() == expected_domain.lower():
+        return token, ""                    # verified: the right company's login
+    return "", actual                       # wrong login (or unverifiable) → block
+
+
+def _expected_domain(account: str) -> str:
+    """The domain an own-domain slug MUST sign in on (from the roster, the single
+    source of truth), or '' for a shared/personal slug. Lazy import keeps the
+    adapter a leaf and avoids any load-order coupling to the domain layer."""
+    from ..roster import business as _biz
+    b = _biz(account)
+    return b.account.split("@")[-1] if (b and b.own_domain) else ""
+
+
+def access_for_guarded(vault, account: str) -> str:
+    """access_for, but FAIL CLOSED for an own-domain slug wired to the wrong Google
+    login: returns '' (as if not connected) so a mis-sealed token can never read or
+    write another company's data. Personal/shared slugs pass straight through with
+    no extra network call. Same str contract as access_for, so any caller that
+    already handles an empty token gets the safety for free. Use access_for_verified
+    instead when you want to TELL the user which wrong account it landed on."""
+    token, _actual = access_for_verified(vault, account, _expected_domain(account))
+    return token
 
 
 def _q(params: dict) -> str:

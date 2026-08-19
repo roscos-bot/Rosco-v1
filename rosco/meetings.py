@@ -120,7 +120,9 @@ def ingest_new(console, passphrase, *, match: str = MATCH,
 
     log = console.open(passphrase)
     vault = Vault(log, key=console._vault_key(passphrase))
-    token = g.access_for(vault, STEELHAVEN)
+    # Guarded: if the SteelHaven slug is wired to the wrong Google login, read
+    # NOTHING rather than pull RUM's calendar into a SteelHaven recap.
+    token = g.access_for_guarded(vault, STEELHAVEN)
     if not token:
         return {"connected": False, "ready": 0, "waiting": 0,
                 "ingested": 0, "skipped": 0, "names": []}

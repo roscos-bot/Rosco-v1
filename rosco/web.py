@@ -847,12 +847,29 @@ class ConsoleServer(ThreadingHTTPServer):
         if f"{account}:{g.REFRESH_TOKEN}" not in held:
             return note
         vault = Vault(log, key=self.console._vault_key(passphrase))
+        # For an own-domain account, PROVE the sealed token signs in on that domain
+        # before reading a byte. This is the tripwire that was missing: a RUM token
+        # sealed under 'steelhaven' minted fine and read RUM's mailbox under the
+        # SteelHaven label with no warning. Now a mismatch reads NOTHING and says so.
+        from .roster import business as biz_of
+        b = biz_of(account)
+        expected = b.account.split("@")[-1] if (b and b.own_domain) else ""
         try:
-            token = g.access_for(vault, account)
+            token, actual = g.access_for_verified(vault, account, expected)
         except Exception as e:
             return f"(Google sign-in failed: {str(e)[:140]})"
+        if expected and not token:
+            who = (f" (it currently signs in as {actual})" if actual
+                   else " (its identity couldn't be verified right now)")
+            return note + (
+                "NOTE FOR ROSCO (say this plainly, don't hide it): the "
+                f"'{account}' Google account shows Connected but is wired to the "
+                f"WRONG Google login{who}, not ross@{expected}. I did NOT read "
+                "anything — returning the wrong company's mailbox/Drive would be "
+                "worse than none. Fix: Settings → Google → disconnect "
+                f"'{account}' and re-authorize, signing in as ross@{expected}.\n")
         if not token:
-            return ""
+            return note
         parts = []
         if wants_drive:
             term = _drive_term(low)
@@ -1669,6 +1686,7 @@ class ConsoleServer(ThreadingHTTPServer):
         connected (a refresh token sealed)? Drives the settings rows and buttons.
         No token is probed or surfaced - only whether the vault holds one."""
         from .adapters import google as g
+        from .roster import business as biz_of
         log = self.console.open(s.passphrase)
         vault = Vault(log, key=self.console._vault_key(s.passphrase))
         held = set(Vault(log).secret_names())
@@ -1683,8 +1701,29 @@ class ConsoleServer(ThreadingHTTPServer):
                     who = vault.get_secret(slug, g.EMAIL) or ""
                 except Exception:
                     who = ""
-            out.append({"account": slug, "email": who or email,
-                        "clientReady": ready, "connected": connected})
+            row = {"account": slug, "email": who or email,
+                   "clientReady": ready, "connected": connected}
+            # The cached google_email is decorative — a RUM token sealed under
+            # 'steelhaven' still shows green with the hardcoded SteelHaven address.
+            # For an own-domain slug, do a LIVE whoami (cached ~10 min) and show the
+            # account the token REALLY signs in as, flagging a mismatch so the
+            # miswiring is VISIBLE. This row is the diagnostic: open Settings →
+            # Google and it shows the true login, not the label.
+            b = biz_of(slug)
+            if connected and b and b.own_domain:
+                try:
+                    live = g.account_email(g.access_for(vault, slug),
+                                           vault.get_secret(slug, g.REFRESH_TOKEN) or "")
+                except Exception:
+                    live = ""
+                if live:
+                    row["email"] = live
+                    row["verified"] = (live.split("@")[-1].lower()
+                                       == b.account.split("@")[-1].lower())
+                    if not row["verified"]:
+                        row["mismatch"] = True
+                        row["expected"] = b.account
+            out.append(row)
         return {"accounts": out}
 
     def github_status(self, s):
@@ -1710,7 +1749,8 @@ class ConsoleServer(ThreadingHTTPServer):
         stored; the state is remembered so the callback can be trusted."""
         from .adapters import google as g
         slug = (body.get("account") or "").strip()
-        if slug not in {a for a, _ in self._google_accounts()}:
+        accounts = dict(self._google_accounts())
+        if slug not in accounts:
             raise ValueError(f"unknown Google account {slug!r}")
         vault = Vault(self.console.open(s.passphrase),
                       key=self.console._vault_key(s.passphrase))
@@ -1722,7 +1762,10 @@ class ConsoleServer(ThreadingHTTPServer):
         state = pysecrets.token_urlsafe(24)
         self._oauth[state] = {"account": slug, "at": time.time()}
         redirect = f"http://127.0.0.1:{self.port}/api/google/callback"
-        return {"url": g.consent_url(cid, redirect, state)}
+        # Pre-select the account this slug is MEANT to be, so 'authorize steelhaven'
+        # lands on ross@steelhaven.homes even when RUM's login is the active session.
+        return {"url": g.consent_url(cid, redirect, state,
+                                     login_hint=accounts.get(slug, ""))}
 
     def google_callback(self, code, state):
         """Consume the redirect: validate state, trade the code for a refresh
@@ -1758,15 +1801,33 @@ class ConsoleServer(ThreadingHTTPServer):
         if not refresh:
             return False, ("Google returned no refresh token. Remove this app at "
                            "myaccount.google.com/permissions and authorize again.")
-        self.console.secret_set(s.passphrase, slug, g.REFRESH_TOKEN, refresh)
+        # Resolve WHICH account Ross actually consented as BEFORE sealing anything.
+        # An own-domain slug (steelhaven, rum) must sign in on its own domain, or we
+        # refuse to store the token at all. The old order sealed first and only
+        # recorded the email afterward — which is exactly how RUM's token got
+        # captured under 'steelhaven' and read as SteelHaven for weeks.
+        from .roster import business as biz_of
         email = ""
         try:
             who = g.whoami(tok.get("access_token", ""))
             email = who.get("email", "") if isinstance(who, dict) else ""
-            if email:
-                self.console.secret_set(s.passphrase, slug, g.EMAIL, email)
         except Exception:
-            pass
+            email = ""
+        b = biz_of(slug)
+        if b and b.own_domain:
+            expected = b.account.split("@")[-1].lower()
+            got = email.split("@")[-1].lower() if email else ""
+            if not email:
+                return False, (f"Couldn't confirm which Google account you just "
+                               f"authorized, so I didn't connect {slug} — it must "
+                               f"sign in as ross@{expected}. Try authorizing again.")
+            if got != expected:
+                return False, (f"You authorized {slug} as {email}, but it must be "
+                               f"ross@{expected}. Nothing was saved. Re-authorize and "
+                               f"pick the ross@{expected} account in Google's chooser.")
+        self.console.secret_set(s.passphrase, slug, g.REFRESH_TOKEN, refresh)
+        if email:
+            self.console.secret_set(s.passphrase, slug, g.EMAIL, email)
         return True, (f"Connected {slug}" + (f" as {email}" if email else "")
                       + ". You can close this tab and return to the console.")
 
@@ -1814,9 +1875,11 @@ class ConsoleServer(ThreadingHTTPServer):
             raise ValueError(f"the '{account}' Google account isn't connected — "
                              f"add it in Settings → Google Workspace first")
         vault = Vault(log, key=self.console._vault_key(s.passphrase))
-        token = g.access_for(vault, account)
+        token = g.access_for_guarded(vault, account)   # fail closed on a wrong-login own-domain slug
         if not token:
-            raise ValueError(f"couldn't sign in to the '{account}' Google account")
+            raise ValueError(f"couldn't sign in to the '{account}' Google account "
+                             "(if it's connected, it may be wired to the WRONG Google "
+                             "login — check Settings → Google)")
         models, meter = Models(log, vault), Meter(log)
         if not bulk:
             hit = g.drive_find(token, name)
@@ -2040,10 +2103,11 @@ class ConsoleServer(ThreadingHTTPServer):
         if not mid or not re.match(r"^[A-Za-z0-9_-]+$", mid):
             raise ValueError("no email to act on")
         if action not in ("keep", "done"):   # 'done' = Ross already handled it in Gmail; touch nothing
-            token = g.access_for(
+            token = g.access_for_guarded(
                 Vault(log, key=self.console._vault_key(s.passphrase)), account)
             if not token:
-                raise ValueError(f"couldn't reach the {account} Google account")
+                raise ValueError(f"couldn't reach the {account} Google account "
+                                 "(if connected, it may be wired to the wrong login)")
             if action == "archive":
                 g.gmail_modify(token, mid, remove=["INBOX"])
             elif action == "star":
@@ -2078,7 +2142,7 @@ class ConsoleServer(ThreadingHTTPServer):
         if _looks_shipment(frm, subj):
             try:
                 try:
-                    tok = g.access_for(
+                    tok = g.access_for_guarded(
                         Vault(log, key=self.console._vault_key(s.passphrase)), account)
                 except Exception:
                     tok = ""
@@ -2136,9 +2200,10 @@ class ConsoleServer(ThreadingHTTPServer):
             return {"ok": True, "done": 0}
         log = self.console.open(s.passphrase)
         account = (refs[0].get("account") or "personal")
-        token = g.access_for(Vault(log, key=self.console._vault_key(s.passphrase)), account)
+        token = g.access_for_guarded(Vault(log, key=self.console._vault_key(s.passphrase)), account)
         if not token:
-            raise ValueError(f"couldn't reach the {account} Google account")
+            raise ValueError(f"couldn't reach the {account} Google account "
+                             "(if connected, it may be wired to the wrong login)")
         n, doms = 0, {}
         for ref in refs:
             mid = (ref.get("id") or "").strip()
@@ -2369,7 +2434,7 @@ class ConsoleServer(ThreadingHTTPServer):
         # and the Google Tasks push.
         archived, gtask = False, False
         try:
-            token = g.access_for(Vault(log, key=self.console._vault_key(s.passphrase)),
+            token = g.access_for_guarded(Vault(log, key=self.console._vault_key(s.passphrase)),
                                  ref.get("account") or "personal")
         except Exception:
             token = ""
@@ -2440,7 +2505,7 @@ class ConsoleServer(ThreadingHTTPServer):
         from .llm import complete
         log = self.console.open(s.passphrase)
         try:
-            token = g.access_for(Vault(log, key=self.console._vault_key(s.passphrase)),
+            token = g.access_for_guarded(Vault(log, key=self.console._vault_key(s.passphrase)),
                                  ref.get("account") or "personal")
         except Exception:
             token = ""
@@ -2506,7 +2571,7 @@ class ConsoleServer(ThreadingHTTPServer):
         mid = (ref.get("id") or "").strip()
         if mid and re.match(r"^[A-Za-z0-9_-]+$", mid):
             try:
-                token = g.access_for(vault, ref.get("account") or "personal")
+                token = g.access_for_guarded(vault, ref.get("account") or "personal")
                 if token:
                     text = g.gmail_read(token, mid, max_chars=4000)
                     if text:
