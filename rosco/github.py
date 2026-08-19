@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import base64
 import re
+import secrets
 import urllib.parse
 from dataclasses import dataclass
 
@@ -292,7 +293,7 @@ def gh_open_pr(token: str, owner: str, repo: str, path: str, content: str,
     """
     h = dict(GH_HEADERS)
     default = gh_default_branch(token, owner, repo)
-    branch = branch or ("rosco/" + urllib.parse.quote(message[:24].strip().replace(" ", "-"), safe=""))
+    branch = branch or ("rosco/" + urllib.parse.quote(message[:24].strip().replace(" ", "-"), safe="") + "-" + secrets.token_hex(3))
     base = safehttp.call(f"{API}/repos/{owner}/{repo}/git/ref/heads/{default}",
                          method="GET", bearer=token, headers=h)
     base_sha = (base.get("object") or {}).get("sha")
@@ -318,3 +319,48 @@ def gh_open_pr(token: str, owner: str, repo: str, path: str, content: str,
                        payload={"title": pr_title or message, "head": branch,
                                 "base": default, "body": pr_body or "Proposed via Rosco."})
     return {"pr": pr.get("html_url", ""), "branch": branch}
+
+
+def gh_open_pr_multi(token: str, owner: str, repo: str, files: list, message: str, *,
+                     branch: str = "", pr_title: str = "", pr_body: str = "") -> dict:
+    """Branch off default, commit SEVERAL files onto it, open ONE PR back to default.
+    No merge — the same rule as gh_open_pr, widened so a real fix that spans files is
+    expressible. `files` is [{path, content}]. Each file is committed with its blob sha
+    ON THE BRANCH so an update doesn't 400. A human reads the diff and merges on GitHub."""
+    if not files:
+        raise ValueError("no files to propose")
+    h = dict(GH_HEADERS)
+    default = gh_default_branch(token, owner, repo)
+    branch = branch or ("rosco/" + urllib.parse.quote(message[:24].strip().replace(" ", "-"), safe="") + "-" + secrets.token_hex(3))
+    base = safehttp.call(f"{API}/repos/{owner}/{repo}/git/ref/heads/{default}",
+                         method="GET", bearer=token, headers=h)
+    base_sha = (base.get("object") or {}).get("sha")
+    if not base_sha:
+        raise RuntimeError(f"could not read {default} head of {owner}/{repo}")
+    safehttp.call(f"{API}/repos/{owner}/{repo}/git/refs", method="POST",
+                  bearer=token, headers=h,
+                  payload={"ref": f"refs/heads/{branch}", "sha": base_sha})
+    for f in files:
+        path = str(f.get("path", "")).strip()
+        content = f.get("content", "")
+        if not path:
+            raise ValueError("a proposed file needs a path")
+        put = {"message": message, "branch": branch,
+               "content": base64.b64encode(content.encode()).decode()}
+        try:                               # the file's sha ON THE BRANCH, so a PUT updates
+            cur = safehttp.call(
+                f"{API}/repos/{owner}/{repo}/contents/{urllib.parse.quote(path)}"
+                f"?ref={urllib.parse.quote(branch, safe='')}",
+                method="GET", bearer=token, headers=h)
+            if isinstance(cur, dict) and cur.get("sha"):
+                put["sha"] = cur["sha"]
+        except Exception:
+            pass
+        safehttp.call(f"{API}/repos/{owner}/{repo}/contents/{urllib.parse.quote(path)}",
+                      method="PUT", bearer=token, headers=h, payload=put)
+    pr = safehttp.call(f"{API}/repos/{owner}/{repo}/pulls", method="POST",
+                       bearer=token, headers=h,
+                       payload={"title": pr_title or message, "head": branch,
+                                "base": default, "body": pr_body or "Proposed via Rosco."})
+    return {"pr": pr.get("html_url", ""), "branch": branch,
+            "files": [str(f.get("path", "")) for f in files]}

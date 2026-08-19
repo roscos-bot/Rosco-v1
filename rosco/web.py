@@ -726,10 +726,15 @@ class ConsoleServer(ThreadingHTTPServer):
                     shown += ("\n\n\U0001f5a5️ Ready to " + do + " on the desktop. Reply 'yes' — "
                               + "I stay on-screen; stop me anytime by shoving the mouse to a screen "
                               + "corner or double-tapping Esc; I never type passwords.")
-                else:
-                    shown += ("\n\n\U0001f500 Ready to open a pull request on "
-                              + str(a.get("repo", "")) + " (" + str(a.get("path", ""))
-                              + "). Reply 'yes' to open it — you review and merge on GitHub.")
+                else:  # github_pr
+                    diff = self._github_preview(log, s.passphrase, a)
+                    if not a.get("_files"):        # preview failed — never offer an un-previewed PR
+                        self._pending = None
+                        shown += "\n\n" + (diff or "(couldn't prepare that PR.)")
+                        break
+                    target = (a.get("_repo") or {}).get("full") or str(a.get("repo", ""))
+                    shown += ("\n\n\U0001f500 Ready to open a pull request on " + target
+                              + ". Reply 'yes' to open it — you review and merge on GitHub.\n\n" + diff)
                 break                      # one pending write at a time
 
         self._remember(msg, shown)
@@ -1215,35 +1220,116 @@ class ConsoleServer(ThreadingHTTPServer):
         return (f"\U0001f4e5 Queued {n} item(s) from {source} for your review — open "
                 f"Ingest (\U0001f4e5) to approve them one by one.")
 
+    def _resolve_fix(self, token, repo, a):
+        """Turn a github_pr action into concrete files to commit. Applies TARGETED
+        edits (find/replace against the live file, so a big file isn't regenerated),
+        COMPILE-checks every .py, and builds a diff. Returns (files, diff, error);
+        files = [{path, content}]."""
+        import difflib
+        from . import github as gh
+        specs = a.get("files")
+        if not isinstance(specs, list) or not specs:
+            specs = [{"path": a.get("path", ""), "content": a.get("content"),
+                      "find": a.get("find"), "replace": a.get("replace")}]
+        out, diffs, seen = [], [], set()
+        for spec in specs:
+            path = str(spec.get("path", "")).strip()
+            if not path:
+                return [], "", "a proposed file needs a path"
+            if path in seen:
+                return [], "", f"{path}: named twice — put all edits to one file in a single entry"
+            seen.add(path)
+            content = spec.get("content")
+            try:                                      # 2MB is over GitHub's 1MB contents ceiling,
+                current, _listing = gh.gh_read(token, repo["owner"], repo["name"], path, max_chars=2_000_000)
+                current = current or ""               # so a real file is never truncated here
+            except Exception:
+                current = ""                          # a new file
+            if content is None and spec.get("find") is not None:
+                find = str(spec.get("find", ""))
+                if not find:
+                    return [], "", f"{path}: an empty find matches nothing"
+                if len(current) >= 2_000_000:         # would-be-truncated: refuse, don't corrupt
+                    return [], "", f"{path}: too large to patch safely — give full content or split the change"
+                if "�" in current:               # non-UTF-8 bytes → a whole-file rewrite would mangle them
+                    return [], "", f"{path}: has non-text bytes; I can't safely patch it"
+                n = current.count(find)
+                if n == 0:
+                    return [], "", f"{path}: couldn't find that snippet to replace — it must match the current file exactly"
+                if n > 1:
+                    return [], "", f"{path}: that snippet appears {n} times — make the find unique"
+                content = current.replace(find, str(spec.get("replace", "")), 1)
+            if content is None:
+                return [], "", f"{path}: needs either full content or a find/replace edit"
+            content = str(content)
+            if path.endswith(".py"):                  # never propose a syntax-broken .py
+                try:
+                    compile(content, path, "exec")
+                except SyntaxError as e:
+                    return [], "", f"{path}: the change doesn't compile ({e.msg}, line {e.lineno})"
+            out.append({"path": path, "content": content})
+            d = list(difflib.unified_diff(current.splitlines(), content.splitlines(),
+                                          fromfile=path, tofile=path, lineterm="", n=2))
+            diffs.append("\n".join(d[:80]) if d else f"{path}: (no change)")
+        return out, "\n\n".join(diffs), ""
+
+    def _github_preview(self, log, passphrase, a):
+        """Resolve + compile + diff the proposed fix for the 'reply yes' preview, and
+        STASH the resolved files on the action so _do_github_action reuses them (no
+        second resolve, no drift). Returns a diff string, an error note, or ''."""
+        from . import github as gh
+        try:
+            token = gh.gh_token(Vault(log, key=self.console._vault_key(passphrase)))
+            if not token:
+                return "(no GitHub token — set it in Settings > GitHub before I can open a PR.)"
+            repo = _match_repo(gh.gh_repos(token, 100), str(a.get("repo", "")).lower()) \
+                or gh.gh_find_repo(token, str(a.get("repo", "")))
+            if not repo:
+                return f"(couldn't find a repo matching {a.get('repo','')!r}.)"
+            files, diff, err = self._resolve_fix(token, repo, a)
+            if err:
+                return "(couldn't prepare the fix — " + err + ")"
+            a["_files"], a["_repo"] = files, repo
+            n = len(files)
+            head = (str(n) + " file" + ("s" if n != 1 else "") + ": "
+                    + ", ".join(f["path"] for f in files) + "  ✓ compiles")
+            return head + "\n\n" + diff[:2000]
+        except Exception as e:
+            return "(couldn't preview the change — " + str(e)[:120] + ")"
+
     def _do_github_action(self, log, passphrase, a):
-        """Open a pull request for a proposed file change - branch, commit, PR,
-        back to default for Ross to merge. There is no merge here, by design."""
+        """Open ONE pull request for a proposed fix — multi-file + targeted edits,
+        compile-checked, back to default for Ross to merge. There is no merge here,
+        by design. Reuses the files resolved at preview time when present."""
         from . import github as gh
         if f"system:{gh.TOKEN_SECRET}" not in set(Vault(log).secret_names()):
             return "(no GitHub token stored, so I couldn't open a PR.)"
         token = gh.gh_token(Vault(log, key=self.console._vault_key(passphrase)))
         if not token:
             return "(no GitHub token, so I couldn't open a PR.)"
-        path = str(a.get("path", "")).strip()
-        content = a.get("content", "")
-        if not (path and content):
-            return "(I need a file path and the new contents to open a PR.)"
         try:
-            repo = _match_repo(gh.gh_repos(token, 100), str(a.get("repo", "")).lower()) \
+            repo = a.get("_repo") or _match_repo(gh.gh_repos(token, 100), str(a.get("repo", "")).lower()) \
                 or gh.gh_find_repo(token, str(a.get("repo", "")))
             if not repo:
                 return f"(couldn't find a repo matching {a.get('repo','')!r}.)"
-            res = gh.gh_open_pr(token, repo["owner"], repo["name"], path, content,
-                                str(a.get("message") or f"Update {path} via Rosco"),
-                                pr_title=str(a.get("title", "")),
-                                pr_body=str(a.get("body", "")))
+            files = a.get("_files")
+            if not files:
+                files, _diff, err = self._resolve_fix(token, repo, a)
+                if err:
+                    return "(couldn't prepare the fix — " + err + ")"
+            if not files:
+                return "(I need a file path and either its new contents or a find/replace edit.)"
+            res = gh.gh_open_pr_multi(token, repo["owner"], repo["name"], files,
+                                      str(a.get("message") or "Fix via Rosco"),
+                                      pr_title=str(a.get("title", "")),
+                                      pr_body=str(a.get("body", "")))
             log.append("github.proposed",
                        {"business": "*", "agent": "Rosco", "branch": res.get("branch", ""),
-                        "path": path, "pr": res.get("pr", ""),
+                        "path": ", ".join(res.get("files", [])), "pr": res.get("pr", ""),
                         "message": str(a.get("message", ""))[:200]},
                        subject="*", actor="Rosco")
-            return ("\U0001f500 Opened a pull request (not merged — review the diff and "
-                    "merge on GitHub): " + res.get("pr", ""))
+            return ("\U0001f500 Opened a pull request (not merged — review the diff and merge on "
+                    "GitHub): " + res.get("pr", "") + "\n" + ", ".join(res.get("files", [])))
         except Exception as e:
             return f"(couldn't open the PR — {str(e)[:150]})"
 
