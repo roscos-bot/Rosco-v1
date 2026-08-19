@@ -1137,11 +1137,18 @@ function loadGoogleStatus(wrap){
     if(!accs.length){wrap.innerHTML="<div class='n'>(no accounts)</div>";return;}
     accs.forEach(function(a){
       var block=document.createElement("div");block.className="gacct";
-      // A red dot + 'wrong login' when the sealed token signs in as a DIFFERENT
-      // account than this slug should be (server verified it live). Green only when
-      // the token is confirmed to be the right account, or there's nothing to check.
-      var cls=a.mismatch?"r":(a.connected?"g":(a.clientReady?"o":"a"));
-      var st=a.mismatch?("⚠ wrong login — "+(a.email||"?")):(a.connected?("connected "+(a.email||"")):(a.clientReady?"ready — not connected":"needs client id + secret"));
+      // Red 'wrong login' when the sealed token signs in as a DIFFERENT account
+      // than this slug should be (verified live); amber 'unverified' when the live
+      // check couldn't run (green there would just be the label — the trap this row
+      // closes); green ONLY when the token is live-confirmed the right account (✓),
+      // or there's nothing to verify (personal/shared).
+      var cls=a.mismatch?"r":(a.unverified?"a":(a.connected?"g":(a.clientReady?"o":"a")));
+      var st;
+      if(a.mismatch)        st="⚠ wrong login — "+(a.email||"?");
+      else if(a.unverified) st="connected "+(a.email||"")+" · couldn't verify live";
+      else if(a.connected)  st="connected "+(a.email||"")+(a.verified?" ✓":"");
+      else if(a.clientReady)st="ready — not connected";
+      else                  st="needs client id + secret";
       var row=document.createElement("div");row.className="ksrow";
       var dot=document.createElement("span");dot.className="dot "+cls;
       var nm=document.createElement("span");nm.className="ksname";nm.textContent=a.account;

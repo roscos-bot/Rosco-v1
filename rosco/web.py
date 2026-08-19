@@ -1723,6 +1723,11 @@ class ConsoleServer(ThreadingHTTPServer):
                     if not row["verified"]:
                         row["mismatch"] = True
                         row["expected"] = b.account
+                else:
+                    # Couldn't live-check (userinfo down, no identity). Say so —
+                    # green here would just be the label again, the very trap this
+                    # row exists to close. 'unverified' means unknown, not wrong.
+                    row["unverified"] = True
             out.append(row)
         return {"accounts": out}
 
