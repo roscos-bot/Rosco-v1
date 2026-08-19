@@ -625,7 +625,7 @@ class ConsoleServer(ThreadingHTTPServer):
             elif t == "email_watch":   # read-only: bracket/observe Ross's own inbox
                 shown += "\n\n" + self._do_action(log, s.passphrase, a)
             elif t in ("gmail_draft", "calendar_create", "calendar_series", "chat_post",
-                       "github_pr", "browser", "image"):
+                       "github_pr", "browser", "computer", "image"):
                 self._pending = a
                 if t == "gmail_draft":
                     shown += ("\n\n✉️ Ready to draft an email to "
@@ -654,10 +654,16 @@ class ConsoleServer(ThreadingHTTPServer):
                     do = str(a.get("do", "navigate"))
                     what = a.get("url") or a.get("target") or ""
                     verb = {"navigate": "open", "click": "click", "type": "type into",
-                            "read": "read"}.get(do, do)
-                    shown += ("\n\n\U0001f310 Ready to " + verb + " " + str(what)
+                            "read": "read", "observe": "observe", "screenshot": "screenshot"}.get(do, do)
+                    shown += ("\n\n\U0001f310 Ready to " + verb + " "
+                              + (str(what) if what else "the current page")
                               + " in the browser. Reply 'yes' — I never type passwords "
                               + "or answer CAPTCHAs.")
+                elif t == "computer":
+                    do = str(a.get("do", "screenshot"))
+                    shown += ("\n\n\U0001f5a5️ Ready to " + do + " on the desktop. Reply 'yes' — "
+                              + "I stay on-screen; stop me anytime by shoving the mouse to a screen "
+                              + "corner or double-tapping Esc; I never type passwords.")
                 else:
                     shown += ("\n\n\U0001f500 Ready to open a pull request on "
                               + str(a.get("repo", "")) + " (" + str(a.get("path", ""))
@@ -943,6 +949,8 @@ class ConsoleServer(ThreadingHTTPServer):
             return self._do_email_watch(log, passphrase, a)
         if a.get("type") == "browser":
             return self._do_browser_action(a)
+        if a.get("type") == "computer":
+            return self._do_computer_action(a)
         if a.get("type") == "image":
             return self._do_image_action(log, passphrase, a)
         return self._do_google_action(log, passphrase, a)
@@ -1017,9 +1025,77 @@ class ConsoleServer(ThreadingHTTPServer):
                 if r.get("error"):
                     return "(couldn't type there — " + r["error"] + ")"
                 return "⌨️ Typed into '" + str(a.get("target", "")) + "'."
+            if do in ("observe", "screenshot"):
+                r = br.driver().call("observe" if do == "observe" else "screenshot", {})
+                if r.get("error"):
+                    return "(couldn't observe the page — " + r["error"] + ")"
+                return self._format_observe(r)
+            if do in ("console", "network"):
+                r = br.driver().call(do, {})
+                if r.get("error"):
+                    return "(couldn't read the " + do + " — " + r["error"] + ")"
+                return self._format_observe(r)
         except Exception as e:
             return "(browser error — " + str(e)[:150] + ")"
         return "(I didn't recognise that browser step.)"
+
+    def _format_observe(self, r):
+        """Render a browser diagnosis snapshot: what's on the page + the errors that
+        reveal an unexpected outcome (console + failed network) + a note that the
+        screenshot was captured (the pixels feed Cortex's diagnosis, not the chat)."""
+        bits = []
+        head = r.get("title") or r.get("url")
+        if head:
+            bits.append("\U0001f50d " + str(head))
+        if r.get("text"):
+            bits.append(str(r["text"])[:1000])
+        cons = [c for c in (r.get("console") or [])
+                if c.get("type") in ("error", "warning", "pageerror")]
+        if cons:
+            bits.append("console — " + " | ".join(
+                str(c.get("type", "")) + ": " + str(c.get("text", ""))[:140] for c in cons[:6]))
+        fails = r.get("failures") or []
+        if fails:
+            bits.append("network — " + " | ".join(
+                str(f.get("status") or f.get("error", "")) + " " + str(f.get("url", ""))[:90] for f in fails[:6]))
+        if r.get("png_b64"):
+            bits.append("[screenshot captured — " + str(len(r["png_b64"]) // 1000) + "kb, for diagnosis]")
+        return "\n".join(bits) if bits else "(nothing notable on the page.)"
+
+    def _do_computer_action(self, a):
+        """One approved desktop step — screenshot/click/type/key/scroll/launch — for
+        driving native windows and consoles to reproduce a problem. Visible; stoppable
+        by shoving the mouse to a screen corner OR double-tapping Esc; never types a
+        secret. Deps: pip install pyautogui pillow pynput."""
+        from .adapters import computer as cp
+        ok, why = cp.available()
+        if not ok:
+            return "(computer control isn't set up — " + why + ")"
+        cp.arm_panic()          # double-tap Esc becomes a live kill switch for this
+        do = str(a.get("do", "screenshot")).lower()
+        try:
+            if do == "screenshot":
+                r = cp.call("screenshot", {})
+                return ("(couldn't screenshot — " + r["error"] + ")" if r.get("error")
+                        else "\U0001f5a5️ Screen captured ("
+                             + "x".join(str(v) for v in r.get("screen", [])) + ") — for diagnosis.")
+            if do in ("click", "double_click", "right_click", "move"):
+                r = cp.call(do, {"x": a.get("x"), "y": a.get("y")})
+            elif do == "scroll":
+                r = cp.call("scroll", {"amount": a.get("amount", -400)})
+            elif do == "type":
+                r = cp.call("type", {"text": str(a.get("text", "")),
+                                     "secret": bool(a.get("secret"))})
+            elif do == "key":
+                r = cp.call("key", {"keys": a.get("keys") or a.get("key")})
+            elif do == "launch":
+                r = cp.call("launch", {"target": a.get("target")})
+            else:
+                return "(I didn't recognise that computer step.)"
+            return ("(couldn't " + do + " — " + r["error"] + ")" if r.get("error")
+                    else "\U0001f5b1️ " + do + " done.")
+        except Exception as e:
+            return "(computer error — " + str(e)[:150] + ")"
 
     def _do_ingest_action(self, log, passphrase, a):
         """Queue something for Ross's one-by-one review. Source can be a Drive file
