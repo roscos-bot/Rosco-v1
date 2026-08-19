@@ -101,6 +101,11 @@ class ConsoleServer(ThreadingHTTPServer):
         # confirmation. Held one turn; a plain 'yes' executes it, anything else
         # drops it. This is the "propose, then people ship" gate for writes.
         self._pending = None
+        # Standing-autonomy (computer control) state — see chat()'s 'arm computer'.
+        # OFF on start, dropped on lock, auto-disarms on a TTL / action ceiling.
+        self._armed = False
+        self._armed_at = 0.0
+        self._armed_count = 0
         # The repo Rosco is currently working in - so 'read rosco/agent.py' after
         # 'read Rosco-v1' knows which repo, without re-naming it every line.
         self._gh_repo = None
@@ -426,6 +431,38 @@ class ConsoleServer(ThreadingHTTPServer):
             self._remember(msg, done)
             return done
 
+        # Standing autonomy for DIAGNOSIS. Armed, Rosco drives the browser and
+        # desktop to reproduce a problem WITHOUT a 'yes' on every step — the panic
+        # switches (mouse to a screen corner, or double-tap Esc) and its own
+        # visibility are the safety, not a per-click prompt. Console-only and
+        # session-scoped: it resets to OFF on a restart, and computer control is
+        # deliberately absent from the capability catalogue, so nothing inbound can
+        # ever turn this on — only Ross, here.
+        low = msg.lower().strip()
+        if re.match(r"^(arm|enable|turn on)\s+(the\s+)?(computer|desktop)(\s+control)?\s*$", low):
+            from .adapters import computer as cp
+            import time as _t
+            cp.clear_stop()
+            armed, note = cp.arm_panic()
+            self._armed = True
+            self._armed_at = _t.monotonic()
+            self._armed_count = 0
+            tail = "" if armed else " (" + note + " — the mouse-corner failsafe still works)"
+            out = ("\U0001f5b1️ Computer control ARMED for this session — I'll drive the browser and "
+                   "desktop to diagnose without asking each step. Stop me anytime: shove the mouse into "
+                   "a screen corner, or double-tap Esc. Say 'disarm computer' to switch it off." + tail)
+            self._remember(msg, out)
+            return out
+        if re.match(r"^(disarm|disable|turn off|stand down)\s+(the\s+)?(computer|desktop)(\s+control)?\s*$", low):
+            from .adapters import computer as cp
+            cp.disarm_panic()
+            cp.clear_stop()            # don't leave the stop flag wedged ON for gated steps
+            self._armed = False
+            out = ("\U0001f6d1 Computer control DISARMED — back to asking before each browser or "
+                   "desktop step.")
+            self._remember(msg, out)
+            return out
+
         def think(system, user):
             return complete(models, "chat", system, user, meter=meter, agent="Rosco")
         ctx = _now_line()                  # so the model can resolve 'Tuesday 3pm'
@@ -624,6 +661,31 @@ class ConsoleServer(ThreadingHTTPServer):
                 shown += "\n\n" + self._do_action(log, s.passphrase, a)
             elif t == "email_watch":   # read-only: bracket/observe Ross's own inbox
                 shown += "\n\n" + self._do_action(log, s.passphrase, a)
+            elif t in ("browser", "computer") and getattr(self, "_armed", False):
+                # Standing autonomy: while armed, diagnosis drives the browser/desktop
+                # inline — no per-step 'yes'. It chains within the turn, but a panic
+                # (double-Esc or mouse-to-corner) halts it here, between steps.
+                from .adapters import computer as cp
+                import time as _t
+                if cp.stopped():
+                    shown += "\n\n\U0001f6d1 stopped (panic) — say 'arm computer' to resume."
+                    break
+                mutating = str(a.get("do", "")).lower() not in (
+                    "observe", "read", "console", "network", "screenshot", "current")
+                if (_t.monotonic() - getattr(self, "_armed_at", 0.0) > 900
+                        or (mutating and getattr(self, "_armed_count", 0) >= 40)):
+                    self._armed = False
+                    cp.disarm_panic()
+                    shown += "\n\n\U0001f6d1 auto-disarmed (session budget reached) — say 'arm computer' to continue."
+                    break
+                if mutating:
+                    self._armed_count = getattr(self, "_armed_count", 0) + 1
+                out = self._do_action(log, s.passphrase, a)
+                # Observed page/console text is UNTRUSTED — mark it so this reply
+                # (re-read as context next turn) is treated as data, never commands.
+                if str(a.get("do", "")).lower() in ("observe", "read", "console", "network", "screenshot"):
+                    out = _EXTERNAL_DATA_GUARD + "\n" + out
+                shown += "\n\n" + out
             elif t in ("gmail_draft", "calendar_create", "calendar_series", "chat_post",
                        "github_pr", "browser", "computer", "image"):
                 self._pending = a
@@ -992,6 +1054,9 @@ class ConsoleServer(ThreadingHTTPServer):
         Every one reaches here only after Ross's yes; passwords and CAPTCHAs are
         never touched. Returns what the page became, so the next step is informed."""
         from .adapters import browser as br
+        from .adapters import computer as cp
+        if cp.stopped():           # the panic switches halt the browser half too
+            return "(stopped — panic is set; say 'arm computer' to clear and resume)"
         ok, why = br.available()
         if not ok:
             return "(browser control isn't set up — " + why + ")"
@@ -1071,8 +1136,13 @@ class ConsoleServer(ThreadingHTTPServer):
         ok, why = cp.available()
         if not ok:
             return "(computer control isn't set up — " + why + ")"
-        cp.arm_panic()          # double-tap Esc becomes a live kill switch for this
         do = str(a.get("do", "screenshot")).lower()
+        if do == "launch" and getattr(self, "_armed", False):
+            return ("(launch is disabled while computer control is armed — reproducing a console "
+                    "bug never needs it; disarm and I'll ask first, or open it yourself.)")
+        # The Esc kill-switch listener is armed by the 'arm computer' command, so a
+        # one-off gated action doesn't start (and leak) one — the mouse-corner failsafe
+        # covers a single confirmed step.
         try:
             if do == "screenshot":
                 r = cp.call("screenshot", {})
@@ -3675,6 +3745,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.session = None
                 self.server._forget_chat()      # drop the transcript with the session
                 self.server._pending = None     # and any un-confirmed write
+                self.server._armed = False      # locking ends computer-control autonomy
+                try:
+                    from .adapters import computer as cp
+                    cp.disarm_panic()
+                    cp.clear_stop()
+                except Exception:
+                    pass
                 return self._send(200, {"ok": True})
         except (ValueError, KeyError, SystemExit) as e:
             return self._send(400, {"error": str(e)})

@@ -8,7 +8,8 @@ native shells around them — and show Ross exactly what broke.
 The guarantees are the same as the browser's, on purpose:
 
   VISIBLE     every action happens on the real screen Ross is watching; there is
-              no hidden or off-screen surface.
+              no hidden or off-screen surface. (Primary monitor only — a console on
+              a second display isn't captured; move it to the main screen.)
 
   STOPPABLE — TWO INDEPENDENT PANIC PATHS, one per hand:
      * MOUSE: pyautogui FAILSAFE is on — shove the mouse into any screen corner
@@ -20,9 +21,10 @@ The guarantees are the same as the browser's, on purpose:
        keylogger. It's armed by the caller around a control session (arm_panic /
        disarm_panic) and off the rest of the time.
 
-  NEVER SECRETS  `type` refuses when the caller marks the text secret; passwords,
-              card numbers and 2FA codes stay Ross's to enter by hand, and CAPTCHAs
-              stay his to solve.
+  NEVER SECRETS  `type` refuses when the caller marks the text secret AND has a
+              structural backstop: it refuses anything credential-SHAPED (a lone
+              password/OTP/card token) whatever the flag says. Passwords, card
+              numbers and 2FA codes stay Ross's to enter by hand, CAPTCHAs too.
 
 Both pyautogui and the Esc watcher (pynput) are optional deps, imported lazily:
 this module loads without them and each call returns a clear 'not set up' note
@@ -32,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 import threading
 import time
 
@@ -107,6 +110,27 @@ def disarm_panic() -> None:
         _listener = None
 
 
+# ---- never-secrets backstop --------------------------------------------------
+
+def _looks_secret(t: str) -> bool:
+    """Credential-SHAPED text, refused whatever flag the model set. Conservative:
+    a single token (no spaces) that reads like a password, an OTP, or a card. A
+    rare false positive just means Ross types that value himself — the right way
+    to be wrong about a secret."""
+    s = (t or "").strip()
+    if not s or " " in s or len(s) < 6:
+        return False
+    if re.fullmatch(r"\d{6,8}", s):                       # one-time code
+        return True
+    digits = sum(c.isdigit() for c in s)
+    if re.fullmatch(r"[\d-]{13,19}", s) and digits >= 13:  # card number
+        return True
+    if (12 <= len(s) <= 64 and re.search(r"[A-Za-z]", s)   # password-shaped token
+            and re.search(r"\d", s) and not re.search(r"[/\\@.]", s)):
+        return True
+    return False
+
+
 # ---- the desktop itself ------------------------------------------------------
 
 def _pg():
@@ -116,12 +140,12 @@ def _pg():
     return pyautogui
 
 
-def _screenshot_b64(max_w: int = 1280) -> tuple[str, list]:
+def _screenshot_b64() -> tuple[str, list]:
+    """Native-resolution capture of the PRIMARY screen, so a click coordinate read off
+    the image maps 1:1 to where pyautogui clicks (no downscale skew). Primary monitor
+    only — a console on a second display isn't captured."""
     pg = _pg()
-    img = pg.screenshot()           # PIL Image of the primary screen
-    if img.width > max_w:
-        h = int(img.height * max_w / img.width)
-        img = img.resize((max_w, h))
+    img = pg.screenshot()           # PIL Image, native primary-screen resolution
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode(), [img.width, img.height]
@@ -130,7 +154,7 @@ def _screenshot_b64(max_w: int = 1280) -> tuple[str, list]:
 def _do(fn: str, args: dict) -> dict:
     pg = _pg()
     if fn == "screenshot":
-        b64, size = _screenshot_b64(int(args.get("max_w", 1280)))
+        b64, size = _screenshot_b64()
         return {"png_b64": b64, "shot_size": size, "screen": list(pg.size())}
     if fn == "move":
         pg.moveTo(int(args["x"]), int(args["y"]), duration=0.2)
@@ -148,10 +172,11 @@ def _do(fn: str, args: dict) -> dict:
         pg.scroll(int(args.get("amount", -400)))
         return {"scrolled": int(args.get("amount", -400))}
     if fn == "type":
-        if args.get("secret"):
-            return {"error": "refused — never types passwords, cards or 2FA codes"}
-        pg.typewrite(str(args.get("text", "")), interval=0.02)
-        return {"typed": len(str(args.get("text", "")))}
+        text = str(args.get("text", ""))
+        if args.get("secret") or _looks_secret(text):
+            return {"error": "refused — that looks like a password / OTP / card; Ross types those"}
+        pg.typewrite(text, interval=0.02)
+        return {"typed": len(text)}
     if fn == "key":
         keys = args.get("keys") or args.get("key") or ""
         if isinstance(keys, str) and "+" in keys:

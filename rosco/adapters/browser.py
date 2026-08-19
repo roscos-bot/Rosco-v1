@@ -140,9 +140,19 @@ class _Driver:
             pg.wait_for_load_state("domcontentloaded", timeout=8000)
             return {"clicked": args["target"], "url": pg.url, "title": pg.title()}
         if fn == "type":
+            if args.get("secret"):
+                return {"error": "refused — never types passwords, cards or 2FA codes"}
             loc = (pg.get_by_label(args["target"]) if args.get("by") == "label"
-                   else pg.get_by_placeholder(args["target"]))
-            loc.first.fill(str(args.get("text", "")), timeout=8000)
+                   else pg.get_by_placeholder(args["target"])).first
+            try:                       # backstop: never fill a password / one-time-code field
+                el = loc.element_handle(timeout=8000)
+                typ = (el.get_attribute("type") or "").lower()
+                ac = (el.get_attribute("autocomplete") or "").lower()
+                if typ == "password" or "password" in ac or "one-time-code" in ac:
+                    return {"error": "refused — that's a password/OTP field; Ross types those by hand"}
+            except Exception:
+                pass                   # can't introspect it → fall through and fill normally
+            loc.fill(str(args.get("text", "")), timeout=8000)
             return {"typed_into": args["target"], "url": pg.url}
         if fn == "current":
             return {"url": pg.url, "title": pg.title()}
