@@ -1522,7 +1522,7 @@ class ConsoleServer(ThreadingHTTPServer):
         from .ingest import Ingest
         account = (body.get("account") or "personal").strip().lower()
         name = (body.get("name") or "").strip()
-        bulk = bool(body.get("bulk")) or not name
+        bulk = bool(body.get("bulk")) or bool(body.get("whole")) or not name
         log = self.console.open(s.passphrase)
         if f"{account}:{g.REFRESH_TOKEN}" not in set(Vault(log).secret_names()):
             raise ValueError(f"the '{account}' Google account isn't connected — "
@@ -1576,23 +1576,28 @@ class ConsoleServer(ThreadingHTTPServer):
                 skipped += 1
                 continue
             mt = (f.get("mimeType") or "").lower()
-            content = g.drive_read(token, f.get("id", ""), f.get("mimeType", ""),
-                                   max_chars=20000)
-            if not content and mt.startswith("image/") and vcap > 0:   # OCR blank -> vision
-                content = _image_describe(models, meter,
-                                          g.drive_bytes(token, f.get("id", "")), mt)
-                vcap -= 1
-            if not content and mt.startswith("video/") and want_video and tcap > 0:
-                content = _video_transcript(g.drive_bytes(token, f.get("id", "")),
-                                            f.get("name", ""))
-                tcap -= 1
-            if not content:
-                unreadable += 1               # a PDF/image/binary — skip, don't queue noise
+            try:
+                content = g.drive_read(token, f.get("id", ""), f.get("mimeType", ""),
+                                       max_chars=20000)
+                if not content and mt.startswith("image/") and vcap > 0:   # OCR blank -> vision
+                    content = _image_describe(models, meter,
+                                              g.drive_bytes(token, f.get("id", "")), mt)
+                    vcap -= 1
+                if not content and mt.startswith("video/") and want_video and tcap > 0:
+                    content = _video_transcript(g.drive_bytes(token, f.get("id", "")),
+                                                f.get("name", ""))
+                    tcap -= 1
+                content = (content or "").strip()   # a whitespace-only file is not real content
+                if not content:
+                    unreadable += 1           # unreadable/empty — skip, don't queue noise
+                    continue
+                sources.save(self.console.home, src, content)
+                added += Ingest(log).add(
+                    [{"text": content, "business": "", "confidence": 0.0,
+                      "why": "drive file", "summary": ""}], source=src)
+            except Exception:
+                unreadable += 1               # one bad file degrades to 'unreadable' — never aborts the whole pull
                 continue
-            sources.save(self.console.home, src, content)
-            added += Ingest(log).add(
-                [{"text": content, "business": "", "confidence": 0.0,
-                  "why": "drive file", "summary": ""}], source=src)
         if not added:
             # Distinct diagnostics so a failed pull says WHY, plus a file-TYPE
             # breakdown so any format we don't yet read is named, not lumped as
@@ -2845,6 +2850,13 @@ def _image_describe(models, meter, data: bytes, mime: str) -> str:
 
         from PIL import Image
         im = Image.open(io.BytesIO(data))
+        w0, h0 = im.size                       # available before decode — bound memory FIRST
+        if w0 and h0 and w0 * h0 > 100_000_000:  # ~100MP: too big to decode safely, skip
+            return ""
+        try:
+            im.draft("RGB", (1600, 1600))      # fast downscale on JPEG decode (no-op otherwise)
+        except Exception:
+            pass
         im.load()
         im = im.convert("RGB")
         w, h = im.size

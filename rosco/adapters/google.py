@@ -305,10 +305,16 @@ def drive_read(token: str, file_id: str, mime: str, max_chars: int = 8000) -> st
             except Exception:
                 text = ""                        # this Doc won't export markdown
         if not text:
-            text = _export(token, file_id, "text/plain" if want == "text/markdown" else want)
+            try:                                 # a Doc over Drive's 10 MB export cap raises here
+                text = _export(token, file_id, "text/plain" if want == "text/markdown" else want)
+            except Exception:
+                text = ""
     elif _readable_media(mime):
-        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
-        text = safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True)
+        try:
+            url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
+            text = safehttp.call(url, method="GET", bearer=token, timeout=25, raw=True)
+        except Exception:
+            text = ""
     elif (mime or "").lower() == "application/pdf":
         try:
             data = safehttp.call(

@@ -1284,9 +1284,10 @@ function loadIngest(){
   var dbtn=document.createElement("button");dbtn.className="ing-go";dbtn.textContent="Pull from Drive";
   var dmsg=document.createElement("span");dmsg.className="ksst";
   dbtn.addEventListener("click",function(){var nm=din.value.trim(),acc=dacc.value.trim()||"personal",whole=wchk.checked;
-    dbtn.disabled=true;dmsg.className="ksst";dmsg.textContent=(whole?"sweeping whole ":(vchk.checked?"reading + transcribing ":(nm?"searching ":"pulling recent from ")))+acc+" Drive…";
+    var scope=whole?"sweeping whole":(nm?"searching":"reading recent from");
+    dbtn.disabled=true;dmsg.className="ksst";dmsg.textContent=scope+(vchk.checked&&!whole?" + transcribing ":" ")+acc+" Drive…";
     post("/api/ingest/drive",{name:nm,account:acc,bulk:true,force:fchk.checked,transcribe:vchk.checked,whole:whole}).then(function(r){dbtn.disabled=false;
-      if(r.ok){din.value="";dmsg.className="ksst g";dmsg.textContent="queued "+r.j.added+" from "+(r.j.file||acc);loadIngest();}
+      if(r.ok){din.value="";dmsg.className="ksst g";dmsg.textContent="queued "+(r.j.file||(r.j.added+" from "+acc));loadIngest();}
       else{dmsg.className="ksst r";dmsg.textContent=(r.j&&r.j.error)||"couldn't pull";}});});
   drow.appendChild(dacc);drow.appendChild(din);drow.appendChild(fwrap);drow.appendChild(vwrap);drow.appendChild(wwrap);drow.appendChild(dbtn);drow.appendChild(dmsg);host.appendChild(drow);
   // or pull a file from a GitHub repo (needs a github_token stored)

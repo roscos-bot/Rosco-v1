@@ -9,23 +9,32 @@ degrades that file to 'unreadable' and never crashes.
 """
 from __future__ import annotations
 
+import threading
+
 _MODEL = None
-_TRIED = False
+_TRIED = False                 # latched True only once we KNOW the answer (loaded, or lib absent)
+_LOAD_LOCK = threading.Lock()  # serializes the one-time model load (server is multi-threaded)
+_INFER_LOCK = threading.Lock() # base.en isn't safe for concurrent inference — one clip at a time
 
 
 def _model():
     """The cached Whisper model, or None if faster-whisper can't load. base.en is a
-    good speed/accuracy balance for English business clips on CPU; loaded once."""
+    good speed/accuracy balance for English business clips on CPU; loaded once, behind
+    a lock. A *transient* load failure (a dropped model download) is NOT latched, so a
+    later pull retries; only a permanently-absent library latches None."""
     global _MODEL, _TRIED
-    if _TRIED:
+    with _LOAD_LOCK:
+        if _TRIED:
+            return _MODEL
+        try:
+            from faster_whisper import WhisperModel
+            _MODEL = WhisperModel("base.en", device="cpu", compute_type="int8")
+            _TRIED = True                    # success — cache it
+        except ImportError:
+            _TRIED = True                    # library isn't installed — permanent, don't retry
+        except Exception:
+            _MODEL = None                    # transient (download/timeout) — leave _TRIED False to retry
         return _MODEL
-    _TRIED = True
-    try:
-        from faster_whisper import WhisperModel
-        _MODEL = WhisperModel("base.en", device="cpu", compute_type="int8")
-    except Exception:
-        _MODEL = None
-    return _MODEL
 
 
 def _ffmpeg() -> str | None:
@@ -72,12 +81,15 @@ def transcribe(data: bytes, name: str = "") -> str:
     """Transcribe a video/audio file's speech. '' if unavailable, undecodable, or the
     result is too thin to be real speech (a silent clip, music-only, background noise)."""
     m = _model()
+    if m is None:                       # no model — don't waste ffmpeg decoding the whole clip
+        return ""
     audio = _decode(data)
-    if m is None or audio is None or len(audio) < 16000:   # under ~1s of audio
+    if audio is None or len(audio) < 16000:   # under ~1s of audio
         return ""
     try:
-        segments, _info = m.transcribe(audio, language="en", vad_filter=True)
-        text = " ".join(seg.text.strip() for seg in segments).strip()
+        with _INFER_LOCK:               # one clip at a time — concurrent calls garble base.en's output
+            segments, _info = m.transcribe(audio, language="en", vad_filter=True)
+            text = " ".join(seg.text.strip() for seg in segments).strip()
     except Exception:
         return ""
     if len(text) < 20 or len(text.split()) < 5:
