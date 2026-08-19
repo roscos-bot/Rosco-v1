@@ -53,11 +53,11 @@ class Business:
     captain: str
     account: str          # the Google account its mail actually lives in
     own_domain: bool      # False means it shares rossfusz@gmail.com with six others
-    code: str = ""        # a 3-letter tag (SSH, RUM, RCE…) shown beside the name
+    code: str = ""        # a 3-letter tag (SHH, RUM, RCE…) shown beside the name
 
 
 BUSINESSES = (
-    Business("steelhaven", "SteelHaven Homes", "HavenMind", "ross@steelhaven.homes", True, "SSH"),
+    Business("steelhaven", "SteelHaven Homes", "HavenMind", "ross@steelhaven.homes", True, "SHH"),
     Business("rum", "Romann Utility Machines", "CaptainMorgan", "ross@rumachines.com", True, "RUM"),
     Business("river-city", "River City Enterprises", "Twain", "rossfusz@gmail.com", False, "RCE"),
     Business("sugar-creek", "Sugar Creek Drones", "Harrier", "rossfusz@gmail.com", False, "SCD"),
