@@ -72,12 +72,14 @@ BUSINESSES = (
     Business("system", "Rosco's Vault (code & system)", "Rosco", "rossfusz@gmail.com", False, "SYS"),
 )
 
-# slug -> (law, marketing, books, it) bench-member NAMES; None = that seat is empty.
+# slug -> (law, marketing, books, it, ops) bench-member NAMES; None = that seat is
+# empty. `ops` (construction/site) is the optional 5th seat - only a business that
+# actually builds fills it, so most tuples stay length-4 and zip() drops the ops seat.
 # rank/role/reports_to are DERIVED in roster() from _ROLES + the business, NOT
 # stored here - populating this with (rank, business, role, reports_to) would make
-# roster() mint four bogus agents.
+# roster() mint bogus agents.
 _BENCH = {
-    "steelhaven":    ("Steele", "Forge", "Nate Plumb", "Gage"),
+    "steelhaven":    ("Steele", "Forge", "Nate Plumb", "Gage", "Girder"),
     "rum":           ("Remington", "Flint", "Nate Chambers", "Bolt"),
     "river-city":    ("Banks", "Marlowe", "Nate Wharton", "Keyes"),
     "sugar-creek":   ("Fields", "Bloom", "Nate Bushel", "Swift"),
@@ -89,7 +91,7 @@ _BENCH = {
 }
 
 _ROLES = (("law", LIEUTENANT), ("marketing", LIEUTENANT),
-          ("books", QUARTERMASTER), ("it", WARRANT))
+          ("books", QUARTERMASTER), ("it", WARRANT), ("ops", LIEUTENANT))
 
 
 def roster() -> list[Agent]:
@@ -107,7 +109,7 @@ def roster() -> list[Agent]:
         # .get so a newly-added Business without a _BENCH entry simply gets an
         # empty bench (the `if name` below drops the None seats) instead of a
         # KeyError that would crash roster() -> mesh/agents/find on the next edit.
-        names = _BENCH.get(biz.slug, (None, None, None, None))
+        names = _BENCH.get(biz.slug, (None,) * len(_ROLES))
         for (role, rank), name in zip(_ROLES, names):
             if name:
                 out.append(Agent(name, rank, biz.slug, role, biz.captain))
@@ -127,11 +129,11 @@ def bench(business: str) -> list[Agent]:
     return [a for a in roster() if a.business == business and a.rank != CAPTAIN]
 
 
-# The four domains a bench seat can own, matching _ROLES. A captain leans on the
+# The domains a bench seat can own, matching _ROLES. A captain leans on the
 # specialist whose domain a task falls in - THIS is what makes the bench real
 # rather than a picture: delegation resolves a task to one of these, or (None)
-# stays with the captain.
-DOMAINS = ("law", "marketing", "books", "it")
+# stays with the captain. `ops` is construction/site work - only builders staff it.
+DOMAINS = ("law", "marketing", "books", "it", "ops")
 
 
 def specialist_for(business: str, domain: str) -> Agent | None:
@@ -174,6 +176,11 @@ _DOMAIN_HINTS = {
     "it": ("website", "webpage", "deploy", "server", "database", "integration",
            "webhook", "dashboard", "netlify", "endpoint", "software", "codebase",
            "api"),
+    "ops": ("construction", "jobsite", "job site", "build schedule", "cpm",
+            "critical path", "milestone", "framing", "slab", "foundation",
+            "subcontractor", "procurement", "punch list", "certificate of occupancy",
+            "blower door", "rough-in", "superintendent", "foreman", "site work",
+            "drywall", "concrete", "roofing", "panel install"),
 }
 
 
