@@ -195,6 +195,30 @@ def main() -> int:
         fails += not check("the page carries no inline <script> body",
                            "<script>" not in page.replace('<script src="/app.js">', ""), True)
 
+        # The Google-account router: a bare 'go' must follow what Rosco OFFERED to
+        # pull (the SteelHaven address in the recent turns), not a stale 'RUM' that
+        # Rosco itself typed while recapping the account it misfired on. That stale
+        # keyword used to win (rum checked first over msg+recent joined), looping
+        # every confirmation back to RUM.
+        from rosco.web import _account_for_msg
+        print("\nGOOGLE ACCOUNT ROUTER")
+        offer = ("It should be reading ross@steelhaven.homes, not the personal/RUM "
+                 "side. Say go and I'll re-run the search against ross@steelhaven.homes.")
+        fails += not check("a bare 'go' follows the offered SteelHaven pull, not stale RUM",
+                           _account_for_msg("go", offer), "steelhaven")
+        fails += not check("an @address outranks a bare RUM keyword in the same turn",
+                           _account_for_msg("go", "pulled RUM again, not ross@steelhaven.homes"),
+                           "steelhaven")
+        fails += not check("the current message wins over a stale recent mention",
+                           _account_for_msg("what's in steelhaven's drive", "earlier: RUM"),
+                           "steelhaven")
+        fails += not check("RUM still routes to RUM when actually meant",
+                           _account_for_msg("check RUM's email", ""), "rum")
+        fails += not check("no business named falls through to personal",
+                           _account_for_msg("go", ""), "personal")
+        fails += not check("'forum' does not trip the rum word boundary",
+                           _account_for_msg("open the forum thread", ""), "personal")
+
         print("\nTOOL CREDENTIAL DOES NOT FOLLOW A REDIRECT")
         fails += tool_redirect_check()
     finally:

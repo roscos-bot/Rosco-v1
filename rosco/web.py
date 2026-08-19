@@ -643,7 +643,7 @@ class ConsoleServer(ThreadingHTTPServer):
             from .vault import OBSERVED
             # Route the correction to the business it concerns, not always Rosco's
             # personal slice — else a RUM/SteelHaven fix never reaches its captain.
-            biz = _account_for_msg(msg + " " + recent) or "personal"
+            biz = _account_for_msg(msg, recent) or "personal"
             who = knowledge._captain(biz) or "Rosco"
             vault = Vault(log, key=self.console._vault_key(s.passphrase))
             for fact in learned:
@@ -821,15 +821,31 @@ class ConsoleServer(ThreadingHTTPServer):
                                                  "event", "appointment"))
         if not (wants_drive or wants_mail or wants_cal or wants_contact or wants_chat):
             return ""
-        # Which account to read. If the message names an own-domain business
-        # (RUM, SteelHaven) read THAT account; otherwise the shared personal
-        # inbox. Fall back to personal when the named account isn't connected.
+        # Which account to read. If the turn names an own-domain business (RUM,
+        # SteelHaven) read THAT account; otherwise the shared personal inbox.
         held = set(Vault(log).secret_names())
-        account = _account_for_msg(msg + " " + (recent or ""))
+        intended = _account_for_msg(msg, recent or "")
+        account, note = intended, ""
         if f"{account}:{g.REFRESH_TOKEN}" not in held:
+            # The named own-domain account isn't connected. Fall back to the
+            # personal inbox so a near-miss still answers SOMETHING — but SAY so.
+            # Silently reading personal and labelling it 'personal' while Ross asked
+            # about SteelHaven is exactly what makes the model confabulate ("I can't
+            # pick the account"); naming the gap lets Rosco give the real fix.
+            if intended != "personal":
+                conn = sorted({n.split(":", 1)[0] for n in held
+                               if n.endswith(":" + g.REFRESH_TOKEN)})
+                dom = "steelhaven.homes" if intended == "steelhaven" else "rumachines.com"
+                note = ("NOTE FOR ROSCO (say this plainly, don't hide it): Ross is "
+                        f"asking about the '{intended}' Google account (ross@{dom}), "
+                        "but it is NOT connected to Rosco yet. Connected accounts: "
+                        f"{', '.join(conn) or 'none'}. Anything below is the PERSONAL "
+                        f"inbox as a fallback — tell Ross the '{intended}' side isn't "
+                        "connected (Settings → Google) rather than passing "
+                        f"personal mail off as {intended}'s.\n\n")
             account = "personal"
         if f"{account}:{g.REFRESH_TOKEN}" not in held:
-            return ""
+            return note
         vault = Vault(log, key=self.console._vault_key(passphrase))
         try:
             token = g.access_for(vault, account)
@@ -936,8 +952,8 @@ class ConsoleServer(ThreadingHTTPServer):
             except Exception as e:
                 parts.append(f"GOOGLE CHAT: couldn't read ({str(e)[:140]}).")
         if not parts:
-            return ""
-        return f"[reading the {account} Google account]\n" + "\n\n".join(parts)
+            return note
+        return note + f"[reading the {account} Google account]\n" + "\n\n".join(parts)
 
     def _do_google_action(self, log, passphrase, a):
         """Carry out one proposed write on the personal Google account. gmail_draft
@@ -3386,11 +3402,26 @@ def _engagement(log):
     return out
 
 
-def _account_for_msg(text):
-    """Which Google account a chat message is about. Own-domain businesses (RUM,
-    SteelHaven) get their own account when clearly named; everything else reads
-    the shared personal inbox. Distinctive tokens only, and 'rum' on a word
-    boundary, so 'forum'/'premium' don't misroute a question to RUM's mailbox."""
+def _account_by_domain(text):
+    """An explicit @steelhaven.homes / @rumachines.com address → that account, else
+    None. An address names the mailbox outright, so it must OUTRANK a bare keyword —
+    a stray 'RUM' in the transcript is usually Rosco recapping the account he just
+    MISFIRED on, and letting that win is what looped every 'go' back to RUM. The LAST
+    own-domain address wins: the most recent mention is the live intent."""
+    acct = None
+    for m in re.finditer(r"@([a-z0-9.\-]+\.[a-z]{2,})", (text or "").lower()):
+        dom = m.group(1)
+        if "steelhaven" in dom:
+            acct = "steelhaven"
+        elif "rumachines" in dom or "romann" in dom:
+            acct = "rum"
+        # a gmail/personal address is a weak signal; leave acct unchanged
+    return acct
+
+
+def _account_by_keyword(text):
+    """A distinctive business token → its account, else None. 'rum' on a word
+    boundary so 'forum'/'premium' don't misroute to RUM's mailbox."""
     low = (text or "").lower()
     if (re.search(r"\brum\b", low) or "romann" in low or "rumachines" in low
             or "captain morgan" in low or "captainmorgan" in low):
@@ -3398,6 +3429,23 @@ def _account_for_msg(text):
     if ("steelhaven" in low or "steel haven" in low or "permahaven" in low
             or "bessemer" in low or "besse" in low):
         return "steelhaven"
+    return None
+
+
+def _account_for_msg(msg, recent=""):
+    """Which Google account a chat turn is about. Own-domain businesses (RUM,
+    SteelHaven) get their own account when clearly named; everything else reads the
+    shared personal inbox.
+
+    Priority, strongest first: THIS message beats the recent transcript, and inside
+    each an explicit @address beats a bare keyword. Deliberate — a bare 'RUM' is
+    often Rosco's own recap of the account he MISFIRED on, so letting the current
+    message (and any real address in it) win is what stops the 'every go re-hits
+    RUM' loop when Ross confirms a SteelHaven pull. Falls through to personal."""
+    for scope in (msg, recent):
+        acct = _account_by_domain(scope) or _account_by_keyword(scope)
+        if acct:
+            return acct
     return "personal"
 
 
