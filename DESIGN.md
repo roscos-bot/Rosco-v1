@@ -164,7 +164,7 @@ Rank encodes **blast radius**, not seniority theatre.
 |---|---|---|
 | Commander | **Ross** — holds no rank in the roster | grants everything; cannot delegate it |
 | Chief of Staff | **Rosco** | the only thing that sees across businesses |
-| Captain ×8 | HavenMind, CaptainMorgan, Twain, Harrier, Scout, Argus, Ledger, Rosco | commands one business, convenes its bench |
+| Captain ×8 | Bessemer, CaptainMorgan, Twain, Harrier, Scout, Argus, Ledger, Hearth | commands one business, convenes its bench |
 | Lieutenant | law, marketing | advises inside one business, cannot see another |
 | Quartermaster | the Nates (books) | books only |
 | Warrant Officer | IT | technical specialist; advises, does not command |
