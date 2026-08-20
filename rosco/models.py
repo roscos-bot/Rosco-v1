@@ -54,7 +54,8 @@ OPENAI = "openai"
 # gets confused with the Workspace creds (google_client_id/secret/refresh_token).
 GEMINI = "gemini"
 XAI = "xai"
-OLLAMA = "ollama"          # on-machine; needs no key and no internet
+OLLAMA = "ollama"          # on-machine (Ollama native API, :11434); no key, no internet
+BIONIC = "bionic"          # on-machine via LM Studio (OpenAI-compatible, :1234/v1); no key
 
 # Where a provider's credential lives in the vault. 'system' rather than a
 # business, because a model key is infrastructure - it is not RUM's or
@@ -77,7 +78,7 @@ class Choice:
 
     @property
     def needs_key(self) -> bool:
-        return self.provider != OLLAMA
+        return self.provider not in (OLLAMA, BIONIC)   # both run on the machine, keyless
 
 
 @dataclass
@@ -92,12 +93,16 @@ class Trial:
 
 # Sensible starting points. Deliberately not authoritative - they are what the
 # system uses until Ross changes one, and changing one is an event, not an edit.
+# Bionic (local LM Studio, qwen/qwen3.8-27b) is the default for every TEXT role now —
+# on-machine, no cloud key, zero credits. VISION stays on a cloud model because the local
+# qwen is text-only; load a local vision model and set vision -> bionic, or leave it cloud.
+_BIONIC_MODEL = "qwen/qwen3.8-27b"
 DEFAULTS = {
-    CHAT:      ("anthropic/claude-opus-5", OPENROUTER),
-    WORKHORSE: ("claude-sonnet-5", ANTHROPIC),
-    CHEAP:     ("anthropic/claude-haiku-4.5", OPENROUTER),
+    CHAT:      (_BIONIC_MODEL, BIONIC),
+    WORKHORSE: (_BIONIC_MODEL, BIONIC),
+    CHEAP:     (_BIONIC_MODEL, BIONIC),
     VISION:    ("anthropic/claude-opus-5", OPENROUTER),
-    LOCAL:     ("llama3.1:8b", OLLAMA),
+    LOCAL:     (_BIONIC_MODEL, BIONIC),
 }
 
 

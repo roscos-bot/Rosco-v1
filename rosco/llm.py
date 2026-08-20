@@ -12,9 +12,23 @@ surfaces that to Ross rather than quietly reaching for something cheaper.
 """
 from __future__ import annotations
 
+import os
+import re
+
 from . import safehttp
-from .models import (ANTHROPIC, GEMINI, OLLAMA, OPENAI, OPENROUTER, WORKHORSE,
-                     XAI, Models, secret_name)
+from .models import (ANTHROPIC, BIONIC, GEMINI, OLLAMA, OPENAI, OPENROUTER,
+                     WORKHORSE, XAI, Models, secret_name)
+
+
+def _bionic_base() -> str:
+    """LM Studio's OpenAI-compatible base — env-overridable, defaults to loopback:1234."""
+    return os.environ.get("BIONIC_URL", "http://localhost:1234/v1").rstrip("/")
+
+
+def _strip_think(text: str) -> str:
+    """qwen3 (bionic) is a reasoning model — drop any <think>…</think> scratchpad so the
+    reply is the answer, not the working."""
+    return re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
 
 
 class NoModel(RuntimeError):
@@ -80,6 +94,21 @@ def _provider_call(provider, model, key, system, user, max_tokens, temperature,
         u = d.get("usageMetadata") or {}
         return (text, int(u.get("promptTokenCount", 0)),
                 int(u.get("candidatesTokenCount", 0)))
+
+    if provider == BIONIC:
+        # Local LM Studio, OpenAI-compatible /v1. NO bearer (local, keyless) — which also
+        # means safehttp skips the https/no-internal guard, so http://localhost is allowed,
+        # exactly like the OLLAMA branch below.
+        d = safehttp.call(_bionic_base() + "/chat/completions", method="POST",
+                          timeout=timeout,
+                          payload={"model": model, "max_tokens": max_tokens,
+                                   "temperature": temperature,
+                                   "messages": [{"role": "system", "content": system},
+                                                {"role": "user", "content": user}]})
+        u = d.get("usage") or {}
+        choices = d.get("choices") or []
+        text = _strip_think((choices[0].get("message") or {}).get("content", "") if choices else "")
+        return text, int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
 
     if provider == OLLAMA:
         body = {"model": model, "stream": False,
@@ -174,6 +203,21 @@ def _provider_vision(provider, model, key, prompt, image_b64, media_type,
         u = d.get("usageMetadata") or {}
         return (text, int(u.get("promptTokenCount", 0)),
                 int(u.get("candidatesTokenCount", 0)))
+    if provider == BIONIC:
+        # Local LM Studio, OpenAI image shape (data URI). Only works if the loaded model
+        # is vision-capable — qwen3.8-27b is text-only, so vision stays cloud by default;
+        # this path is here for when a VL model is loaded and vision is pointed at bionic.
+        d = safehttp.call(_bionic_base() + "/chat/completions", method="POST",
+                          timeout=timeout,
+                          payload={"model": model, "max_tokens": max_tokens, "messages": [
+                              {"role": "user", "content": [
+                                  {"type": "text", "text": prompt},
+                                  {"type": "image_url",
+                                   "image_url": {"url": f"data:{media_type};base64,{image_b64}"}}]}]})
+        u = d.get("usage") or {}
+        choices = d.get("choices") or []
+        text = _strip_think((choices[0].get("message") or {}).get("content", "") if choices else "")
+        return text, int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
     if provider == OLLAMA:
         # Local vision (llava etc.): ollama's own shape carries the image as
         # base64 in `images` on the message. No key, no internet — it must NOT

@@ -27,8 +27,8 @@ from rosco.grants import (ANSWER, ANY, ASK, DECLINE, DO, GET,  # noqa: E402
 from rosco.identity import CERTAIN, CLAIMED, UNKNOWN, People  # noqa: E402
 from rosco.keys import Signer, Trust  # noqa: E402
 from rosco.meter import ALL, Meter, cost  # noqa: E402
-from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, Models,  # noqa: E402
-                          secret_name)
+from rosco.models import (CHAT, CHEAP, LOCAL, OPENROUTER, SYSTEM, WORKHORSE,  # noqa: E402
+                          Models, secret_name)
 from rosco.nodes import RENDEZVOUS, Nodes  # noqa: E402
 from rosco.store import Log, Unauthorised  # noqa: E402
 from rosco.agent import Agent  # noqa: E402
@@ -1195,6 +1195,9 @@ def main() -> int:
 
     clf = fresh("console")
     cmm = Models(clf, Vault(clf, key=derive_key("pw", b"s")))
+    # The workhorse default is now bionic (local, KEYLESS), so pin it to a CLOUD
+    # provider with no key stored — that is the "no key" this invariant is about.
+    cmm.choose(WORKHORSE, "anthropic/claude-sonnet-5", OPENROUTER)
     People(clf).enrol("lucas", "telegram", "551")
     fails += not check("no key means no answer, not a worse one",
                        ModelClassifier(cmm).classify("where is my order?"), None)
