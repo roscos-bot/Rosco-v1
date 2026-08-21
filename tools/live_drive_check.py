@@ -65,6 +65,23 @@ def main() -> int:
     console = Console()
     if not console.initialised:
         return bad("not initialised - run `python -m rosco init` first")
+    # getpass on a pipe or a null stdin does not error - it BLOCKS. Run from
+    # anything that captures output (an agent shell, a CI step, a `!` command)
+    # and it hangs until something times it out, leaving an EMPTY log and no clue
+    # what happened. isatty() would be the obvious guard and is not trustworthy
+    # here: Git Bash on Windows reports a tty even for `< /dev/null`, so it is
+    # advisory only. The banner is the real fix - printed and FLUSHED before the
+    # prompt, so a captured log ends with the reason it is stuck instead of
+    # nothing at all.
+    print("About to ask for your passphrase. It is never read from a pipe, an\n"
+          "argument or an environment variable - only typed at a terminal.\n"
+          "If this is the last line in a captured log, it is waiting for a\n"
+          "keystroke it will never get: re-run it from a real terminal.\n",
+          flush=True)
+    if sys.stdin is None or (hasattr(sys.stdin, "isatty") and not sys.stdin.isatty()):
+        print("(stdin is not a terminal - stopping rather than hanging.)",
+              file=sys.stderr, flush=True)
+        return 2
     # ONE passphrase prompt for the whole sweep. Every account resolves from the
     # same unlocked vault, so proving personal + rum + steelhaven costs one typing
     # of it rather than three.
