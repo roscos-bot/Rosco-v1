@@ -431,6 +431,38 @@ These were on the "not yet built" list and have come off it:
 - **The roster** - 44 agents: Rosco, five cross-business function heads, eight
   captains and their benches.
 - **Budget ceiling** - set, $200/month soft cap. Nothing is ever blocked by it.
+- **Deliverables** - `deliverables.py` + the Drive writes in `adapters/google.py`,
+  driven by a proposed `drive_place` action. **Proven against real Google on 21
+  Aug**, not just against stubs: `tools/live_drive_check.py` swept all three
+  connected accounts read-only (token, live identity, granted scopes, Drive read)
+  with no failures, then ran the write path for real - folder create, the
+  resumable session URL, the raw-body PUT, and a read-back proving the file
+  landed INSIDE its folder rather than the Drive root. Details below.
+
+## Deliverables, in detail
+
+The Drive write primitives landed 20 Aug (`drive_create_folder` / `drive_upload` / `drive_move` / `drive_share`,
+plus a raw-body path in `safehttp` for the resumable upload), and the console
+can place a file via a proposed `drive_place` action. Two rules are baked in
+and tested: a write resolves its token through `access_for_guarded`, so it
+cannot land in the wrong company's Drive; and sharing names a PERSON - there
+is no argument that mints an 'anyone with the link' permission.
+
+Routing is automatic as of the same day: the file NAME first (it travels with
+the file), then the conversation, and **ASK when neither is clear** - there is
+deliberately no fallback to 'personal'. Guessing the account for a WRITE is
+the healthcare-directive-under-a-homebuilder mistake with an audience, since
+the wrong company can see the file. The routed answer and its reason go in the
+confirmation preview, so a misroute is caught before it happens, not after.
+
+Folder conventions landed with it: `deliverables.py` declares an ordered,
+closed list of folders per business, seeded from capabilities.py (what a
+business can be ASKED for is a fair description of what it HAS). The file
+name is read first, then the talk around it, then the file TYPE - a `.step`
+is a drawing wherever it came from. Unlike the business route this NEVER
+asks: the wrong subfolder of the right Drive is a drag-and-drop to fix and
+nobody outside sees it, so it always answers, falls back to `Unfiled` when
+nothing matches, and reports its reasoning into the confirmation.
 
 ## Not yet built
 
@@ -440,30 +472,7 @@ Ordered by what the chief-of-staff direction wants next.
    browser and desktop control this needed now exists, so QBO transaction
    classification at the *business agent* level is unblocked and is the nearest
    real win.
-2. **Deliverables** - *built; unproven against real Google.* The Drive write primitives exist as of
-   20 Aug (`drive_create_folder` / `drive_upload` / `drive_move` / `drive_share`,
-   plus a raw-body path in `safehttp` for the resumable upload), and the console
-   can place a file via a proposed `drive_place` action. Two rules are baked in
-   and tested: a write resolves its token through `access_for_guarded`, so it
-   cannot land in the wrong company's Drive; and sharing names a PERSON - there
-   is no argument that mints an 'anyone with the link' permission.
-
-   Routing is automatic as of the same day: the file NAME first (it travels with
-   the file), then the conversation, and **ASK when neither is clear** - there is
-   deliberately no fallback to 'personal'. Guessing the account for a WRITE is
-   the healthcare-directive-under-a-homebuilder mistake with an audience, since
-   the wrong company can see the file. The routed answer and its reason go in the
-   confirmation preview, so a misroute is caught before it happens, not after.
-
-   Folder conventions landed with it: `deliverables.py` declares an ordered,
-   closed list of folders per business, seeded from capabilities.py (what a
-   business can be ASKED for is a fair description of what it HAS). The file
-   name is read first, then the talk around it, then the file TYPE - a `.step`
-   is a drawing wherever it came from. Unlike the business route this NEVER
-   asks: the wrong subfolder of the right Drive is a drag-and-drop to fix and
-   nobody outside sees it, so it always answers, falls back to `Unfiled` when
-   nothing matches, and reports its reasoning into the confirmation.
-3. **The unseal protocol** - sealed-node boot, Telegram authorisation, peer
+2. **The unseal protocol** - sealed-node boot, Telegram authorisation, peer
    transport, per-node secret wrapping. Only matters once a second node exists;
    there is still exactly one (`console`).
 
