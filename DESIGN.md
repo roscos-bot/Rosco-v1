@@ -364,35 +364,99 @@ rather than return everything.** Silently ignoring a constraint declared
 upstream is the exact failure four audits kept finding, and it would be worse
 here because it would look like a working permission.
 
+## The direction, decided 20 Aug 2026
+
+**Rosco is Ross's own chief of staff. It is not, for now, a multi-person
+permission system.**
+
+Decided against evidence, not preference. A full diagnostic on 20 Aug read every
+one of the 3,052 events in the log and found the split stark:
+
+| What the log actually holds | Events |
+|---|---|
+| Ingest decisions (proposed + decided) | 1,418 |
+| Vault learned / forgot | 706 |
+| Model calls billed | 572 |
+| Agents answering | 214 |
+| Inbox triage | 71 |
+| **Grants issued** | **0** |
+| **Asks raised** | **0** |
+
+Zero grants is not "expired" - no grant has ever been created. The doorway, the
+four outcomes, the closed capability vocabulary and the signed-grant chain are
+the most carefully built part of this system and have never gated a real
+request. Meanwhile the paths carrying the daily load - ingest, the vault, chat,
+inbox triage - have had the least design attention.
+
+So the mission line at the top of this document ("it exists so people stop asking
+Ross for things he would have said yes to anyway") describes a system Ross is not
+actually using. The permission core **stays**: it is load-bearing for how agents
+reach Ross's own data, and it is what keeps a spoofable channel safe to leave
+open. But building *breadth for other people* is no longer the next work. Depth
+for Ross is.
+
+Revisit when a second person genuinely needs in. Two strangers (`8497770850`,
+`1485059666`) sent `/start` on 16-17 Aug and bounced off an empty book; if that
+starts happening for real, the premise is back on.
+
+---
+
 ## Still open
 
 Recorded here so they are not silently decided by whoever writes the code next:
 
-- **Budget ceiling** for LLM spend — not set.
 - **Ranks for sub-sub-agents**, if the bench ever grows one.
-- **Enrolment data** — no real handles are in the book yet. This needs a console
-  command Ross runs locally, not data pasted into a chat.
+- **Secrets cannot be un-sealed.** `vault.forgot` retires a *lesson*; no event
+  kind retires a *secret*. A key written to the vault is in the log for good, so
+  a mis-entered one is revoked at the provider, never deleted here. Adding a
+  `vault.secret.forgot` kind is a closed-vocabulary change to the core -
+  deliberately not done on the side.
 
 ## Built
 
-`store.py` · `keys.py` · `vault.py` · `grants.py` · `roster.py` · `identity.py` ·
-`nodes.py` · `models.py` · `asks.py`, with 103 safety properties in
-`tests/test_core.py`. Everything marked HOSTILE there was live code once.
+The core: `store.py` / `keys.py` / `vault.py` / `grants.py` / `roster.py` /
+`identity.py` / `nodes.py` / `models.py` / `asks.py`, with **309** safety
+properties in `tests/test_core.py`. Everything marked HOSTILE there was live
+code once.
+
+These were on the "not yet built" list and have come off it:
+
+- **The arrival pipeline** - `arrive.py`, `identity.py`, `classify.py`, `grants.py`.
+- **The console** - `web.py` + `web_app.js`: 3D mesh, queue, chat, settings.
+- **Ingest** - `ingest.py`, `knowledge.py`. The busiest path in the log by far.
+- **The Google connector** - `adapters/google.py`, with a live whoami tripwire so
+  a token sealed under the wrong slug cannot read another company's mail.
+- **Eyes and hands** - `adapters/browser.py`, `adapters/computer.py`: browser and
+  desktop control for diagnosis, reads only, standing autonomy Ross arms.
+- **The roster** - 44 agents: Rosco, five cross-business function heads, eight
+  captains and their benches.
+- **Budget ceiling** - set, $200/month soft cap. Nothing is ever blocked by it.
 
 ## Not yet built
 
-1. **The arrival pipeline** — channel adapter → `identity.resolve()` →
-   `Request` → `grants.decide()` → act / answer / `asks.raise_()`. This is the
-   first job, and the seam where an `Identity` must not be allowed to decay into
-   a bare string.
-2. **The console** — where Ross reads the queue and answers it. Only localhost
-   changes anything, so this is also where his signing key lives.
-3. **The unseal protocol** — sealed-node boot, Telegram authorisation, peer
-   transport, per-node secret wrapping.
-4. **Ingest** — populate the vault from `.md` / `.ml` files.
-5. **Deliverables** — 3D models and files to the right Drive, organised, shared.
-6. **Tools each org can call**: shhops, shhsocial, accounting, QBO (including
-   browser control at the *business agent* level for transaction classification).
+Ordered by what the chief-of-staff direction wants next.
+
+1. **Tools each business can call** - shhops, shhsocial, accounting, QBO. The
+   browser and desktop control this needed now exists, so QBO transaction
+   classification at the *business agent* level is unblocked and is the nearest
+   real win.
+2. **Deliverables** - *in progress.* The Drive write primitives exist as of
+   20 Aug (`drive_create_folder` / `drive_upload` / `drive_move` / `drive_share`,
+   plus a raw-body path in `safehttp` for the resumable upload), and the console
+   can place a file via a proposed `drive_place` action. Two rules are baked in
+   and tested: a write resolves its token through `access_for_guarded`, so it
+   cannot land in the wrong company's Drive; and sharing names a PERSON - there
+   is no argument that mints an 'anyone with the link' permission. Still to do:
+   routing a file to the right business automatically rather than being told,
+   and the folder conventions per business.
+3. **The unseal protocol** - sealed-node boot, Telegram authorisation, peer
+   transport, per-node secret wrapping. Only matters once a second node exists;
+   there is still exactly one (`console`).
+
+Deferred with the multi-person premise (see the direction note above): real
+enrolment data beyond Ross, and anything widening the doorway to more people.
+
+---
 
 ## Carried over from V6, deliberately
 

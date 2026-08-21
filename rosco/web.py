@@ -694,9 +694,24 @@ class ConsoleServer(ThreadingHTTPServer):
                     out = _EXTERNAL_DATA_GUARD + "\n" + out
                 shown += "\n\n" + out
             elif t in ("gmail_draft", "calendar_create", "calendar_series", "chat_post",
-                       "github_pr", "browser", "computer", "image"):
+                       "github_pr", "browser", "computer", "image", "drive_place"):
                 self._pending = a
-                if t == "gmail_draft":
+                if t == "drive_place":
+                    # Name the SOURCE and the DESTINATION plainly. This preview is
+                    # the whole defence against a steered ACTION line: Ross has to
+                    # be able to see "that is not my file" or "that is not my
+                    # Drive" before he types yes.
+                    src = str(a.get("file") or a.get("file_id") or "")
+                    acct = str(a.get("account") or "personal")
+                    fold = str(a.get("folder") or "")
+                    to = str(a.get("share") or "")
+                    shown += ("\n\n\U0001f4c1 Ready to place " + src[:120]
+                              + " in " + acct + "'s Drive"
+                              + (" → " + fold if fold else "")
+                              + (", shared with " + to + " as "
+                                 + str(a.get("role") or "reader") if to else "")
+                              + ". Reply 'yes' to place it — never a public link.")
+                elif t == "gmail_draft":
                     shown += ("\n\n✉️ Ready to draft an email to "
                               + str(a.get("to", ""))[:80] + " — subject \""
                               + str(a.get("subject", ""))[:60]
@@ -1054,6 +1069,127 @@ class ConsoleServer(ThreadingHTTPServer):
             return f"(couldn't complete that — {str(e)[:150]})"
         return "(I didn't recognise that action.)"
 
+    # ---- deliverables: a file into the right business Drive -----------------
+
+    MAX_DELIVERABLE = 128 * 1024 * 1024     # a 3D model is big; a disk image is not
+
+    def _drive_folder_id(self, g, token, name):
+        """The folder named `name`, made if it isn't there yet."""
+        hit = g.drive_find_folder(token, name)
+        if hit and hit.get("id"):
+            return hit["id"]
+        return (g.drive_create_folder(token, name) or {}).get("id", "")
+
+    def _do_drive_place(self, log, passphrase, a):
+        """Put a deliverable in ONE business's Drive: upload a local file (or move
+        one already in Drive) into a named folder, and optionally share it with a
+        single named person.
+
+        Reached only after Ross confirmed - drive_place is in the proposable list,
+        never the run-now list, because it writes where other people can see.
+
+        Three things this refuses outright rather than trusting the proposal:
+
+          THE WRONG COMPANY. The token comes from access_for_guarded(), so an
+          own-domain slug wired to the wrong Google login reads back '' and the
+          write never happens. SteelHaven's plans landing in RUM's Drive is
+          visible to other people and cannot be quietly undone.
+
+          THE VAULT. An ACTION line can be steered by injected text in a fetched
+          email - that was finding #18. "Upload ~/.rosco/rosco.db to a Drive I can
+          read" is the obvious attack, so anything inside the vault directory is
+          refused BY PATH before it is opened. No deliverable lives there.
+
+          A PUBLIC LINK. Sharing goes through drive_share, which can only name a
+          person; no argument it accepts produces 'anyone with the link'.
+        """
+        import mimetypes
+        from pathlib import Path as _P
+
+        from .adapters import google as g
+        from .roster import business as biz_of
+
+        account = str(a.get("account") or "personal").strip().lower()
+        b = biz_of(account)
+        if account != "personal" and b is None:
+            return f"(I don't know a business called {account!r}.)"
+        if b is not None and not b.own_domain:
+            account = "personal"     # the shared-mailbox slugs live in that account
+
+        path = str(a.get("file") or "").strip()
+        file_id = str(a.get("file_id") or "").strip()
+        folder = str(a.get("folder") or "").strip()
+        share_to = str(a.get("share") or "").strip()
+        role = str(a.get("role") or "reader").strip().lower()
+        if not (path or file_id):
+            return "(nothing to place - name a local file or a Drive file id.)"
+
+        # The SOURCE is checked before any credential work. A request to upload
+        # the vault was never going to be allowed, so it should not get as far as
+        # minting an access token - and checking here means the refusal is
+        # provable without a Google connection.
+        p = None
+        if path:
+            p = _P(path).expanduser()
+            try:
+                p = p.resolve()
+            except Exception:
+                return "(that path doesn't resolve to a real place.)"
+            home = self.console.home.resolve()
+            if p == home or home in p.parents:
+                return ("(refused: that's inside the vault directory. The log, the "
+                        "sealed key and the salt never leave this machine.)")
+            if not p.is_file():
+                return f"(there's no file at {p}.)"
+            size = p.stat().st_size
+            if size > self.MAX_DELIVERABLE:
+                return (f"(that file is {size // (1024 * 1024)}MB - past the "
+                        f"{self.MAX_DELIVERABLE // (1024 * 1024)}MB ceiling for placing from here.)")
+
+        if f"{account}:{g.REFRESH_TOKEN}" not in set(Vault(log).secret_names()):
+            return f"(Google isn't connected for {account}, so I couldn't place that.)"
+        try:
+            vault = Vault(log, key=self.console._vault_key(passphrase))
+            token = g.access_for_guarded(vault, account)
+        except Exception as e:
+            return f"(couldn't sign in to {account}'s Google - {str(e)[:120]})"
+        if not token:
+            return (f"(refused: {account}'s Google credential doesn't sign in as "
+                    f"{account}. Re-authorize it in Settings before I write there.)")
+
+        try:
+            parent = self._drive_folder_id(g, token, folder) if folder else ""
+            if folder and not parent:
+                return f"(couldn't find or make a folder called {folder!r}.)"
+            if p is not None:
+                mime = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+                made = g.drive_upload(token, p.name, p.read_bytes(), mime, parent) or {}
+                what = "Uploaded " + p.name
+            else:
+                made = (g.drive_move(token, file_id, parent) if parent
+                        else {"id": file_id}) or {}
+                what = "Moved " + (made.get("name") or file_id)
+
+            note = ""
+            fid = made.get("id", "")
+            if share_to and fid:
+                try:
+                    g.drive_share(token, fid, share_to, role)
+                    note = f", shared with {share_to} as {role}"
+                except ValueError as e:
+                    # A bad address or role must not undo a good placement - the
+                    # file is already where it belongs; say what didn't happen.
+                    note = f" (not shared - {str(e)[:110]})"
+        except PermissionError as e:
+            return f"(refused - {str(e)[:150]})"
+        except Exception as e:
+            return f"(couldn't place that - {str(e)[:150]})"
+
+        link = made.get("webViewLink", "")
+        return ("\U0001f4c1 " + what + (f" into {folder}" if folder else "")
+                + f" on {account}'s Drive" + note + "."
+                + (f"\n{link}" if link else ""))
+
     def _do_action(self, log, passphrase, a):
         """Route a proposed write to the right connector. GitHub opens a PR
         (never merges); ingest queues items for review; browser drives Chromium;
@@ -1070,6 +1206,11 @@ class ConsoleServer(ThreadingHTTPServer):
             return self._do_computer_action(a)
         if a.get("type") == "image":
             return self._do_image_action(log, passphrase, a)
+        if a.get("type") == "drive_place":
+            # Its own path, NOT _do_google_action: that one is hardcoded to the
+            # personal account with an unguarded token, which is fine for a draft
+            # in Ross's own mailbox and wrong for a write into a company Drive.
+            return self._do_drive_place(log, passphrase, a)
         return self._do_google_action(log, passphrase, a)
 
     def _do_image_action(self, log, passphrase, a):

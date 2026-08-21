@@ -279,13 +279,3 @@ def business(slug: str) -> Business | None:
         if b.slug == slug:
             return b
     return None
-
-
-def shared_mailbox_businesses() -> list[str]:
-    """The seven that share one inbox.
-
-    This list is why routing reads content rather than the account it arrived
-    on - and why getting that wrong put a healthcare directive under a
-    homebuilder the first time it was tried.
-    """
-    return [b.slug for b in BUSINESSES if not b.own_domain]

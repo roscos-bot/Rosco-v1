@@ -888,3 +888,145 @@ def chat_post(token: str, space: str, text: str) -> dict:
     return safehttp.call(
         f"https://chat.googleapis.com/v1/{space}/messages",
         method="POST", bearer=token, timeout=20, payload={"text": text})
+
+
+# ---- Drive WRITES: place a deliverable, never publish it --------------------
+#
+# Drive was read-only until now, which is why "deliverables to the right Drive"
+# sat unbuilt. These four are the primitives that unblock it, and they carry two
+# rules the read side never had to think about:
+#
+#   A WRITE GOES TO ONE COMPANY'S DRIVE. Reading the wrong Drive shows Ross the
+#   wrong file; WRITING the wrong Drive puts SteelHaven's plans in RUM's account,
+#   where the mistake is visible to other people and cannot be quietly undone.
+#   So every caller resolves its token through access_for_guarded(), which fails
+#   CLOSED when an own-domain slug is wired to the wrong Google login.
+#
+#   NOTHING IS EVER SHARED PUBLICLY. drive_share names a person. It cannot mint
+#   an "anyone with the link" permission at all - not as a default, not as an
+#   option - because that is a one-click, irreversible data leak and no agent
+#   should be able to reach for it. A public link stays a thing Ross does in the
+#   Drive UI himself, deliberately.
+
+FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+def drive_create_folder(token: str, name: str, parent_id: str = "") -> dict:
+    """A folder, optionally inside a parent. Returns {id, name, webViewLink}."""
+    if not (name or "").strip():
+        raise ValueError("a folder needs a name")
+    meta = {"name": name.strip(), "mimeType": FOLDER_MIME}
+    if parent_id:
+        meta["parents"] = [parent_id]
+    return safehttp.call(
+        "https://www.googleapis.com/drive/v3/files?" + _q(
+            {"fields": "id,name,webViewLink", **_ALL_DRIVES}),
+        method="POST", bearer=token, timeout=20, payload=meta)
+
+
+def drive_upload(token: str, name: str, data: bytes, mime: str,
+                 parent_id: str = "", *, timeout: int = 120) -> dict:
+    """Upload bytes as a new Drive file. Resumable: metadata first (JSON), then
+    the content in one PUT to the session URL Google hands back.
+
+    Resumable rather than multipart because a 3D model is big, and multipart
+    means holding a second full copy of the payload as a MIME body in memory.
+    The session URL comes back in the Location header of the first response.
+    """
+    if not (name or "").strip():
+        raise ValueError("an upload needs a name")
+    if not isinstance(data, (bytes, bytearray)):
+        raise ValueError("upload data must be bytes")
+    meta = {"name": name.strip()}
+    if parent_id:
+        meta["parents"] = [parent_id]
+    if mime:
+        meta["mimeType"] = mime
+    # Step 1: open the session. We need the Location HEADER, not the body, so
+    # this one call goes through _upload_session rather than safehttp.call.
+    session = _upload_session(token, meta, timeout=timeout)
+    # Step 2: the bytes themselves, to the session URL Google just named.
+    return safehttp.call(session, method="PUT", bearer=token, timeout=timeout,
+                         body=bytes(data), content_type=mime or "application/octet-stream")
+
+
+def _upload_session(token: str, meta: dict, *, timeout: int = 120) -> str:
+    """Open a resumable session and return its URL, with the same guards as any
+    other credentialed call: https, no redirect, no internal target.
+
+    safehttp.call returns a parsed BODY; a resumable open returns an empty body
+    and puts the session URL in the Location header, so this reads the header
+    directly - and then holds the returned URL to the same https+external bar,
+    because it is a URL a remote service just handed us and we are about to send
+    the bearer to it.
+    """
+    import json
+    import urllib.request
+    from urllib.error import HTTPError, URLError
+
+    url = ("https://www.googleapis.com/upload/drive/v3/files?"
+           + _q({"uploadType": "resumable", "fields": "id,name,webViewLink", **_ALL_DRIVES}))
+    req = urllib.request.Request(
+        url, data=json.dumps(meta).encode(), method="POST",
+        headers={"Authorization": f"Bearer {safehttp.clean_credential(token, label='token')}",
+                 "Content-Type": "application/json; charset=UTF-8"})
+    opener = urllib.request.build_opener(safehttp._NoRedirect)
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            loc = r.getheader("Location") or ""
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read(2000).decode("utf-8", "replace").strip()
+        except Exception:
+            pass
+        if e.code == 401:
+            detail = "authentication rejected"
+        raise ValueError(f"HTTP {e.code} opening a Drive upload: {detail[:400] or e.reason}") from None
+    except (TimeoutError, URLError) as e:
+        raise ValueError(f"could not open a Drive upload: {getattr(e, 'reason', e)}") from None
+    if not loc:
+        raise ValueError("Drive did not return an upload session")
+    # The session URL is attacker-influenced in principle - it arrives over the
+    # wire - and we are about to PUT the bearer to it. Same bar as everywhere.
+    p = urllib.parse.urlparse(loc)
+    if p.scheme != "https":
+        raise ValueError(f"refusing an upload session over {p.scheme!r}; https only")
+    if safehttp.is_internal(p.hostname or ""):
+        raise PermissionError(f"upload session points at {p.hostname!r}, an internal address; refused")
+    return loc
+
+
+def drive_move(token: str, file_id: str, new_parent: str, old_parent: str = "") -> dict:
+    """Re-parent a file - what 'organised' actually means in Drive terms."""
+    if not (file_id and new_parent):
+        raise ValueError("a move needs a file and a destination folder")
+    params = {"addParents": new_parent, "fields": "id,name,parents,webViewLink", **_ALL_DRIVES}
+    if old_parent:
+        params["removeParents"] = old_parent
+    return safehttp.call(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}?" + _q(params),
+        method="PATCH", bearer=token, timeout=20, payload={})
+
+
+def drive_share(token: str, file_id: str, email: str, role: str = "reader",
+                *, notify: bool = False) -> dict:
+    """Share a file WITH A NAMED PERSON. Never with the public.
+
+    `type` is hardcoded to 'user' and an address is required, so there is no
+    argument a caller can pass - or a model can emit - that produces an 'anyone'
+    permission. Roles are capped at reader/commenter/writer: no 'owner' either,
+    because handing ownership away is not reversible from this side.
+    """
+    if not file_id:
+        raise ValueError("a share needs a file")
+    addr = (email or "").strip()
+    if "@" not in addr:
+        raise ValueError("a share needs a person's email address; links-for-anyone are not available here")
+    if role not in ("reader", "commenter", "writer"):
+        raise ValueError(f"role must be reader, commenter or writer, not {role!r}")
+    return safehttp.call(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?" + _q(
+            {"sendNotificationEmail": "true" if notify else "false", **_ALL_DRIVES}),
+        method="POST", bearer=token, timeout=20,
+        payload={"type": "user", "role": role, "emailAddress": addr})

@@ -38,15 +38,23 @@ pass or nothing lands.
 
 ## The workstreams
 
+Aimed at the **chief-of-staff direction** decided 20 Aug 2026 (see DESIGN.md).
+Rosco is Ross's own second brain; widening the doorway to more people is
+deferred. Paths below are the real ones - the old table named directories
+(`console/`, `enrol/`, `seal/`, `export/`) that were never created.
+
 | Stream | Owns | Depends on | Notes |
 |---|---|---|---|
-| **The console** | `console/` | core (read-only) | Where Ross reads the queue and answers it. Holds his signing key. Only localhost changes anything, so this is also where authority lives. |
-| **Telegram adapter** | `adapters/telegram.py` | `arrive.py` | Turns Telegram updates into `Arrival`s. Proposes only — never edits the system. |
-| **Enrolment + Twilio** | `enrol/` | `identity.py` (read) | SMS-delivered invite links, the bot handshake, Ross's console pairing. See DESIGN.md. |
-| **Unseal protocol** | `seal/` | `vault.py` (read) | Sealed-node boot, Telegram authorisation, peer transport, per-node secret wrapping. |
-| **Excel export** | `export/` | `store.py` (read) | Bound-book export. Serial numbers as text cells, signed, self-describing. Shop and house only, never the cloud VM. |
-| **Capability vocabulary** | `capabilities.py` | — | The seeded list is a guess at Ross's businesses. Needs correcting against reality. Small file, low conflict risk. |
-| **Auditing** | `scratch/` only | everything | Uses the `effect-auditor` agent. Writes no production code — reports, and a human applies. |
+| **Business tools** | `tools.py`, a new `adapters/qbo.py` | `vault.py` (read), `adapters/browser.py` | The next real win. shhops, shhsocial, accounting, QBO - including browser-driven transaction classification at the *business agent* level. |
+| **Deliverables** | `adapters/google.py`, `office.py`, `media.py` | core (read-only) | Models and files to the right Drive, organised and shared. Drafts and proposes; the share itself is Ross's click. |
+| **The console** | `web.py`, `web_app.js`, `web_app.html` | core (read-only) | Where Ross reads the queue and answers it. Holds his signing key. Only localhost changes anything, so this is also where authority lives. Must follow `it/console-design-bible.md`. |
+| **Ingest + vault** | `ingest.py`, `knowledge.py`, `vault.py` | `store.py` | The busiest path in the log (1,418 decisions) and the least-audited relative to use. Worth hardening. |
+| **Telegram adapter** | `adapters/telegram.py` | `arrive.py` | Turns Telegram updates into `Arrival`s. Proposes only - never edits the system. |
+| **Capability vocabulary** | `capabilities.py` | - | The seeded list is a guess at Ross's businesses. Needs correcting against reality. Small file, low conflict risk. |
+| **Auditing** | scratch files only | everything | Uses the `effect-auditor` agent. Writes no production code - reports, and a human applies. |
+
+Dormant until the multi-person premise comes back: enrolment/Twilio, the unseal
+protocol (one node exists), Excel bound-book export.
 
 ## Testing, specifically
 

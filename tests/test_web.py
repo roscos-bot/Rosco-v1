@@ -8,6 +8,8 @@ answer-the-queue loop end to end - the same loop the CLI proves, through the wir
 from __future__ import annotations
 
 import json
+import os
+import socket
 import sys
 import tempfile
 import threading
@@ -17,6 +19,24 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def _dead_port() -> int:
+    """A loopback port with nothing on it: bind, read the number, release."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+# The default text roles run on 'bionic' - local LM Studio on :1234, and KEYLESS,
+# so nothing stops a test from reaching a real model that happens to be loaded.
+# That made this suite non-hermetic and slow: it did a genuine ~15s inference
+# against whatever Ross had open, blowing the 5s client timeout below. Point the
+# provider at a dead port so the chat path fails FAST and identically on every
+# machine - which is what the degrade assertion actually wants to prove.
+os.environ["BIONIC_URL"] = f"http://127.0.0.1:{_dead_port()}/v1"
 
 from rosco.arrive import Arrival, Doorway, Proposal  # noqa: E402
 from rosco.console import Console  # noqa: E402
@@ -163,16 +183,38 @@ def main() -> int:
         fails += not check("chat without the CSRF token is refused", st, 403)
         st, j, _ = req(port, "POST", "/api/chat", {"message": "hi"})
         fails += not check("chat with no session is refused", st, 401)
-        # With the token it runs; no model key is set in this test, so Rosco
-        # replies that no chat model is set - proving the path works and degrades.
+        # With the token it runs. The default chat role is bionic (keyless), aimed
+        # at a dead port up top, so the call is attempted and fails cleanly - a
+        # message in the chat, never a crashed request.
         st, j, _ = req(port, "POST", "/api/chat", {"message": "what's waiting?"},
                        headers={"Cookie": sess, "X-Rosco-CSRF": token})
         fails += not check("chat with the token reaches Rosco", st, 200)
-        # A fake key is set by the settings test above, so the call is attempted
-        # and fails cleanly - never a crash. Either way the reply mentions the
-        # chat model rather than throwing.
-        fails += not check("and a model failure degrades to a message, not a crash",
-                           "chat model" in (j.get("reply") or ""), True)
+        fails += not check("an unreachable model degrades to a message, not a crash",
+                           "couldn't reach the chat model" in (j.get("reply") or ""), True)
+        # The OTHER degrade, and the one that matters most: a role pointed at a
+        # provider whose key the vault does not hold must raise NoModel and SAY so
+        # - "no key means no answer, never a worse one" (llm.py). Bionic is
+        # keyless, so the moment it became the default for every text role this
+        # path stopped being exercised AT ALL. Point chat at a key-requiring
+        # provider to cover it for real; only openrouter's fake key was stored
+        # above, so anthropic has none. No network call - the key check comes first.
+        st, j, _ = req(port, "POST", "/api/cfg/model",
+                       {"role": "chat", "model": "claude-opus-5", "provider": "anthropic"},
+                       headers={"Cookie": sess, "X-Rosco-CSRF": token})
+        fails += not check("the chat role repoints to a key-requiring provider", st, 200)
+        st, j, _ = req(port, "POST", "/api/chat", {"message": "what's waiting?"},
+                       headers={"Cookie": sess, "X-Rosco-CSRF": token})
+        fails += not check("a missing key degrades to 'no chat model set', not a crash",
+                           "no chat model set" in (j.get("reply") or ""), True)
+        fails += not check("and it names the provider whose key is missing",
+                           "anthropic" in (j.get("reply") or ""), True)
+        # Put the default back: later sections read the settings state, and a test
+        # that leaves the fleet's chat role pointed at a keyless-less provider
+        # would be lying about the shape it found.
+        st, _j, _ = req(port, "POST", "/api/cfg/model",
+                        {"role": "chat", "model": "qwen/qwen3.8-27b", "provider": "bionic"},
+                        headers={"Cookie": sess, "X-Rosco-CSRF": token})
+        fails += not check("and the default chat role restores", st, 200)
 
         print("\nLIVE ACTIVITY FEED")
         st, act, _ = req(port, "GET", "/api/activity", headers={"Cookie": sess})
@@ -218,6 +260,45 @@ def main() -> int:
                            _account_for_msg("go", ""), "personal")
         fails += not check("'forum' does not trip the rum word boundary",
                            _account_for_msg("open the forum thread", ""), "personal")
+
+        print("\nDELIVERABLES: A DRIVE WRITE IS PROPOSED, AND FAILS SAFE")
+        # drive_place writes where OTHER PEOPLE can see it, so it must sit in the
+        # proposable list (parked for an explicit 'yes'), never the run-now list
+        # beside ingest/email_watch. Reading the source is how we prove it, since
+        # a real proposal needs a live model.
+        import inspect as _inspect
+        from rosco.web import ConsoleServer as _CS
+        chat_src = _inspect.getsource(_CS.chat)
+        gate = chat_src.index('elif t in ("gmail_draft"')   # the propose-and-park tuple
+        proposed = chat_src[gate:gate + 250]
+        fails += not check("drive_place is in the PROPOSED list",
+                           '"drive_place"' in proposed, True)
+        fails += not check("and nowhere in the branches that run without a 'yes'",
+                           "drive_place" in chat_src[:gate], False)
+        # The vault is the obvious target for a steered ACTION line. Refused by
+        # path, before any credential work - so it refuses even with Google off.
+        vault_file = str(con.db)
+        out = srv._do_drive_place(con.open(PW), PW,
+                                  {"account": "personal", "file": vault_file})
+        fails += not check("uploading the vault database is refused",
+                           "inside the vault directory" in out, True)
+        out = srv._do_drive_place(con.open(PW), PW,
+                                  {"account": "personal", "file": str(con.sealed_path)})
+        fails += not check("and so is the sealed signing key",
+                           "inside the vault directory" in out, True)
+        out = srv._do_drive_place(con.open(PW), PW,
+                                  {"account": "nosuchco", "file": vault_file})
+        fails += not check("an unknown business is refused before anything else",
+                           "don't know a business" in out, True)
+        out = srv._do_drive_place(con.open(PW), PW, {"account": "personal"})
+        fails += not check("a placement with no source is refused",
+                           "nothing to place" in out, True)
+        # No Google in this temp vault, so a legitimate file stops at the
+        # connection check - proving the guard order, and that it never crashes.
+        out = srv._do_drive_place(con.open(PW), PW,
+                                  {"account": "personal", "file": str(Path(__file__))})
+        fails += not check("a legitimate file gets as far as the Google check",
+                           "isn't connected" in out, True)
 
         print("\nTOOL CREDENTIAL DOES NOT FOLLOW A REDIRECT")
         fails += tool_redirect_check()

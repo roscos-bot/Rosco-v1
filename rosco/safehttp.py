@@ -100,7 +100,8 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
          form: dict | None = None, bearer: str | None = None,
          headers: dict | None = None, timeout: int = 60,
          max_bytes: int = MAX_RESPONSE, allow_internal: bool = False,
-         raw: bool = False, binary: bool = False):
+         raw: bool = False, binary: bool = False,
+         body: bytes | None = None, content_type: str = ""):
     """Make one request and return the parsed JSON reply ({} for an empty body),
     or - with raw=True - the response body decoded as text. raw is for endpoints
     that return a document, not JSON (a Google Doc exported to text/plain, a CSV
@@ -111,6 +112,13 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
     secret) forces https, forbids an internal target, and forbids following any
     redirect. Without either the same no-redirect and size-cap protections still
     apply - they are cheap and there is no reason to relax them.
+
+    `body` sends RAW BYTES with `content_type` instead of a JSON or form body -
+    what a file upload needs (Drive's resumable PUT). It is exclusive with
+    payload/form: a request has one body, and silently letting a second one win
+    is how a caller ends up uploading the wrong thing. Every guard above still
+    applies - an upload carries a bearer, so it is https-only, redirect-refusing
+    and internal-target-refusing exactly like any other credentialed call.
     """
     parsed = urllib.parse.urlparse(url)
     if bearer is not None or form is not None:
@@ -123,9 +131,16 @@ def call(url: str, *, method: str = "POST", payload: dict | None = None,
                 f"{parsed.hostname!r} resolves to an internal address; "
                 f"refusing to send a credential there")
 
+    if body is not None and (payload is not None or form is not None):
+        raise ValueError("pass body= OR payload=/form=, never both; a request has one body")
+
     h = {"Accept": "application/json"}
     data = None
-    if form is not None:
+    if body is not None:
+        data = body
+        if content_type:
+            h["Content-Type"] = content_type
+    elif form is not None:
         data = urllib.parse.urlencode(form).encode()
         h["Content-Type"] = "application/x-www-form-urlencoded"
     elif payload is not None:
