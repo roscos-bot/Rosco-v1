@@ -717,12 +717,18 @@ class ConsoleServer(ThreadingHTTPServer):
                                   + " — say the business (or 'personal') and I'll place it.")
                         break
                     a["_account"] = acct
+                    fold_why = "you named it"
+                    if not fold:
+                        from .deliverables import folder_for
+                        fold, fold_why = folder_for(acct, src, msg + "\n" + recent)
+                        a["_folder"] = fold
                     shown += ("\n\n\U0001f4c1 Ready to place " + src[:120]
                               + " in " + acct + "'s Drive (" + why + ")"
-                              + (" → " + fold if fold else "")
+                              + " → " + fold + " (" + fold_why + ")"
                               + (", shared with " + to + " as "
                                  + str(a.get("role") or "reader") if to else "")
-                              + ". Reply 'yes' to place it — never a public link.")
+                              + ". Reply 'yes' to place it, or name a different "
+                              + "folder — never a public link.")
                 elif t == "gmail_draft":
                     shown += ("\n\n✉️ Ready to draft an email to "
                               + str(a.get("to", ""))[:80] + " — subject \""
@@ -1140,7 +1146,15 @@ class ConsoleServer(ThreadingHTTPServer):
 
         path = str(a.get("file") or "").strip()
         file_id = str(a.get("file_id") or "").strip()
-        folder = str(a.get("folder") or "").strip()
+        # _folder, like _account, is what the preview resolved and Ross confirmed.
+        folder = str(a.get("folder") or a.get("_folder") or "").strip()
+        if not folder and path:
+            # No preview ran (a direct call), so apply the convention here rather
+            # than dumping a deliverable in the Drive root. Only for an UPLOAD: a
+            # move with no folder named is a no-op by design, and shunting an
+            # already-filed Drive file into Unfiled would be worse than leaving it.
+            from .deliverables import folder_for
+            folder = folder_for(account, path)[0]
         share_to = str(a.get("share") or "").strip()
         role = str(a.get("role") or "reader").strip().lower()
         if not (path or file_id):
@@ -3705,10 +3719,47 @@ def _business_of_msg(text):
     turn stays with Rosco rather than being handed to a captain on a guess. The
     same refuse-on-tie discipline as the capability and domain classifiers.
     """
+    hits = _business_hits(text)
+    return hits.pop() if len(hits) == 1 else None
+
+
+def _business_hits(text):
+    """EVERY business whose tokens appear in `text`, as a set.
+
+    Split out from _business_of_msg because a caller combining signals has to be
+    able to tell "nothing matched" from "two matched" - collapsing both to None
+    loses exactly the ambiguity the refuse-on-a-tie rule exists to catch. That
+    bit: RUM's code IS its word token, so a union of the two collapsed answers
+    read 'rum-and-steelhaven-comparison.pdf' as unambiguously RUM.
+    """
     low = (text or "").lower()
-    hits = [slug for slug, toks in _BIZ_TOKENS.items()
-            if any(re.search(t, low) for t in toks)]
-    return hits[0] if len(hits) == 1 else None
+    return {slug for slug, toks in _BIZ_TOKENS.items()
+            if any(re.search(t, low) for t in toks)}
+
+
+def _business_by_code(text):
+    """A roster business CODE (SHH, RUM, RCE…) in a FILE NAME -> its slug, or None.
+
+    Codes are consulted for file names ONLY, never for chat text: 'FIN' or 'PSN'
+    in a sentence is noise, but 'SHH-plan-set-rev3.pdf' is exactly how a file gets
+    labelled, and the roster already declares those codes as the tag shown beside
+    each business. Word-boundary matched, so 'final' is not FIN and 'fins' is not
+    either. Two codes in one name is ambiguous and returns None, the same
+    refuse-on-a-tie rule the rest of the routing follows.
+
+    'system' is excluded: Rosco's own code vault is not a place a deliverable
+    goes, and it has no Google account of its own to go to.
+    """
+    hits = _code_hits(text)
+    return hits.pop() if len(hits) == 1 else None
+
+
+def _code_hits(text):
+    """Every business whose roster CODE appears in `text`, as a set."""
+    low = (text or "").lower()
+    return {b.slug for b in BUSINESSES
+            if b.code and b.slug != "system"
+            and re.search(rf"\b{re.escape(b.code.lower())}\b", low)}
 
 
 def _route_deliverable(name, context=""):
@@ -3728,8 +3779,14 @@ def _route_deliverable(name, context=""):
     """
     from pathlib import Path as _P
     stem = _P(str(name or "")).stem.replace("_", " ").replace("-", " ")
-    hit = _business_of_msg(stem)
-    if hit:
+    # Two readings of the name - the business's words, and its roster CODE. They
+    # must agree: 'SHH-vs-RUM-comparison.pdf' genuinely belongs to neither on its
+    # own, so it asks rather than taking whichever was checked first.
+    by_name = _business_hits(stem) | _code_hits(stem)
+    if len(by_name) > 1:
+        return None, "the file name names more than one business"
+    if by_name:
+        hit = by_name.pop()
         return hit, f"the file name points at {hit}"
     hit = _business_of_msg(context or "")
     if hit:

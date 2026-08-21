@@ -440,7 +440,7 @@ Ordered by what the chief-of-staff direction wants next.
    browser and desktop control this needed now exists, so QBO transaction
    classification at the *business agent* level is unblocked and is the nearest
    real win.
-2. **Deliverables** - *in progress.* The Drive write primitives exist as of
+2. **Deliverables** - *built; unproven against real Google.* The Drive write primitives exist as of
    20 Aug (`drive_create_folder` / `drive_upload` / `drive_move` / `drive_share`,
    plus a raw-body path in `safehttp` for the resumable upload), and the console
    can place a file via a proposed `drive_place` action. Two rules are baked in
@@ -455,7 +455,14 @@ Ordered by what the chief-of-staff direction wants next.
    the wrong company can see the file. The routed answer and its reason go in the
    confirmation preview, so a misroute is caught before it happens, not after.
 
-   Still to do: folder conventions per business.
+   Folder conventions landed with it: `deliverables.py` declares an ordered,
+   closed list of folders per business, seeded from capabilities.py (what a
+   business can be ASKED for is a fair description of what it HAS). The file
+   name is read first, then the talk around it, then the file TYPE - a `.step`
+   is a drawing wherever it came from. Unlike the business route this NEVER
+   asks: the wrong subfolder of the right Drive is a drag-and-drop to fix and
+   nobody outside sees it, so it always answers, falls back to `Unfiled` when
+   nothing matches, and reports its reasoning into the confirmation.
 3. **The unseal protocol** - sealed-node boot, Telegram authorisation, peer
    transport, per-node secret wrapping. Only matters once a second node exists;
    there is still exactly one (`console`).

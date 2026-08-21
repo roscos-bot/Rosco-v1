@@ -35,9 +35,10 @@ git-ignored.
 | `rosco/agent.py`, `roster.py`, `knowledge.py` | the agents, their ranks, what each business knows |
 | `rosco/models.py`, `llm.py`, `safehttp.py` | model choice per role, and the one hardened outbound path |
 | `rosco/ingest.py` | reviewed ingestion — learn one item at a time |
+| `rosco/deliverables.py` | where a finished file lands: the declared folder conventions per business |
 | `rosco/adapters/google.py` | Google Workspace connector (Gmail / Drive / Calendar / Sheets / Contacts / Chat) |
 | `rosco/web.py`, `web_app.html`, `web_app.js` | the localhost console: 3D mesh, queue, chat, settings |
-| `tests/` | `test_core.py`, `test_web.py`, `test_recall_fts.py`, `test_inbox_watch.py`, `test_google_guard.py`, `test_drive_write.py` — the safety suites |
+| `tests/` | `test_core.py`, `test_web.py`, `test_recall_fts.py`, `test_inbox_watch.py`, `test_google_guard.py`, `test_drive_write.py`, `test_deliverables.py` — the safety suites |
 
 ## The rules that don't bend
 
@@ -64,6 +65,7 @@ python tests/test_recall_fts.py
 python tests/test_inbox_watch.py
 python tests/test_google_guard.py
 python tests/test_drive_write.py
+python tests/test_deliverables.py
 ```
 
 Every one must print `ALL PASS`. The HOSTILE sections are regression tests for real

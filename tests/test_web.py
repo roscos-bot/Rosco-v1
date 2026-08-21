@@ -322,6 +322,20 @@ def main() -> int:
         fails += not check("a file naming TWO businesses refuses to guess",
                            _route("rum-and-steelhaven-comparison.pdf")[0], None)
         fails += not check("'forum' does not route to RUM", _route("forum-notes.txt")[0], None)
+        # The roster's 3-letter codes are how a file actually gets tagged.
+        fails += not check("a SHH- prefix routes it", _route("SHH-plan-set.pdf")[0],
+                           "steelhaven")
+        fails += not check("RCE too", _route("RCE_rent_roll.xlsx")[0], "river-city")
+        fails += not check("and 4XE", _route("4XE-run-signup.pdf")[0], "4x4-explorers")
+        fails += not check("'final' is not the FIN code", _route("final-v2.pdf")[0], None)
+        fails += not check("two codes in one name still refuse",
+                           _route("SHH-vs-RCE-costs.pdf")[0], None)
+        # RUM's code IS its word token - the bug that made a two-business name
+        # read as unambiguously RUM when the two signals were combined naively.
+        fails += not check("a word-token business plus another still refuses",
+                           _route("rum-and-steelhaven-comparison.pdf")[0], None)
+        fails += not check("SYS is not a deliverable destination",
+                           _route("SYS-notes.md")[0], None)
         # And the refusal reaches the placement itself, not just the preview.
         out = srv._do_drive_place(con.open(PW), PW, {"file": str(Path(__file__))})
         fails += not check("an unrouted placement is refused, never defaulted to personal",
@@ -332,6 +346,49 @@ def main() -> int:
                                    "file": str(Path(__file__))})
         fails += not check("the confirmed account wins over a bare one",
                            "don't know a business called 'nosuchco'" in out, True)
+
+        print("\nEND TO END: A DELIVERABLE FILES ITSELF IN THE RIGHT FOLDER")
+        # Everything above the wire is real - routing, the convention, the guard
+        # order, the parent id threading. Only Google itself is stubbed.
+        from rosco.adapters import google as _g
+        con.secret_set(PW, "steelhaven", "google_refresh_token", "rt")
+        con.secret_set(PW, "steelhaven", "google_client_id", "cid")
+        con.secret_set(PW, "steelhaven", "google_client_secret", "csec")
+        made = {}
+        real = (_g.access_for_guarded, _g.drive_find_folder,
+                _g.drive_create_folder, _g.drive_upload, _g.drive_share)
+        _g.access_for_guarded = lambda vault, account: "tok"
+        _g.drive_find_folder = lambda token, name: None          # nothing there yet
+        _g.drive_create_folder = lambda token, name, parent="": made.setdefault(
+            "folder", name) and None or {"id": "FID"}
+        _g.drive_upload = lambda token, name, data, mime, parent="", **k: (
+            made.update({"name": name, "parent": parent, "mime": mime,
+                         "bytes": len(data)}) or {"id": "F1", "webViewLink": "LINK"})
+        _g.drive_share = lambda *a, **k: {}
+        try:
+            deliverable = Path(tempfile.mkdtemp()) / "SHH-plan-set-rev3.pdf"
+            deliverable.write_bytes(b"%PDF-1.4 pretend")
+            out = srv._do_drive_place(con.open(PW), PW,
+                                      {"file": str(deliverable)})
+            fails += not check("it routed to steelhaven off the file name alone",
+                               "steelhaven's Drive" in out, True)
+            fails += not check("and made the Plans folder by convention",
+                               made.get("folder"), "Plans")
+            fails += not check("and uploaded INTO that folder, not the root",
+                               made.get("parent"), "FID")
+            fails += not check("with the real bytes", made.get("bytes"), 16)
+            fails += not check("and reported the link", "LINK" in out, True)
+            # An opaque name still lands somewhere sane rather than the root.
+            made.clear()
+            opaque = deliverable.parent / "scan0001.pdf"
+            opaque.write_bytes(b"x")
+            out = srv._do_drive_place(con.open(PW), PW,
+                                      {"account": "steelhaven", "file": str(opaque)})
+            fails += not check("an unrecognised file goes to Unfiled, never the root",
+                               made.get("folder"), "Unfiled")
+        finally:
+            (_g.access_for_guarded, _g.drive_find_folder, _g.drive_create_folder,
+             _g.drive_upload, _g.drive_share) = real
 
         print("\nTOOL CREDENTIAL DOES NOT FOLLOW A REDIRECT")
         fails += tool_redirect_check()

@@ -46,7 +46,7 @@ deferred. Paths below are the real ones - the old table named directories
 | Stream | Owns | Depends on | Notes |
 |---|---|---|---|
 | **Business tools** | `tools.py`, a new `adapters/qbo.py` | `vault.py` (read), `adapters/browser.py` | The next real win. shhops, shhsocial, accounting, QBO - including browser-driven transaction classification at the *business agent* level. |
-| **Deliverables** | `adapters/google.py`, `office.py`, `media.py` | core (read-only) | Models and files to the right Drive, organised and shared. Drafts and proposes; the share itself is Ross's click. |
+| **Deliverables** | `deliverables.py`, `adapters/google.py`, `office.py` | core (read-only) | Models and files to the right Drive, organised and shared. Drafts and proposes; the share itself is Ross's click. |
 | **The console** | `web.py`, `web_app.js`, `web_app.html` | core (read-only) | Where Ross reads the queue and answers it. Holds his signing key. Only localhost changes anything, so this is also where authority lives. Must follow `it/console-design-bible.md`. |
 | **Ingest + vault** | `ingest.py`, `knowledge.py`, `vault.py` | `store.py` | The busiest path in the log (1,418 decisions) and the least-audited relative to use. Worth hardening. |
 | **Telegram adapter** | `adapters/telegram.py` | `arrive.py` | Turns Telegram updates into `Arrival`s. Proposes only - never edits the system. |
