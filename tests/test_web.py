@@ -300,6 +300,39 @@ def main() -> int:
         fails += not check("a legitimate file gets as far as the Google check",
                            "isn't connected" in out, True)
 
+        print("\nDELIVERABLE ROUTING: THE NAME, THEN THE TALK, THEN ASK")
+        from rosco.web import _route_deliverable as _route
+        fails += not check("the file name routes it",
+                           _route("SteelHaven-plans-rev3.pdf")[0], "steelhaven")
+        fails += not check("underscores read the same as hyphens",
+                           _route("rum_inventory_2026.xlsx")[0], "rum")
+        fails += not check("a captain's name in the file routes it too",
+                           _route("bessemer-notes.docx")[0], "steelhaven")
+        fails += not check("the conversation routes it when the name is blank",
+                           _route("hull-v2.step", "this is for Sugar Creek's drone")[0],
+                           "sugar-creek")
+        fails += not check("and the NAME wins over the conversation",
+                           _route("rum-inventory.xlsx", "we were talking about SteelHaven")[0],
+                           "rum")
+        # The whole point: no guessing. Two businesses named, or none, must ASK.
+        fails += not check("an unnamed file with no context refuses to guess",
+                           _route("final-v2.pdf")[0], None)
+        fails += not check("and says why", "neither the file name" in _route("final-v2.pdf")[1],
+                           True)
+        fails += not check("a file naming TWO businesses refuses to guess",
+                           _route("rum-and-steelhaven-comparison.pdf")[0], None)
+        fails += not check("'forum' does not route to RUM", _route("forum-notes.txt")[0], None)
+        # And the refusal reaches the placement itself, not just the preview.
+        out = srv._do_drive_place(con.open(PW), PW, {"file": str(Path(__file__))})
+        fails += not check("an unrouted placement is refused, never defaulted to personal",
+                           "which business is this for" in out, True)
+        # What the preview resolved is what gets written.
+        out = srv._do_drive_place(con.open(PW), PW,
+                                  {"_account": "nosuchco", "account": "personal",
+                                   "file": str(Path(__file__))})
+        fails += not check("the confirmed account wins over a bare one",
+                           "don't know a business called 'nosuchco'" in out, True)
+
         print("\nTOOL CREDENTIAL DOES NOT FOLLOW A REDIRECT")
         fails += tool_redirect_check()
     finally:

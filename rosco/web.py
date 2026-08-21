@@ -702,11 +702,23 @@ class ConsoleServer(ThreadingHTTPServer):
                     # be able to see "that is not my file" or "that is not my
                     # Drive" before he types yes.
                     src = str(a.get("file") or a.get("file_id") or "")
-                    acct = str(a.get("account") or "personal")
                     fold = str(a.get("folder") or "")
                     to = str(a.get("share") or "")
+                    acct = str(a.get("account") or "").strip().lower()
+                    why = "you named it"
+                    if not acct:
+                        # Route it here, at propose time, so the ANSWER is in the
+                        # preview and Ross can catch a misroute before it happens
+                        # - the same reason a github_pr previews its diff.
+                        acct, why = _route_deliverable(src, msg + "\n" + recent)
+                    if not acct:
+                        self._pending = None      # never park an unrouted write
+                        shown += ("\n\n\U0001f4c1 Which business is this for? " + why
+                                  + " — say the business (or 'personal') and I'll place it.")
+                        break
+                    a["_account"] = acct
                     shown += ("\n\n\U0001f4c1 Ready to place " + src[:120]
-                              + " in " + acct + "'s Drive"
+                              + " in " + acct + "'s Drive (" + why + ")"
                               + (" → " + fold if fold else "")
                               + (", shared with " + to + " as "
                                  + str(a.get("role") or "reader") if to else "")
@@ -1109,7 +1121,17 @@ class ConsoleServer(ThreadingHTTPServer):
         from .adapters import google as g
         from .roster import business as biz_of
 
-        account = str(a.get("account") or "personal").strip().lower()
+        # _account is what the preview RESOLVED and Ross said yes to; it wins over
+        # a bare 'account' so the write lands where the confirmation said it would.
+        # No silent 'personal' default: an unrouted placement is refused, because
+        # guessing the Drive is the one mistake other people get to see.
+        account = str(a.get("_account") or a.get("account") or "").strip().lower()
+        if not account:
+            account, _why = _route_deliverable(
+                str(a.get("file") or a.get("file_id") or ""), "")
+        if not account:
+            return ("(which business is this for? Name it - or say 'personal' - "
+                    "and I'll place it.)")
         b = biz_of(account)
         if account != "personal" and b is None:
             return f"(I don't know a business called {account!r}.)"
@@ -3687,6 +3709,32 @@ def _business_of_msg(text):
     hits = [slug for slug, toks in _BIZ_TOKENS.items()
             if any(re.search(t, low) for t in toks)]
     return hits[0] if len(hits) == 1 else None
+
+
+def _route_deliverable(name, context=""):
+    """Which business a deliverable belongs to: (slug, why) or (None, why).
+
+    Signals strongest-first: the FILE NAME, then the conversation around it. A
+    name is the stronger of the two because it travels WITH the file - 'SHH-
+    plans-rev3.pdf' is about SteelHaven whatever the chat had drifted onto - and
+    because it is the part Ross controls directly.
+
+    Ambiguity returns None, and the caller ASKS. There is deliberately no
+    fallback to 'personal': _business_of_msg already refuses on a tie, and
+    guessing the account for a WRITE is the healthcare-directive-under-a-
+    homebuilder mistake with an audience, since a file in the wrong company's
+    Drive is visible to that company. Ross saying "personal" takes one word;
+    unpicking a misfiled plan set does not.
+    """
+    from pathlib import Path as _P
+    stem = _P(str(name or "")).stem.replace("_", " ").replace("-", " ")
+    hit = _business_of_msg(stem)
+    if hit:
+        return hit, f"the file name points at {hit}"
+    hit = _business_of_msg(context or "")
+    if hit:
+        return hit, f"the conversation is about {hit}"
+    return None, "neither the file name nor the conversation names a business"
 
 
 def _mime_short(mime):

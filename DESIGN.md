@@ -446,9 +446,16 @@ Ordered by what the chief-of-staff direction wants next.
    can place a file via a proposed `drive_place` action. Two rules are baked in
    and tested: a write resolves its token through `access_for_guarded`, so it
    cannot land in the wrong company's Drive; and sharing names a PERSON - there
-   is no argument that mints an 'anyone with the link' permission. Still to do:
-   routing a file to the right business automatically rather than being told,
-   and the folder conventions per business.
+   is no argument that mints an 'anyone with the link' permission.
+
+   Routing is automatic as of the same day: the file NAME first (it travels with
+   the file), then the conversation, and **ASK when neither is clear** - there is
+   deliberately no fallback to 'personal'. Guessing the account for a WRITE is
+   the healthcare-directive-under-a-homebuilder mistake with an audience, since
+   the wrong company can see the file. The routed answer and its reason go in the
+   confirmation preview, so a misroute is caught before it happens, not after.
+
+   Still to do: folder conventions per business.
 3. **The unseal protocol** - sealed-node boot, Telegram authorisation, peer
    transport, per-node secret wrapping. Only matters once a second node exists;
    there is still exactly one (`console`).
