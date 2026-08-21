@@ -38,6 +38,7 @@ git-ignored.
 | `rosco/deliverables.py` | where a finished file lands: the declared folder conventions per business |
 | `rosco/adapters/google.py` | Google Workspace connector (Gmail / Drive / Calendar / Sheets / Contacts / Chat) |
 | `rosco/web.py`, `web_app.html`, `web_app.js` | the localhost console: 3D mesh, queue, chat, settings |
+| `tools/live_drive_check.py` | proves the Drive write path against REAL Google — read-only unless `--write` |
 | `tests/` | `test_core.py`, `test_web.py`, `test_recall_fts.py`, `test_inbox_watch.py`, `test_google_guard.py`, `test_drive_write.py`, `test_deliverables.py` — the safety suites |
 
 ## The rules that don't bend
